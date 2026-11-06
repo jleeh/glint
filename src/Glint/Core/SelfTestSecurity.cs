@@ -272,7 +272,7 @@ static class SelfTestSecurity
         C("security: WEBVIEW2_* overrides from the user environment are dropped before the browser starts",
             Environment.GetEnvironmentVariable("WEBVIEW2_BROWSER_EXECUTABLE_FOLDER") == null && Environment.GetEnvironmentVariable("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS") == null, "");
         var elevatedData = UI.WebDashboard.DataFolder(true);
-        C("security: elevated dashboard keeps its browser profile under the install folder, not the user profile",
-            elevatedData.StartsWith(AppContext.BaseDirectory, StringComparison.OrdinalIgnoreCase) && !elevatedData.StartsWith(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), StringComparison.OrdinalIgnoreCase), elevatedData);
+        C("dashboard: browser profile is the per-user folder (WebView2 runs its browser de-elevated, so it must be writable by the user)",
+            elevatedData.StartsWith(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), StringComparison.OrdinalIgnoreCase), elevatedData);
     }
 }

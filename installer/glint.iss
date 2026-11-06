@@ -149,5 +149,3 @@ begin
   end;
 end;
 
-[UninstallDelete]
-Type: filesandordirs; Name: "{app}\webview-data"

@@ -35,8 +35,8 @@ Glint do with administrator rights is a vulnerability. Glint defends that bounda
   undeclared addresses and writes before identifying a device are refused.
 - **Dashboard** (WebView2): only the bundled page on `https://glint.local/` is loaded (navigation, new windows and
   downloads elsewhere are blocked, messages from any other origin ignored, strict Content-Security-Policy, all
-  plugin/device/config text escaped). When elevated, its browser profile lives under the install folder, not in the
-  user profile, and `WEBVIEW2_*` environment overrides are ignored. Only Glint's repository and the PawnIO /
+  plugin/device/config text escaped), and `WEBVIEW2_*` environment overrides are ignored. WebView2 runs its browser
+  processes de-elevated even when Glint is elevated, so its per-user profile folder grants no extra privilege. Only Glint's repository and the PawnIO /
   WebView2 download pages can be opened in the browser.
 - **Network**: the update check talks only to the GitHub API (TLS, size-limited answer). Home Assistant (MQTT) and
   OpenRGB connect only to hosts the user configured; data from them is size-checked.

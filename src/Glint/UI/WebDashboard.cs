@@ -59,13 +59,13 @@ public sealed class WebDashboard : Form
     public static bool IsLocal(string? uri) => uri != null && uri.StartsWith(Origin, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// WebView2 browser data. Elevated, the browser processes run as administrator, so their profile (code cache,
-    /// preferences...) must not sit in a folder any normal-privilege program can write: it goes under the install
-    /// folder (Program Files), per Windows user. Not elevated, the usual per-user location.
+    /// WebView2 browser data, in the usual per-user place. Even when Glint runs elevated, WebView2 starts its browser
+    /// processes de-elevated (as the normal user), so they can't use an admin-only folder, and anything planted in this
+    /// folder only reaches a normal-privilege process: no elevation to gain. The dashboard's real boundary is that it
+    /// only loads Glint's own pages and only accepts messages from that origin (see <see cref="Origin"/>).
     /// </summary>
-    public static string DataFolder(bool elevated) => elevated
-        ? Path.Combine(AppContext.BaseDirectory, "webview-data", System.Security.Principal.WindowsIdentity.GetCurrent().User!.Value)
-        : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Glint", "WebView2");
+    public static string DataFolder(bool elevated) =>
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Glint", "WebView2");
 
     /// <summary>WEBVIEW2_* variables (browser folder, extra arguments, data folder...) override what we pass and come from
     /// the user's environment, which a normal-privilege program can set: drop them before starting the browser.</summary>
