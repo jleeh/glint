@@ -30,6 +30,8 @@ public static class OverlayRenderer
     {
         public readonly double S;
         public readonly Font Label, Value, Unit, Hero;
+        /// <summary>Compact (one-line) layout: same proportions as the dashboard preview (13 px base: label .82em, value 1.25em, unit .78em).</summary>
+        public readonly Font CLabel, CValue, CUnit;
         public Fonts(double s)
         {
             S = s;
@@ -37,8 +39,11 @@ public static class OverlayRenderer
             Value = new Font("Segoe UI Semibold", (float)(15 * s), GraphicsUnit.Pixel);
             Unit = new Font("Segoe UI Semibold", (float)(10.5 * s), GraphicsUnit.Pixel);
             Hero = new Font("Segoe UI", (float)(27 * s), FontStyle.Bold, GraphicsUnit.Pixel);
+            CLabel = new Font("Segoe UI Semibold", (float)(10.7 * s), GraphicsUnit.Pixel);
+            CValue = new Font("Segoe UI Semibold", (float)(16.25 * s), GraphicsUnit.Pixel);
+            CUnit = new Font("Segoe UI Semibold", (float)(10.1 * s), GraphicsUnit.Pixel);
         }
-        public void Dispose() { Label.Dispose(); Value.Dispose(); Unit.Dispose(); Hero.Dispose(); }
+        public void Dispose() { Label.Dispose(); Value.Dispose(); Unit.Dispose(); Hero.Dispose(); CLabel.Dispose(); CValue.Dispose(); CUnit.Dispose(); }
     }
     static Fonts? _fonts;
     /// <summary>Drop cached fonts (overlay switched off).</summary>
@@ -49,6 +54,7 @@ public static class OverlayRenderer
     static string Zeros(string t) => new(t.Select(c => char.IsDigit(c) ? '0' : c).ToArray());
     /// <summary>Distance from the top of a drawn string to its baseline.</summary>
     static float Ascent(Font f) => f.Size * f.FontFamily.GetCellAscent(f.Style) / f.FontFamily.GetEmHeight(f.Style);
+    static float Descent(Font f) => f.Size * f.FontFamily.GetCellDescent(f.Style) / f.FontFamily.GetEmHeight(f.Style);
 
     readonly record struct Piece(string Text, Font Font, float X, float Baseline, Brush? Brush, Color Color, RectangleF Box);
 
@@ -72,19 +78,21 @@ public static class OverlayRenderer
         float left = 21 * u, padR = 13 * u, padY = 9 * u;
         if (st.Compact)
         {
-            float x = left, h = 30 * u, baseLine = padY + Ascent(f.Value) + 1 * u;
+            // One line, like the dashboard preview: 10 px padding, a full-height accent bar with a 10 px gap, label/value/unit
+            // 6 px apart, items 16 px apart, all on one baseline. Height comes from the font's real ascent + descent.
+            float pad = 10 * u, x = 22 * u, asc = Ascent(f.CValue), h = pad * 2 + asc + Descent(f.CValue), baseLine = pad + asc;
             foreach (var r in rows)
             {
-                if (x > left) x += 14 * u;
+                if (x > 22 * u) x += 16 * u;
                 var label = r.Label.ToUpperInvariant();
-                pieces.Add(new Piece(label, f.Label, x, baseLine, null, Dim, default));
-                x += W(f.Label, label) + 5 * u;
-                float vw = Math.Max(W(f.Value, r.Value), W(f.Value, Zeros(r.Value)));
-                pieces.Add(new Piece(r.Value, f.Value, x, baseLine, null, ValueColor(r, st), new RectangleF(x, baseLine - Ascent(f.Value), vw, f.Value.Size)));
+                pieces.Add(new Piece(label, f.CLabel, x, baseLine, null, Dim, default));
+                x += W(f.CLabel, label) + 6 * u;
+                float vw = Math.Max(W(f.CValue, r.Value), W(f.CValue, Zeros(r.Value)));
+                pieces.Add(new Piece(r.Value, f.CValue, x, baseLine, null, ValueColor(r, st), new RectangleF(x, baseLine - asc, vw, f.CValue.Size)));
                 x += vw;
-                if (r.Unit.Length > 0) { x += 2 * u; pieces.Add(new Piece(r.Unit, f.Unit, x, baseLine, null, Dim, default)); x += W(f.Unit, r.Unit); }
+                if (r.Unit.Length > 0) { x += 6 * u; pieces.Add(new Piece(r.Unit, f.CUnit, x, baseLine, null, Dim, default)); x += W(f.CUnit, r.Unit); }
             }
-            return (pieces, new SizeF(x + padR, h), 8 * u, h - 8 * u);
+            return (pieces, new SizeF(x + 14 * u, h), pad, h - pad);
         }
         // detailed: an optional hero FPS row, then label ........ value unit rows
         float y = padY, labelW = 0, valueW = 0, unitW = 0, heroW = 0;
