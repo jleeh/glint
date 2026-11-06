@@ -1,1 +1,10 @@
-{"name":"glint-tools","private":true,"dependencies":{"puppeteer-core":"^22.15.0"}}
+{
+  "name": "glint-tools",
+  "private": true,
+  "dependencies": {
+    "puppeteer-core": "^25.16.0"
+  },
+  "engines": {
+    "node": ">=22.12"
+  }
+}

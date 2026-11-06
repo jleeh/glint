@@ -23,7 +23,7 @@ public static class PluginCheck
     public static List<Result> Run(string file)
     {
         var results = new List<Result>();
-        var code = File.ReadAllText(file);
+        var code = PluginHost.ReadCode(file);
         string name = Path.GetFileName(file);
         JsonElement desc, tests;
         try

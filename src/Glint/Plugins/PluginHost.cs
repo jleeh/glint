@@ -18,21 +18,24 @@ public sealed record PluginStatus(string File, string Kind, string Name, bool Ok
 /// </summary>
 public static class PluginTrust
 {
-    static string StorePath => Path.Combine(AppContext.BaseDirectory, "trusted-plugins.json");
-    public static string Hash(string file) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(file)));
+    /// <summary>Tests only: a store in a temp folder.</summary>
+    internal static string? TestStorePath;
+    static string StorePath => TestStorePath ?? Path.Combine(AppContext.BaseDirectory, "trusted-plugins.json");
+    public static string Hash(byte[] content) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(content));
     static Dictionary<string, string> Load()
     {
         try { return JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(StorePath)) ?? new(); } catch { return new(); }
     }
-    public static bool IsTrusted(string file)
+    /// <param name="content">The exact bytes that will run (hashing the file again later would let it be swapped in between).</param>
+    public static bool IsTrusted(string file, byte[] content)
     {
-        if (Path.GetFullPath(file).StartsWith(Path.GetFullPath(PluginHost.BundledDir), StringComparison.OrdinalIgnoreCase)) return true;
-        return Load().TryGetValue(Path.GetFileName(file), out var h) && h == Hash(file);
+        if (PluginHost.IsBundled(file)) return true;
+        return Load().TryGetValue(Path.GetFileName(file), out var h) && h == Hash(content);
     }
     public static void Approve(string file)
     {
         var d = Load();
-        d[Path.GetFileName(file)] = Hash(file);
+        d[Path.GetFileName(file)] = Hash(PluginHost.ReadBytes(file));
         File.WriteAllText(StorePath, JsonSerializer.Serialize(d, new JsonSerializerOptions { WriteIndented = true }));
     }
 }
@@ -50,6 +53,8 @@ public static class PluginHost
     public static string UserDir => Path.Combine(GlintConfig.Dir, "plugins");
     public static string BundledDir => Path.Combine(AppContext.BaseDirectory, "plugins");
     public static readonly List<PluginStatus> Status = new();
+    /// <summary>Status as one consistent list (a reload clears and refills it under the lock).</summary>
+    public static List<PluginStatus> StatusSnapshot() { lock (_lock) return Status.ToList(); }
     static readonly Dictionary<string, EffectPlugin> _effects = new(StringComparer.OrdinalIgnoreCase);
     static FileSystemWatcher? _watch;
     public static event Action? EffectsChanged;
@@ -57,7 +62,29 @@ public static class PluginHost
     public static Func<IEnumerable<string>> Disabled = () => Array.Empty<string>();
     /// <summary>Every plugin file found (bundled + user), for the manager page and the control API.</summary>
     public static IEnumerable<string> AllFiles => Files();
-    public static bool IsBundled(string file) => Path.GetFullPath(file).StartsWith(Path.GetFullPath(BundledDir), StringComparison.OrdinalIgnoreCase);
+    public static bool IsBundled(string file) => Path.GetFullPath(file).StartsWith(Path.TrimEndingDirectorySeparator(Path.GetFullPath(BundledDir)) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Largest plugin file Glint will read.</summary>
+    public const int MaxPluginBytes = 2 << 20;
+
+    /// <summary>Read a plugin file as the signed-in user (the user folder may contain links planted to reach other files).</summary>
+    internal static byte[] ReadBytes(string file) => UserFs.Run(() =>
+    {
+        using var fs = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        if (fs.Length > MaxPluginBytes) throw new InvalidDataException($"plugin file is larger than {MaxPluginBytes / 1048576} MB");
+        var b = new byte[fs.Length];
+        fs.ReadExactly(b);
+        return b;
+    });
+
+    /// <summary>Same decoding as File.ReadAllText (BOM-aware, UTF-8 default).</summary>
+    internal static string Decode(byte[] b)
+    {
+        using var r = new StreamReader(new MemoryStream(b), System.Text.Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+        return r.ReadToEnd();
+    }
+
+    public static string ReadCode(string file) => Decode(ReadBytes(file));
     static readonly object _lock = new();
 
     public static IReadOnlyList<PluginEffectInfo> Effects
@@ -98,7 +125,9 @@ public static class PluginHost
 
     /// <summary>A sandboxed V8 engine: no host types, 64 MB heap.</summary>
     /// <summary>One V8 isolate for all effect plugins (they all run on the lighting thread), created on first use.</summary>
-    static readonly Lazy<V8Runtime> _runtime = new(() => new V8Runtime("glint-effects", new V8RuntimeConstraints { MaxOldSpaceSize = 64, MaxNewSpaceSize = 4 }));
+    static readonly Lazy<V8Runtime> _runtime = new(() => new V8Runtime("glint-effects", new V8RuntimeConstraints { MaxOldSpaceSize = 64, MaxNewSpaceSize = 4, MaxArrayBufferAllocation = MaxArrayBufferBytes }));
+    /// <summary>Typed arrays live outside the V8 heap: cap them too, or one plugin could allocate gigabytes.</summary>
+    public const ulong MaxArrayBufferBytes = 64UL << 20;
 
     internal static V8ScriptEngine NewEngine(string name)
     {
@@ -122,7 +151,7 @@ public static class PluginHost
             Status.Clear(); _effects.Clear();
             DriverRegistry.Hid.RemoveAll(d => d.Name.StartsWith("Plugin: "));
             DriverRegistry.SmbusDrivers.RemoveAll(d => d.Name.StartsWith("Plugin: "));
-            try { Directory.CreateDirectory(UserDir); SeedUserDir(); } catch { }
+            try { UserFs.Run(() => { Directory.CreateDirectory(UserDir); SeedUserDir(); }); } catch { }
             var off = Disabled().ToHashSet(StringComparer.OrdinalIgnoreCase);
             foreach (var file in Files())
             {
@@ -164,12 +193,12 @@ public static class PluginHost
     static readonly Dictionary<string, (DateTime t, string kind, string name)> _meta = new();
     static (string kind, string name) Meta(string file)
     {
-        var t = File.GetLastWriteTimeUtc(file);
+        var t = UserFs.Run(() => File.GetLastWriteTimeUtc(file));
         if (_meta.TryGetValue(file, out var m) && m.t == t) return (m.kind, m.name);
         string kind = "?", name = Path.GetFileNameWithoutExtension(file);
         try
         {
-            var d = JintHost.Describe(File.ReadAllText(file), file);
+            var d = JintHost.Describe(ReadCode(file), file);
             kind = d.GetProperty("type").GetString() ?? "effect";
             if (d.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String) name = n.GetString()!;
         }
@@ -183,15 +212,15 @@ public static class PluginHost
     public static string? FindFile(string name) => Files().FirstOrDefault(f => Path.GetFileName(f).Equals(name, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>User plugins override bundled ones with the same file name.</summary>
-    static IEnumerable<string> Files()
+    static IEnumerable<string> Files() => UserFs.Run(() =>
     {
         var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var dir in new[] { BundledDir, UserDir })
             if (Directory.Exists(dir))
                 foreach (var f in Directory.EnumerateFiles(dir, "*.js", SearchOption.AllDirectories))
                     map[Path.GetFileName(f)] = f;
-        return map.Values.OrderBy(f => f);
-    }
+        return map.Values.OrderBy(f => f).ToList();
+    });
 
     static int _reloading;
     public static void ReloadSoon()
@@ -237,7 +266,8 @@ public static class PluginHost
 
     static void LoadFile(string file, bool effectsOnly)
     {
-        var code = File.ReadAllText(file);
+        var bytes = ReadBytes(file);
+        var code = Decode(bytes);
         var d = JintHost.Describe(code, file);
         string type = Str(d, "type") ?? "effect";
         string name = Str(d, "name") ?? Path.GetFileNameWithoutExtension(file);
@@ -268,7 +298,7 @@ public static class PluginHost
             if (addrs.Length == 0) throw new InvalidOperationException("smbus plugins must declare addresses: [0x.., ...]");
             var blocked = addrs.Where(a => a is >= 0x50 and <= 0x57 or < 0x03 or > 0x77).ToArray();
             if (blocked.Length > 0) throw new InvalidOperationException($"addresses not allowed: {string.Join(", ", blocked.Select(a => $"0x{a:x2}"))} (SPD EEPROM / reserved)");
-            if (!PluginTrust.IsTrusted(file))
+            if (!PluginTrust.IsTrusted(file, bytes))
             {
                 Status.Add(new PluginStatus(Path.GetFileName(file), "smbus", name, false, "Needs your approval: this plugin wants SMBus access", NeedsApproval: true));
                 return;
@@ -291,7 +321,7 @@ public static class PluginHost
     /// <summary>Load a single file for tests / plugintest (no registry side effects).</summary>
     internal static (EffectPlugin? effect, DevicePluginDef? device) LoadForTest(string file)
     {
-        var code = File.ReadAllText(file);
+        var code = ReadCode(file);
         var d = JintHost.Describe(code, file);
         string type = Str(d, "type") ?? "effect";
         string name = Str(d, "name") ?? Path.GetFileNameWithoutExtension(file);

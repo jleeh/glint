@@ -29,6 +29,27 @@ public sealed class ControlServer : IDisposable
         new Thread(Listen) { IsBackground = true, Name = "Glint control" }.Start();
     }
 
+    /// <summary>At most this many clients at once (each has a thread); more wait for a free instance.</summary>
+    public const int MaxClients = 8;
+    /// <summary>Longest request line (characters). Big enough for plugins.add of a 2 MB plugin, small enough that a client can't exhaust memory.</summary>
+    public const int MaxLine = 6 << 20;
+    int _live;
+
+    /// <summary>
+    /// Who may open the pipe: only this Windows user, never over the network. When elevated, only administrators may
+    /// create further instances of the name, so a normal-privilege program can't serve a fake instance to our clients.
+    /// </summary>
+    public static PipeSecurity Security()
+    {
+        var sec = new PipeSecurity();
+        var me = WindowsIdentity.GetCurrent();
+        bool elevated = new WindowsPrincipal(me).IsInRole(WindowsBuiltInRole.Administrator);
+        sec.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.NetworkSid, null), PipeAccessRights.FullControl, AccessControlType.Deny));
+        sec.AddAccessRule(new PipeAccessRule(me.User!, elevated ? PipeAccessRights.ReadWrite : PipeAccessRights.ReadWrite | PipeAccessRights.CreateNewInstance, AccessControlType.Allow));
+        if (elevated) sec.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null), PipeAccessRights.FullControl, AccessControlType.Allow));
+        return sec;
+    }
+
     void Listen()
     {
         while (!_cts.IsCancellationRequested)
@@ -36,11 +57,13 @@ public sealed class ControlServer : IDisposable
             NamedPipeServerStream? pipe = null;
             try
             {
-                var sec = new PipeSecurity();
-                sec.AddAccessRule(new PipeAccessRule(WindowsIdentity.GetCurrent().User!, PipeAccessRights.ReadWrite | PipeAccessRights.CreateNewInstance, AccessControlType.Allow));
-                pipe = NamedPipeServerStreamAcl.Create(PipeName, PipeDirection.InOut, NamedPipeServerStream.MaxAllowedServerInstances,
-                    PipeTransmissionMode.Byte, PipeOptions.Asynchronous, 0, 0, sec);
-                pipe.WaitForConnectionAsync(_cts.Token).GetAwaiter().GetResult();
+                // no instance of ours alive: insist on being the first, so we never join a name someone else squatted
+                var opts = PipeOptions.Asynchronous | (Volatile.Read(ref _live) == 0 ? PipeOptions.FirstPipeInstance : 0);
+                pipe = NamedPipeServerStreamAcl.Create(PipeName, PipeDirection.InOut, MaxClients,
+                    PipeTransmissionMode.Byte, opts, 0, 0, Security());
+                Interlocked.Increment(ref _live);
+                try { pipe.WaitForConnectionAsync(_cts.Token).GetAwaiter().GetResult(); }
+                catch { Interlocked.Decrement(ref _live); throw; }
                 var p = pipe; pipe = null;
                 new Thread(() => Serve(p)) { IsBackground = true, Name = "Glint control client" }.Start();
             }
@@ -54,7 +77,21 @@ public sealed class ControlServer : IDisposable
     {
         try { ServeInner(pipe); }
         catch { }
-        finally { try { pipe.Dispose(); } catch { } }
+        finally { try { pipe.Dispose(); } catch { } Interlocked.Decrement(ref _live); }
+    }
+
+    /// <summary>ReadLine with a length cap: a client sending one endless line gets an error and is dropped.</summary>
+    internal static string? ReadLine(TextReader r, int max)
+    {
+        var sb = new System.Text.StringBuilder();
+        while (true)
+        {
+            int c = r.Read();
+            if (c < 0) return sb.Length > 0 ? sb.ToString() : null;
+            if (c == '\n') { if (sb.Length > 0 && sb[^1] == '\r') sb.Length--; return sb.ToString(); }
+            if (sb.Length >= max) throw new InvalidDataException($"request longer than {max} characters");
+            sb.Append((char)c);
+        }
     }
 
     void ServeInner(NamedPipeServerStream pipe)
@@ -63,8 +100,11 @@ public sealed class ControlServer : IDisposable
         using (var w = new StreamWriter(pipe, leaveOpen: true) { AutoFlush = true })
         {
             string? line;
-            while ((line = r.ReadLine()) != null)
+            while (true)
             {
+                try { line = ReadLine(r, MaxLine); }
+                catch (InvalidDataException e) { w.WriteLine(JsonSerializer.Serialize(new { id = (int?)null, error = e.Message }, Wire)); return; }
+                if (line == null) break;
                 JsonNode? id = null;
                 try
                 {
@@ -185,12 +225,15 @@ public sealed class ControlServer : IDisposable
             case "plugins.template":
                 return File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "plugin-templates", (string?)p["kind"] == "device" ? "device-template.js" : "effect-template.js"));
             case "plugins.get":
-                return File.ReadAllText(PluginHost.FindFile(S("file")) ?? throw new FileNotFoundException("no such plugin"));
+                return PluginHost.ReadCode(PluginHost.FindFile(S("file")) ?? throw new FileNotFoundException("no such plugin"));
             case "plugins.add":
                 {
                     var file = SafeName(S("file"));
+                    var code = S("code");
+                    if (System.Text.Encoding.UTF8.GetByteCount(code) > PluginHost.MaxPluginBytes) throw new ArgumentException($"code is larger than {PluginHost.MaxPluginBytes / 1048576} MB");
                     var path = Path.Combine(PluginHost.UserDir, file);
-                    File.WriteAllText(path, S("code"));
+                    // as the signed-in user, not as administrator: the plugins folder is user-writable and may hold planted links
+                    UserFs.Run(() => { Directory.CreateDirectory(PluginHost.UserDir); File.WriteAllText(path, code); });
                     PluginHost.ReloadNow();
                     var st = PluginHost.Status.FirstOrDefault(x => x.File.Equals(file, StringComparison.OrdinalIgnoreCase));
                     return new { file, path, status = st, note = st?.Kind is "device" or "smbus" ? "Device plugins load on app.restart." : null };
@@ -205,7 +248,7 @@ public sealed class ControlServer : IDisposable
                 {
                     var f = PluginHost.FindFile(S("file")) ?? throw new FileNotFoundException("no such plugin");
                     if (PluginHost.IsBundled(f)) throw new InvalidOperationException("bundled plugins can't be deleted; use plugins.setEnabled false");
-                    File.Delete(f);
+                    UserFs.Delete(f);
                     PluginHost.ReloadNow();
                     return new { removed = Path.GetFileName(f) };
                 }
@@ -360,7 +403,7 @@ public sealed class ControlServer : IDisposable
                     c.Profiles.Remove(name);
                     return Commit(c);
                 }
-            case "config.get": return _svc.Config;
+            case "config.get": return Redacted(_svc.Config);
             case "config.schema": return ConfigValidator.Schema();
             case "config.validate":
                 {
@@ -375,6 +418,7 @@ public sealed class ControlServer : IDisposable
                     GlintConfig c;
                     try { c = p["config"].Deserialize<GlintConfig>(GlintConfig.Json) ?? throw new ArgumentException("missing 'config'"); }
                     catch (JsonException e) { return Fail("config: " + e.Message); }
+                    KeepSecret(c);
                     return Commit(c);
                 }
             case "config.patch":
@@ -440,6 +484,22 @@ public sealed class ControlServer : IDisposable
         PluginEffects = PluginHost.Effects.Select(e => e.Name).ToList(),
         Previous = _svc.Config,
     };
+
+    const string Hidden = "***";
+
+    /// <summary>config.get without the stored MQTT password: even encrypted, it doesn't belong in agent transcripts or ctl output.</summary>
+    static JsonNode Redacted(GlintConfig c)
+    {
+        var n = JsonSerializer.SerializeToNode(c, GlintConfig.Json)!;
+        if (n["homeAssistant"] is JsonObject ha && ha["passwordProtected"] != null) ha["passwordProtected"] = Hidden;
+        return n;
+    }
+
+    /// <summary>A config sent back from config.get carries "***": keep the stored password.</summary>
+    void KeepSecret(GlintConfig c)
+    {
+        if (c.HomeAssistant?.PasswordProtected == Hidden) c.HomeAssistant.PasswordProtected = _svc.Config.HomeAssistant?.PasswordProtected;
+    }
 
     static JsonObject Fail(params string[] errors) => new() { ["ok"] = false, ["errors"] = new JsonArray(errors.Select(e => (JsonNode)JsonValue.Create(e)!).ToArray()) };
 
@@ -521,7 +581,7 @@ public sealed class ControlServer : IDisposable
 
     public static object PluginList()
     {
-        var status = PluginHost.Status.ToDictionary(s => s.File, StringComparer.OrdinalIgnoreCase);
+        var status = PluginHost.StatusSnapshot().GroupBy(s => s.File, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.Last(), StringComparer.OrdinalIgnoreCase);
         return PluginHost.AllFiles.Select(f =>
         {
             var name = Path.GetFileName(f);

@@ -19,6 +19,8 @@ public static class OpenRgbProtocol
     /// <summary>Highest protocol this client parses. v4 = OpenRGB 0.9 (zone segments); v5+ add fields we don't read.</summary>
     public const uint MaxVersion = 4;
     public const int HeaderSize = 16;
+    /// <summary>Sanity limits for what a server may claim (OpenRGB itself uses 16-bit LED counts).</summary>
+    public const int MaxLeds = 65535, MaxControllers = 256;
     static readonly byte[] Magic = "ORGB"u8.ToArray();
 
     public static byte[] Packet(uint dev, uint id, ReadOnlySpan<byte> data)
@@ -69,17 +71,25 @@ public static class OpenRgbProtocol
         }
         int nz = r.U16();
         var zones = new List<OpenRgbZone>();
+        long total = 0;
         for (int z = 0; z < nz; z++)
         {
             string zn = r.Str();
             int zt = r.I32();
             r.U32(); r.U32();                                      // leds min/max
-            int count = (int)r.U32();
+            // the server is another program (possibly on the LAN): its sizes must not make us allocate without bound
+            uint count32 = r.U32();
+            if (count32 > MaxLeds) throw new InvalidDataException($"OpenRGB zone \"{zn}\" claims {count32} LEDs");
+            int count = (int)count32;
+            if ((total += count) > MaxLeds) throw new InvalidDataException("OpenRGB device claims more than 65535 LEDs");
             int mlen = r.U16();
             int h = 0, w = 0; uint[]? map = null;
             if (mlen > 0)
             {
-                h = (int)r.U32(); w = (int)r.U32();
+                uint h32 = r.U32(), w32 = r.U32();
+                if ((ulong)h32 * w32 > MaxLeds || (ulong)h32 * w32 * 4 > (ulong)r.Remaining) throw new InvalidDataException($"OpenRGB zone \"{zn}\" has a bad matrix size {w32}x{h32}");
+                h = (int)h32; w = (int)w32;
+                if ((total += (long)h * w) > 2L * MaxLeds) throw new InvalidDataException("OpenRGB device claims too many matrix cells");
                 map = new uint[h * w];
                 for (int i = 0; i < map.Length; i++) map[i] = r.U32();
             }
@@ -107,6 +117,7 @@ public static class OpenRgbProtocol
         public int I32() => BinaryPrimitives.ReadInt32LittleEndian(Take(4));
         public int U16() => BinaryPrimitives.ReadUInt16LittleEndian(Take(2));
         public void Skip(int n) => Take(n);
+        public int Remaining => _d.Length - _p;
         public string Str() { int n = U16(); var s = Take(n); return Encoding.UTF8.GetString(s.Length > 0 && s[^1] == 0 ? s[..^1] : s); }
     }
 }
@@ -157,7 +168,10 @@ public sealed class OpenRgbClient : IDisposable
         {
             Send(0, OpenRgbProtocol.RequestControllerCount, ReadOnlySpan<byte>.Empty);
             var r = Receive(OpenRgbProtocol.RequestControllerCount, 2000) ?? throw new IOException("OpenRGB did not answer the controller count");
-            return (int)BinaryPrimitives.ReadUInt32LittleEndian(r);
+            if (r.Length < 4) throw new InvalidDataException("OpenRGB sent a short controller count");
+            uint n = BinaryPrimitives.ReadUInt32LittleEndian(r);
+            if (n > OpenRgbProtocol.MaxControllers) throw new InvalidDataException($"OpenRGB claims {n} controllers");
+            return (int)n;
         }
     }
 

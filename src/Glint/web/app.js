@@ -14,6 +14,12 @@ const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+// Untrusted data (plugins, hand-edited config.json, hardware names) must never become markup. Text goes through esc();
+// numbers that land in markup go through num() (a JSON string where a number belongs falls back to d); colours that land
+// in a style attribute or a colour input go through color() (#rgb..#rrggbbaa only, so no `;`, quotes or url()).
+const num = (v, d = 0) => { const n = typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN; return Number.isFinite(n) ? n : d; };
+const color = (c, d = '#000000') => typeof c === 'string' && /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(c) ? c : d;
+const own = (o, k) => o != null && Object.prototype.hasOwnProperty.call(o, k) ? o[k] : undefined;   // lookup tables keyed by untrusted ids
 const send = m => bridge?.postMessage(m);
 
 /* ------------------------------------------------------------------ naming */
@@ -24,7 +30,7 @@ function sensorLabel(id) {
   const m = /^(max|min|avg)\((.*)\)$/.exec(id);
   if (m) return ({ max: 'Hottest of ', min: 'Coolest of ', avg: 'Average of ' })[m[1]] + m[2].split(',').map(x => sensorLabel(x.trim())).join(' / ');
   if (S.cfg?.sensorNames?.[id]) return S.cfg.sensorNames[id];
-  if (SENSOR_LABELS[id]) return SENSOR_LABELS[id];
+  if (own(SENSOR_LABELS, id)) return SENSOR_LABELS[id];
   let p = /^(\w+):probe(\d+)$/.exec(id); if (p) return `${hubName(p[1], true)} probe ${p[2]}`;
   p = /^(\w+):liquid$/.exec(id); if (p) return `${hubName(p[1], true)} liquid`;
   p = /^disk:(.*)$/.exec(id); if (p) return 'Drive ' + p[1].replace(/-/g, ' ');
@@ -37,7 +43,7 @@ const HUB_NAMES = {
   mb: 'Motherboard', lnp: 'Lighting Node Pro', aura: 'Motherboard RGB', mystic: 'Motherboard RGB', ram: 'Memory',
 };
 function hubName(id, short) {
-  const n = HUB_NAMES[id];
+  const n = own(HUB_NAMES, id);
   if (n) return Array.isArray(n) ? n[short ? 0 : 1] : n;
   return S.init?.deviceNames?.[id] ?? S.init?.hubs?.find(h => h.id === id)?.name ?? id;
 }
@@ -309,7 +315,7 @@ function renderOverview() {
     <div class="section-title">Lighting<span class="line"></span><button class="btn ghost small" data-go="lighting">Open lighting →</button></div>
     <div class="card card-pad">
       <div class="row between" style="margin-bottom:14px">
-        <div><div class="card-title">${esc(fxMeta(S.cfg.lighting.effect.type, S.cfg.lighting.effect).name)}</div><div class="card-sub">${S.cfg.lighting.enabled ? `Brightness ${S.cfg.lighting.brightness}%` : 'Lights off'}${Object.keys(S.cfg.lighting.overrides).length ? ` · ${Object.keys(S.cfg.lighting.overrides).length} override(s)` : ''}</div></div>
+        <div><div class="card-title">${esc(fxMeta(S.cfg.lighting.effect.type, S.cfg.lighting.effect).name)}</div><div class="card-sub">${S.cfg.lighting.enabled ? `Brightness ${num(S.cfg.lighting.brightness)}%` : 'Lights off'}${Object.keys(S.cfg.lighting.overrides).length ? ` · ${Object.keys(S.cfg.lighting.overrides).length} override(s)` : ''}</div></div>
         <div class="row"><span class="muted" style="font-size:12px">Lights</span><div class="toggle ${S.cfg.lighting.enabled ? 'on' : ''}" data-lights></div></div>
       </div>
       <canvas class="strip" id="ov-strip"></canvas>
@@ -440,8 +446,8 @@ function renderCooling() {
           <div class="ri-top"><span class="ri-name">${esc(x.name)}</span><span class="ri-duty num" data-rduty="${i}">–</span></div>
           <div class="ri-meta">
             <span class="tag">${x.fans.length} fan${x.fans.length === 1 ? '' : 's'}</span>
-            ${x.override != null ? `<span class="tag ovr" title="Held by an override from Home Assistant or the API">Held ${x.override}%</span>` : ''}
-            ${x.fixed != null ? `<span class="tag">Fixed ${x.fixed}%</span>` : x.inputs.map((inp, j) => `<span class="tag" style="color:${INPUT_COLORS[j % INPUT_COLORS.length]}">${esc(sensorLabel(inp.sensor))}</span>`).join('')}
+            ${x.override != null ? `<span class="tag ovr" title="Held by an override from Home Assistant or the API">Held ${esc(x.override)}%</span>` : ''}
+            ${x.fixed != null ? `<span class="tag">Fixed ${esc(x.fixed)}%</span>` : x.inputs.map((inp, j) => `<span class="tag" style="color:${INPUT_COLORS[j % INPUT_COLORS.length]}">${esc(sensorLabel(inp.sensor))}</span>`).join('')}
           </div>
         </div>`).join('')}
         <button class="add-tile" id="c-add">${IC.plus.replace('<svg', '<svg width="14" height="14" style="vertical-align:-2px"')} New rule</button>
@@ -462,7 +468,7 @@ function renderCooling() {
         ${r.override != null ? `
           <div class="override-bar" id="c-ovr">
             <span class="ovr-dot"></span>
-            <div class="ovr-text"><b>Held at ${r.override}% by override</b><span>Set from Home Assistant or the API. The curves below are paused; the fail-safe still wins if a sensor is lost.</span></div>
+            <div class="ovr-text"><b>Held at ${esc(r.override)}% by override</b><span>Set from Home Assistant or the API. The curves below are paused; the fail-safe still wins if a sensor is lost.</span></div>
             <button class="btn small" id="c-auto">Back to auto</button>
           </div>` : ''}
         ${r.fixed != null ? `
@@ -482,9 +488,9 @@ function renderCooling() {
               <select data-k="curve">${curveNames.map(c => `<option ${c === inp.curve ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
               <span class="live" data-live="${j}">–</span>
               <div class="adv">
-                ${r.combine === 'weighted' ? `<label>Weight</label><input type="number" step="0.5" min="0" data-k="weight" value="${inp.weight ?? 1}">` : ''}
-                <label title="Seconds of smoothing applied to the sensor">Smooth</label><input type="number" step="1" min="0" data-k="smoothingSec" value="${inp.smoothingSec ?? 0}">
-                <label title="Degrees the temperature must drop before fans slow down">Hyst.</label><input type="number" step="0.5" min="0" data-k="hysteresis" value="${inp.hysteresis ?? 2}">
+                ${r.combine === 'weighted' ? `<label>Weight</label><input type="number" step="0.5" min="0" data-k="weight" value="${num(inp.weight, 1)}">` : ''}
+                <label title="Seconds of smoothing applied to the sensor">Smooth</label><input type="number" step="1" min="0" data-k="smoothingSec" value="${num(inp.smoothingSec, 0)}">
+                <label title="Degrees the temperature must drop before fans slow down">Hyst.</label><input type="number" step="0.5" min="0" data-k="hysteresis" value="${num(inp.hysteresis, 2)}">
                 <button class="icon-btn" data-rm="${j}" title="Remove input">${IC.x}</button>
               </div>
             </div>`).join('')}
@@ -531,8 +537,10 @@ function renderCooling() {
 }
 
 function slider(id, v, min, max, step, fmt) {
+  // every value may come from config.json or a plugin's param schema: numbers only, the id escaped
+  min = num(min, 0); max = num(max, min + 1); step = num(step, 1); v = num(v, min);
   const p = (v - min) / (max - min) * 100;
-  return `<div class="slider"><input type="range" id="${id}" min="${min}" max="${max}" step="${step}" value="${v}" style="--p:${p}%"><output for="${id}">${fmt(v)}</output></div>`;
+  return `<div class="slider"><input type="range" id="${esc(id)}" min="${min}" max="${max}" step="${step}" value="${v}" style="--p:${num(p)}%"><output for="${esc(id)}">${esc(fmt(v))}</output></div>`;
 }
 function bindSlider(id, fmt, onInput) {
   const el = document.getElementById(id); if (!el) return;
@@ -643,7 +651,7 @@ function drawCurve(liveOnly) {
   // min/max band
   g += `<rect x="${CX.padL}" y="${Y(r.minDuty)}" width="${pw}" height="${Y(0) - Y(r.minDuty)}" fill="rgba(255,255,255,0.025)"/>`;
   g += `<line x1="${CX.padL}" x2="${CX.padL + pw}" y1="${Y(r.minDuty)}" y2="${Y(r.minDuty)}" stroke="rgba(255,255,255,0.12)" stroke-dasharray="3 5"/>`;
-  g += `<text x="${CX.padL + pw - 4}" y="${Y(r.minDuty) - 6}" text-anchor="end" fill="#6f7689" font-size="11">min ${r.minDuty}%</text>`;
+  g += `<text x="${CX.padL + pw - 4}" y="${Y(r.minDuty) - 6}" text-anchor="end" fill="#6f7689" font-size="11">min ${esc(r.minDuty)}%</text>`;
   // other inputs' curves
   r.inputs.forEach((inp, j) => {
     if (inp.curve === S.curve) return;
@@ -754,7 +762,7 @@ const fxMeta = (t, fx) => {
   }
   const m = FX[fxKey(t)]; return { name: m[0], desc: m[1], th: m[2], params: m[3] };
 };
-const thumbStyle = cols => cols?.length ? `background:linear-gradient(135deg, ${cols.map(esc).join(', ')})` : '';
+const thumbStyle = cols => Array.isArray(cols) && cols.length ? `background:linear-gradient(135deg, ${cols.map(c => color(c)).join(', ')})` : '';
 
 function targetEffect() {
   const L = S.cfg.lighting;
@@ -820,7 +828,7 @@ function renderLighting() {
     <div class="target-bar ${S.target !== 'all' ? 'scoped' : ''}">
       <span class="label">Editing</span>
       <button class="chip ${S.target === 'all' ? 'on' : ''}" data-t="all">All lights</button>
-      ${devs.map(d => `<button class="chip ${S.target === d ? 'on' : ''}" data-t="${d}">${ovr.has(d) ? '<span class="dot" style="background:#ffb547"></span>' : ''}${esc(devName(d))}</button>`).join('')}
+      ${devs.map(d => `<button class="chip ${S.target === d ? 'on' : ''}" data-t="${esc(d)}">${ovr.has(d) ? '<span class="dot" style="background:#ffb547"></span>' : ''}${esc(devName(d))}</button>`).join('')}
       ${S.target !== 'all' && !devs.includes(S.target) ? `<button class="chip on" data-t="${esc(S.target)}">${esc(zoneLabel(S.target))}</button>` : ''}
       ${S.target !== 'all' && ovr.has(S.target) ? `<button class="btn small ghost" id="l-reset">Follow global effect</button>` : ''}
       ${S.target !== 'all' && !fx ? `<span class="muted" style="font-size:12px">Following the global effect, pick one to override</span>` : ''}
@@ -866,10 +874,10 @@ function pluginParams(fx, meta) {
   for (const [k, d] of Object.entries(schema)) {
     const v = vals[k] ?? d.default, label = esc(d.label ?? k);
     if (d.type === 'number') out.push(`<div class="field" ${disabled}><label>${label}</label>${slider('pp-' + k, v ?? d.min ?? 0, d.min ?? 0, d.max ?? 1, d.step ?? 0.01, x => (+x).toFixed(d.step >= 1 ? 0 : 2))}</div>`);
-    else if (d.type === 'color') out.push(`<div class="field" ${disabled}><label>${label}</label><div class="swatches"><div class="sw" style="background:${esc(v)}"><input type="color" data-pp="${esc(k)}" value="${esc(v)}"></div></div></div>`);
-    else if (d.type === 'colors') out.push(`<div class="field" ${disabled}><label>${label}</label><div class="swatches">${(v ?? []).map((c, i) => `<div class="sw" style="background:${esc(c)}"><input type="color" data-ppc="${esc(k)}" data-i="${i}" value="${esc(c)}">${v.length > 1 ? `<span class="x" data-ppdel="${esc(k)}" data-i="${i}">×</span>` : ''}</div>`).join('')}<button class="sw add" data-ppadd="${esc(k)}">+</button></div></div>`);
+    else if (d.type === 'color') out.push(`<div class="field" ${disabled}><label>${label}</label><div class="swatches"><div class="sw" style="background:${color(v)}"><input type="color" data-pp="${esc(k)}" value="${color(v)}"></div></div></div>`);
+    else if (d.type === 'colors') out.push(`<div class="field" ${disabled}><label>${label}</label><div class="swatches">${(Array.isArray(v) ? v : []).map((c, i) => `<div class="sw" style="background:${color(c)}"><input type="color" data-ppc="${esc(k)}" data-i="${i}" value="${color(c)}">${v.length > 1 ? `<span class="x" data-ppdel="${esc(k)}" data-i="${i}">×</span>` : ''}</div>`).join('')}<button class="sw add" data-ppadd="${esc(k)}">+</button></div></div>`);
     else if (d.type === 'bool') out.push(`<div class="row between" ${disabled}><span style="font-size:13px;color:var(--text-2)">${label}</span><div class="toggle ${v ? 'on' : ''}" data-ppb="${esc(k)}"></div></div>`);
-    else if (d.type === 'select') out.push(`<div class="field" ${disabled}><label>${label}</label><select data-pps="${esc(k)}">${(d.options ?? []).map(o => `<option ${o === v ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select></div>`);
+    else if (d.type === 'select') out.push(`<div class="field" ${disabled}><label>${label}</label><select data-pps="${esc(k)}">${(Array.isArray(d.options) ? d.options : []).map(o => `<option ${o === v ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select></div>`);
     else if (d.type === 'sensor') out.push(`<div class="field" ${disabled}><label>${label}</label><select data-pps="${esc(k)}">${allSensorIds().map(id => `<option value="${esc(id)}" ${id === v ? 'selected' : ''}>${esc(sensorLabel(id))}</option>`).join('')}</select></div>`);
   }
   if (!meta.plugin) out.push('<div class="muted" style="font-size:13px">This plugin isn\'t loaded. Check the Plugins card on the Devices page.</div>');
@@ -883,7 +891,7 @@ function fxParams(fx, meta) {
   const disabled = !targetEffect() ? 'style="opacity:.5;pointer-events:none"' : '';
   if (p.includes('colors') || p.includes('colors?')) {
     out.push(`<div class="field" ${disabled}><label>Colours${p.includes('colors?') ? ' (one colour = automatic rainbow)' : ''}</label><div class="swatches">
-      ${fx.colors.map((c, i) => `<div class="sw" style="background:${esc(c)}"><input type="color" value="${esc(c)}" data-col="${i}">${fx.colors.length > 1 ? `<span class="x" data-delcol="${i}">×</span>` : ''}</div>`).join('')}
+      ${fx.colors.map((c, i) => `<div class="sw" style="background:${color(c)}"><input type="color" value="${color(c)}" data-col="${i}">${fx.colors.length > 1 ? `<span class="x" data-delcol="${i}">×</span>` : ''}</div>`).join('')}
       ${fx.colors.length < 8 ? '<button class="sw add" id="fx-addcol">+</button>' : ''}
     </div></div>`);
   }
@@ -897,10 +905,10 @@ function fxParams(fx, meta) {
   if (p.includes('angle')) out.push(sl('angle', 'Direction across your PC', 0, 345, 15, v => ({ 0: '→', 45: '↘', 90: '↓', 135: '↙', 180: '←', 225: '↖', 270: '↑', 315: '↗' })[v] ? `${({ 0: '→', 45: '↘', 90: '↓', 135: '↙', 180: '←', 225: '↖', 270: '↑', 315: '↗' })[v]} ${v}°` : v + '°'));
   if (p.includes('sensor')) out.push(`<div class="field" ${disabled}><label>Sensor</label><select id="fx-sensor">${allSensorIds().map(id => `<option value="${esc(id)}" ${id === fx.sensor ? 'selected' : ''}>${esc(sensorLabel(id))}</option>`).join('')}</select></div>`);
   if (p.includes('range')) {
-    const r = fx.range ?? [40, 85];
+    const r = Array.isArray(fx.range) ? fx.range : [40, 85];
     out.push(`<div class="row" ${disabled}><div class="field" style="flex:1"><label>Cool at</label>${slider('fx-r0', r[0], 20, 90, 1, v => v + '°')}</div><div class="field" style="flex:1"><label>Hot at</label>${slider('fx-r1', r[1], 30, 100, 1, v => v + '°')}</div></div>`);
   }
-  if (p.includes('background')) out.push(`<div class="field" ${disabled}><label>Background</label><div class="swatches"><div class="sw" style="background:${esc(fx.background ?? '#000000')}"><input type="color" id="fx-bg" value="${esc(fx.background ?? '#000000')}"></div></div></div>`);
+  if (p.includes('background')) out.push(`<div class="field" ${disabled}><label>Background</label><div class="swatches"><div class="sw" style="background:${color(fx.background)}"><input type="color" id="fx-bg" value="${color(fx.background)}"></div></div></div>`);
   const flags = [];
   if (p.includes('perZone')) flags.push(['perZone', 'Run around each fan instead of across the rig']);
   if (p.includes('reverse')) flags.push(['reverse', 'Reverse direction']);
@@ -1166,7 +1174,7 @@ function legendHtml() {
     devs.map(d => `<div class="lg-dev">
       <div class="lg-head"><span class="lg-dot" style="background:${devColor(d)}"></span><span class="lg-name" data-lg-target="${esc(d)}">${esc(devName(d))}</span>
         <button class="icon-btn" data-identify="${esc(d)}" title="Flash on the real hardware">${IC.bolt}</button></div>
-      ${S.init.zones.filter(z => z.dev === d).map(z => `<div class="lg-zone ${S.target === z.id ? 'on' : ''}" data-lg-zone="${esc(z.id)}"><span>${esc(zoneName(z))}</span><span class="muted num">${z.count}</span>
+      ${S.init.zones.filter(z => z.dev === d).map(z => `<div class="lg-zone ${S.target === z.id ? 'on' : ''}" data-lg-zone="${esc(z.id)}"><span>${esc(zoneName(z))}</span><span class="muted num">${esc(z.count)}</span>
         <button class="icon-btn small" data-identify="${esc(z.id)}" title="Flash on the real hardware">${IC.bolt}</button></div>`).join('')}
     </div>`).join('');
 }
@@ -1202,7 +1210,7 @@ function renderDevices() {
     const light = I.devices.find(d => d.id === h.id);
     cards.push(`
     <div class="card card-pad dev-card">
-      <div class="dev-head"><div class="dev-ico">${devIcon(h.id)}</div><div style="flex:1"><div class="card-title">${esc(hubName(h.id))}</div><div class="card-sub">${h.firmware ? `Firmware ${esc(h.firmware)} · ` : ''}${hubFans(h.id).length} fan channels${light ? ` · ${light.zones.reduce((a, z) => a + z.leds, 0)} LEDs` : ''}</div></div><span class="status-dot" title="Connected"></span></div>
+      <div class="dev-head"><div class="dev-ico">${devIcon(h.id)}</div><div style="flex:1"><div class="card-title">${esc(hubName(h.id))}</div><div class="card-sub">${h.firmware ? `Firmware ${esc(h.firmware)} · ` : ''}${hubFans(h.id).length} fan channels${light ? ` · ${light.zones.reduce((a, z) => a + num(z.leds), 0)} LEDs` : ''}</div></div><span class="status-dot" title="Connected"></span></div>
       <div class="group-label">Fan names</div>
       <div class="kv">${hubFans(h.id).map(f => `<span class="k">${esc(f.id.split(':')[1])} <span class="muted num" data-rpm="${esc(f.id)}"></span></span><input type="text" data-fanname="${esc(f.id)}" value="${esc(S.cfg.fanNames[f.id] ?? '')}" placeholder="${esc(fanLabel(f.id))}">`).join('')}</div>
       ${probes(h.id).length ? `<div class="group-label">Temperature probes</div><div class="kv">${probes(h.id).map(p => `<span class="k">${esc(p.split(':')[1])} <span class="muted num" data-temp="${esc(p)}"></span></span><input type="text" data-sensorname="${esc(p)}" value="${esc(S.cfg.sensorNames?.[p] ?? '')}" placeholder="${esc(sensorLabel(p))}">`).join('')}</div>` : ''}
@@ -1211,8 +1219,8 @@ function renderDevices() {
   for (const d of I.devices.filter(d => !I.hubs.some(h => h.id === d.id))) {
     cards.push(`
     <div class="card card-pad dev-card">
-      <div class="dev-head"><div class="dev-ico">${devIcon(d.id)}</div><div style="flex:1"><div class="card-title">${esc(hubName(d.id))}</div><div class="card-sub">${hubName(d.id) !== d.name ? esc(d.name) + ' · ' : ''}${d.zones.length} zone${d.zones.length === 1 ? '' : 's'} · ${d.zones.reduce((a, z) => a + (L.ledCounts[z.id] ?? z.leds), 0)} LEDs</div></div><span class="status-dot"></span></div>
-      <table class="t">${d.zones.map(z => `<tr><td>${esc(zoneLabel(z.id))}</td><td>${editable(z) ? `<input type="number" min="0" max="300" data-leds="${esc(z.id)}" value="${L.ledCounts[z.id] ?? z.leds}"> <span class="muted">LEDs</span>${tpNote(z)}` : `<span class="muted">${z.leds} LED${z.leds === 1 ? '' : 's'}</span>`}</td>${editable(z) ? `<td><div class="tp-row"><span class="tp-label">Test pattern</span><div class="toggle ${S.testZone === z.id ? 'on' : ''}" data-tp="${esc(z.id)}" title="Test pattern: white first LED, red last LED, a new colour every 8 LEDs"></div></div></td>` : '<td></td>'}</tr>`).join('')}</table>
+      <div class="dev-head"><div class="dev-ico">${devIcon(d.id)}</div><div style="flex:1"><div class="card-title">${esc(hubName(d.id))}</div><div class="card-sub">${hubName(d.id) !== d.name ? esc(d.name) + ' · ' : ''}${d.zones.length} zone${d.zones.length === 1 ? '' : 's'} · ${d.zones.reduce((a, z) => a + num(L.ledCounts[z.id] ?? z.leds), 0)} LEDs</div></div><span class="status-dot"></span></div>
+      <table class="t">${d.zones.map(z => `<tr><td>${esc(zoneLabel(z.id))}</td><td>${editable(z) ? `<input type="number" min="0" max="300" data-leds="${esc(z.id)}" value="${num(L.ledCounts[z.id] ?? z.leds)}"> <span class="muted">LEDs</span>${tpNote(z)}` : `<span class="muted">${esc(z.leds)} LED${z.leds === 1 ? '' : 's'}</span>`}</td>${editable(z) ? `<td><div class="tp-row"><span class="tp-label">Test pattern</span><div class="toggle ${S.testZone === z.id ? 'on' : ''}" data-tp="${esc(z.id)}" title="Test pattern: white first LED, red last LED, a new colour every 8 LEDs"></div></div></td>` : '<td></td>'}</tr>`).join('')}</table>
       ${d.zones.some(editable) ? '<div class="muted" style="font-size:12px;margin-top:10px">These ports can\'t report their length. Set the real LED count; use 0 for an empty header. Switch on <b>Test pattern</b>: the first LED turns white, the last one red, and the colour changes every 8 LEDs (one fan). The count is right when the red LED is the last one lit.</div>' : ''}
     </div>`);
   }
@@ -1260,7 +1268,7 @@ const TP_SECONDS = 60;
 function tpCount(id) { const z = S.init.zones.find(x => x.id === id); return S.cfg.lighting.ledCounts?.[id] ?? z?.count ?? 0; }
 function tpNote(z) {
   const n = S.cfg.lighting.ledCounts?.[z.id] ?? z.count;
-  return `<div class="tp-note" data-tp-note="${esc(z.id)}"${n > z.count ? '' : ' hidden'}>Only ${z.count} LEDs exist until Glint restarts</div>`;
+  return `<div class="tp-note" data-tp-note="${esc(z.id)}"${n > z.count ? '' : ' hidden'}>Only ${esc(z.count)} LEDs exist until Glint restarts</div>`;
 }
 function testPatternOn(id) {
   S.testZone = id;
@@ -1340,9 +1348,9 @@ function renderPlugins() {
     const rows = PL.filter(pluginMatches);
     const groups = [['device', 'Hardware'], ['smbus', 'Hardware (SMBus)'], ['effect', 'Effects'], ['?', 'Other']];
     list.innerHTML = rows.length ? groups.map(([k, title]) => {
-      const g = rows.filter(x => (x.kind in KIND ? x.kind : '?') === k);
+      const g = rows.filter(x => (own(KIND, x.kind) ? x.kind : '?') === k);
       return g.length ? `<div class="plug-group">${title} <span class="muted">${g.length}</span></div>` + g.map(x => {
-        const [kn, kc] = KIND[x.kind] ?? KIND['?'];
+        const [kn, kc] = own(KIND, x.kind) ?? KIND['?'];
         const state = !x.enabled ? 'off' : x.needsApproval ? 'warn' : x.ok ? 'ok' : 'bad';
         return `<div class="plug-row ${x.enabled ? '' : 'disabled'}">
           <span class="pdot ${state}"></span>
@@ -1450,11 +1458,11 @@ function renderSensors() {
         <button class="sg-h lvl${lvl + 1}" data-tg="${esc(gid)}" aria-expanded="${!SENS.collapsed.has(gid)}"><span class="chev">${IC_EXTRA.chev}</span>${esc(label)}<span class="sg-n">${by.get(k).length}</span></button>
         <div class="sg-body">${by.get(k).map(x => `<div class="sr lvl${lvl + 2}" data-sid="${esc(x.id)}" data-q="${esc([x.name, h.name, label, ...(x.aliases ?? [])].join(' ').toLowerCase())}">
           <span class="sn"><span class="sname" title="${esc(x.id)}">${esc(x.name)}</span>${sensTags(x, used)}</span>
-          <span class="sv num" data-v>${fmtSensor(x.value, x.type, x.unit)}</span><span class="sv num mm" data-min>${fmtSensor(x.min, x.type, x.unit)}</span><span class="sv num mm" data-max>${fmtSensor(x.max, x.type, x.unit)}</span></div>`).join('')}</div></div>`;
+          <span class="sv num" data-v>${esc(fmtSensor(x.value, x.type, x.unit))}</span><span class="sv num mm" data-min>${esc(fmtSensor(x.min, x.type, x.unit))}</span><span class="sv num mm" data-max>${esc(fmtSensor(x.max, x.type, x.unit))}</span></div>`).join('')}</div></div>`;
     }).join('');
   };
   const hwNode = (h, lvl) => {
-    const [kind, ic] = HW_KIND[h.type] ?? [h.type, 'hub'];
+    const [kind, ic] = own(HW_KIND, h.type) ?? [h.type, 'hub'];
     return `<div class="sg hw ${SENS.collapsed.has(h.id) ? 'collapsed' : ''}" data-g="${esc(h.id)}">
       <button class="sg-h lvl${lvl}" data-tg="${esc(h.id)}" aria-expanded="${!SENS.collapsed.has(h.id)}"><span class="chev">${IC_EXTRA.chev}</span><span class="hw-ic">${IC[ic] ?? IC_EXTRA[ic] ?? IC.hub}</span><span class="hw-name">${esc(h.name)}</span><span class="hw-kind">${esc(kind)}</span></button>
       <div class="sg-body">${(h.sub ?? []).map(sh => hwNode(sh, lvl + 1)).join('')}${typeGroups(h, lvl)}</div></div>`;
@@ -1553,7 +1561,7 @@ function renderSettings() {
         <div class="ha-status" id="ha-status"><span class="pdot off"></span><span>–</span></div>
         <div class="ha-grid">
           <div class="field ha-host"><label for="ha-host">Broker host</label><input type="text" id="ha-host" value="${esc(HA().host)}" placeholder="homeassistant.local" spellcheck="false"></div>
-          <div class="field"><label for="ha-port">Port</label><input type="number" id="ha-port" value="${HA().port ?? 1883}" min="1" max="65535"></div>
+          <div class="field"><label for="ha-port">Port</label><input type="number" id="ha-port" value="${num(HA().port, 1883)}" min="1" max="65535"></div>
           <div class="field"><label>TLS</label><div class="toggle ${HA().tls ? 'on' : ''}" id="ha-tls" title="Use TLS (usually port 8883)"></div></div>
           <div class="field"><label for="ha-user">Username</label><input type="text" id="ha-user" value="${esc(HA().username)}" spellcheck="false" autocomplete="off"></div>
           <div class="field"><label for="ha-pass">Password</label><div class="row" style="gap:6px"><input type="password" id="ha-pass" value="" autocomplete="new-password" style="flex:1"><button class="btn small ghost" id="ha-pass-clear" title="Remove the saved password">Clear</button></div></div>
@@ -1571,14 +1579,14 @@ function renderSettings() {
         <div class="ha-status" id="orgb-status"><span class="pdot off"></span><span>–</span></div>
         <div class="ha-grid">
           <div class="field ha-host"><label for="orgb-host">SDK server host</label><input type="text" id="orgb-host" value="${esc(ORGB().host ?? '127.0.0.1')}" spellcheck="false"></div>
-          <div class="field"><label for="orgb-port">Port</label><input type="number" id="orgb-port" value="${ORGB().port ?? 6742}" min="1" max="65535"></div>
-          <div class="field" style="grid-column:1/-1"><label for="orgb-exclude">Leave these OpenRGB devices alone (names, comma-separated)</label><input type="text" id="orgb-exclude" value="${esc((ORGB().exclude ?? []).join(', '))}" spellcheck="false" placeholder="e.g. Razer, Corsair Vengeance"></div>
+          <div class="field"><label for="orgb-port">Port</label><input type="number" id="orgb-port" value="${num(ORGB().port, 6742)}" min="1" max="65535"></div>
+          <div class="field" style="grid-column:1/-1"><label for="orgb-exclude">Leave these OpenRGB devices alone (names, comma-separated)</label><input type="text" id="orgb-exclude" value="${esc((Array.isArray(ORGB().exclude) ? ORGB().exclude : []).join(', '))}" spellcheck="false" placeholder="e.g. Razer, Corsair Vengeance"></div>
         </div>
         <div class="row" style="margin-top:12px;gap:10px"><div class="muted" style="font-size:12px;flex:1">In OpenRGB: SDK Server tab → Start Server. Glint connects when it starts, skips devices it already drives itself, and sends frames at up to 30 fps.</div><button class="btn small" id="orgb-restart">Restart Glint</button></div>
       </div>
       <div class="card card-pad">
         <div class="card-head"><div class="card-title">About</div></div>
-        <div class="kv"><span class="k">Version</span><span>${esc(I.version ?? '1.0')}</span><span class="k">Fan outputs</span><span>${I.fans.length}</span><span class="k">LED zones</span><span>${I.zones.length} (${I.zones.reduce((a, z) => a + z.count, 0)} LEDs)</span></div>
+        <div class="kv"><span class="k">Version</span><span>${esc(I.version ?? '1.0')}</span><span class="k">Fan outputs</span><span>${I.fans.length}</span><span class="k">LED zones</span><span>${I.zones.length} (${I.zones.reduce((a, z) => a + num(z.count), 0)} LEDs)</span></div>
       </div>
     </div>`;
   bindSlider('s-fail', v => v + '%', v => { S.cfg.failsafeDuty = v; commit(); });
@@ -1594,7 +1602,7 @@ function UPD() { return (S.cfg.updates ??= { check: true }); }
 function ORGB() { return (S.cfg.openRgb ??= { enabled: false, host: '127.0.0.1', port: 6742, exclude: [] }); }
 function bindUpdates() {
   $('#upd-check').onclick = e => { UPD().check = !UPD().check; e.currentTarget.classList.toggle('on', UPD().check); commit(); liveUpdate(); };
-  $('#upd-open').onclick = () => send({ type: 'openUrl', url: S.state?.update?.url ?? S.init.releasesUrl });
+  $('#upd-open').onclick = () => { const url = S.state?.update?.url ?? S.init.releasesUrl; if (/^https:\/\//i.test(url ?? '')) send({ type: 'openUrl', url }); };
   liveUpdate();
 }
 function updateText() {
@@ -1654,16 +1662,16 @@ function renderSetup() {
   const groups = [['fail', 'Needs fixing'], ['warn', 'Worth a look'], ['ok', 'All good']];
   $('#page-setup').innerHTML = `
     <div class="card card-pad setup-head">
-      <div style="flex:1;min-width:240px"><div class="card-title">${!R ? 'Checking…' : R.fail ? `${R.fail} thing${R.fail === 1 ? '' : 's'} to fix` : R.warn ? 'Mostly set up' : 'Everything is set up'}</div>
+      <div style="flex:1;min-width:240px"><div class="card-title">${!R ? 'Checking…' : R.fail ? `${esc(R.fail)} thing${R.fail === 1 ? '' : 's'} to fix` : R.warn ? 'Mostly set up' : 'Everything is set up'}</div>
         <div class="card-sub">${R ? `Checked at ${esc(when)}${S.setupChecking ? ' · checking again…' : ''}` : 'Looking at drivers, permissions and other apps…'}</div></div>
-      ${R ? `<div class="counts"><span><b style="color:var(--bad)">${R.fail}</b>problem${R.fail === 1 ? '' : 's'}</span><span><b style="color:var(--warn)">${R.warn}</b>warning${R.warn === 1 ? '' : 's'}</span><span><b style="color:var(--good)">${R.ok}</b>ok</span></div>` : ''}
+      ${R ? `<div class="counts"><span><b style="color:var(--bad)">${esc(R.fail)}</b>problem${R.fail === 1 ? '' : 's'}</span><span><b style="color:var(--warn)">${esc(R.warn)}</b>warning${R.warn === 1 ? '' : 's'}</span><span><b style="color:var(--good)">${esc(R.ok)}</b>ok</span></div>` : ''}
       <button class="btn" id="setup-recheck"${S.setupChecking ? ' disabled' : ''}>Re-check</button>
     </div>
     <div class="card setup-list" id="setup-list">${R ? groups.map(([st, title]) => {
       const g = items.filter(i => i.status === st); if (!g.length) return '';
       return `<div class="setup-group">${title}</div>` + g.map(i => `
-      <div class="setup-row ${i.status}" data-item="${esc(i.id)}">
-        <span class="pdot ${i.status === 'fail' ? 'bad' : i.status}"></span>
+      <div class="setup-row ${esc(i.status)}" data-item="${esc(i.id)}">
+        <span class="pdot ${i.status === 'fail' ? 'bad' : esc(i.status)}"></span>
         <div><div class="st">${esc(i.title)}</div><div class="sd">${esc(i.detail)}</div></div>
         <div>${i.fix ? `<button class="btn small ${i.status === 'fail' ? 'primary' : ''}" data-fix="${esc(i.id)}">${esc(i.fixLabel)}</button>` : ''}</div>
       </div>`).join('');
@@ -1673,7 +1681,7 @@ function renderSetup() {
   $('#setup-list').onclick = e => {
     const b = e.target.closest('[data-fix]'); if (!b) return;
     const it = S.setup.items.find(i => i.id === b.dataset.fix); if (!it) return;
-    if (it.fix === 'page') { if (it.fixArg === 'plugins') PF.f = 'problems'; go(it.fixArg); return; }
+    if (it.fix === 'page') { if (!own(PAGES, it.fixArg)) return; if (it.fixArg === 'plugins') PF.f = 'problems'; go(it.fixArg); return; }
     if (it.fix === 'restartAdmin' && !confirm('Restart Glint as administrator? Windows will ask for permission.')) return;
     send({ type: 'setupFix', fix: it.fix, arg: it.fixArg });
   };
@@ -1694,15 +1702,15 @@ function renderOverlay() {
                 <div class="ov-pos" id="ov-pos" role="radiogroup" aria-label="Overlay corner">${['top-left', 'top-right', 'bottom-left', 'bottom-right'].map(p => `<button class="${p} ${OV_CFG().position === p ? 'on' : ''}" data-pos="${p}" role="radio" aria-checked="${OV_CFG().position === p}" title="${p.replace('-', ' ')}"></button>`).join('')}</div></div>
             </div>
             <div class="ov-row2">
-              <div class="field"><label for="ov-ox">Offset X (px)</label><input type="number" id="ov-ox" value="${OV_CFG().offsetX}" min="-200" max="4000" step="1"></div>
-              <div class="field"><label for="ov-oy">Offset Y (px)</label><input type="number" id="ov-oy" value="${OV_CFG().offsetY}" min="-200" max="4000" step="1"></div>
+              <div class="field"><label for="ov-ox">Offset X (px)</label><input type="number" id="ov-ox" value="${num(OV_CFG().offsetX)}" min="-200" max="4000" step="1"></div>
+              <div class="field"><label for="ov-oy">Offset Y (px)</label><input type="number" id="ov-oy" value="${num(OV_CFG().offsetY)}" min="-200" max="4000" step="1"></div>
             </div>
             <div class="field"><label>Size</label>${slider('ov-scale', OV_CFG().scale, 0.5, 4, 0.05, v => Math.round(v * 100) + '%')}</div>
             <div class="field"><label>Overlay opacity</label>${slider('ov-opacity', OV_CFG().opacity, 0.1, 1, 0.05, v => Math.round(v * 100) + '%')}</div>
             <div class="field"><label>Background opacity</label>${slider('ov-bg', OV_CFG().backgroundOpacity, 0, 1, 0.05, v => Math.round(v * 100) + '%')}</div>
             <div class="ov-row2">
               <div class="field"><label>Layout</label><div class="seg" id="ov-layout">${['compact', 'detailed'].map(l => `<button data-l="${l}" class="${OV_CFG().layout === l ? 'on' : ''}">${l[0].toUpperCase() + l.slice(1)}</button>`).join('')}</div></div>
-              <div class="field"><label>Accent colour</label><div class="row" style="gap:8px"><input type="color" class="ov-color ${OV_CFG().accent ? '' : 'unset'}" id="ov-accent" value="${OV_CFG().accent ?? '#8b6cff'}" aria-label="Accent colour"><button class="btn small ghost" id="ov-accent-reset" title="Use the Glint gradient">${OV_CFG().accent ? 'Glint gradient' : 'Glint gradient (default)'}</button></div></div>
+              <div class="field"><label>Accent colour</label><div class="row" style="gap:8px"><input type="color" class="ov-color ${OV_CFG().accent ? '' : 'unset'}" id="ov-accent" value="${color(OV_CFG().accent, '#8b6cff')}" aria-label="Accent colour"><button class="btn small ghost" id="ov-accent-reset" title="Use the Glint gradient">${OV_CFG().accent ? 'Glint gradient' : 'Glint gradient (default)'}</button></div></div>
             </div>
             <div class="row" style="gap:10px"><div class="toggle ${OV_CFG().onlyWhenGame ? 'on' : ''}" id="ov-game" title="Only show while a game is in the foreground"></div><label class="ov-lbl">Only while a game is in the foreground</label></div>
           </div>
@@ -1801,7 +1809,7 @@ function ovIndex() {
   return m;
 }
 function ovDefaultLabel(src) {
-  if (OV_BUILTIN_LABEL[src]) return OV_BUILTIN_LABEL[src];
+  if (own(OV_BUILTIN_LABEL, src)) return OV_BUILTIN_LABEL[src];
   const m = /^(fan|duty):(.+)$/i.exec(src);
   if (m) return fanLabel(m[2]);
   if (S.cfg.sensorNames?.[src]) return S.cfg.sensorNames[src];
@@ -1829,26 +1837,27 @@ function ovValue(src, idx) {
 function ovPreview() {
   const el = $('#ov-preview'); if (!el) return;
   const o = OV_CFG(), idx = ovIndex();
-  const accent = o.accent ? `background:${esc(o.accent)}` : '';
+  const acc = o.accent ? color(o.accent, null) : null;     // an invalid accent from config.json shows as the default gradient
+  const accent = acc ? `background:${acc}` : '';
   const rows = o.items.map(it => {
     const val = ovValue(it.source, idx);
     const label = (it.label && it.label.trim()) || ovDefaultLabel(it.source);
-    const col = it.color ? ` style="color:${esc(it.color)}"` : '';
+    const col = color(it.color, null) ? ` style="color:${color(it.color)}"` : '';
     const txt = val ? (val.text ?? ovFmt(val.v, val.unit)) : '–';
     const hero = val?.hero && o.layout === 'detailed';
     return { label, txt, unit: val?.unit ?? '', col, hero, off: !val, fps: it.source === 'fps' };
   });
-  el.className = 'ov-preview ' + o.layout + (o.accent ? ' own' : '');
-  el.style.setProperty('--ov-bg', `rgba(14,15,22,${o.backgroundOpacity})`);
-  el.style.opacity = o.opacity;
-  el.style.setProperty('--ov-scale', Math.min(1.4, Math.max(0.7, o.scale)));
-  el.style.setProperty('--ov-accent', o.accent ?? '');
-  el.classList.toggle('flat', o.backgroundOpacity < 0.02);
+  el.className = 'ov-preview ' + o.layout + (acc ? ' own' : '');
+  el.style.setProperty('--ov-bg', `rgba(14,15,22,${num(o.backgroundOpacity, 0.72)})`);
+  el.style.opacity = num(o.opacity, 1);
+  el.style.setProperty('--ov-scale', Math.min(1.4, Math.max(0.7, num(o.scale, 1))));
+  el.style.setProperty('--ov-accent', acc ?? '');
+  el.classList.toggle('flat', num(o.backgroundOpacity, 0.72) < 0.02);
   el.dataset.pos = o.position;
   el.innerHTML = rows.length
     ? `<span class="ov-bar" style="${accent}"></span><div class="ov-lines">${rows.map(r => r.hero
-      ? `<div class="ov-line hero"><span class="ov-big ${o.accent ? '' : 'grad'}" ${o.accent ? `style="color:${esc(o.accent)}"` : ''}>${esc(r.txt)}</span><span class="ov-l">${esc(r.label)}</span></div>`
-      : `<div class="ov-line ${r.off ? 'off' : ''}"><span class="ov-l">${esc(r.label)}</span><span class="ov-v ${r.fps && !o.accent ? 'grad' : ''}"${r.fps && o.accent ? ` style="color:${esc(o.accent)}"` : r.col}>${esc(r.txt)}</span>${r.unit ? `<span class="ov-u">${esc(r.unit)}</span>` : ''}</div>`).join('')}</div>`
+      ? `<div class="ov-line hero"><span class="ov-big ${acc ? '' : 'grad'}" ${acc ? `style="color:${acc}"` : ''}>${esc(r.txt)}</span><span class="ov-l">${esc(r.label)}</span></div>`
+      : `<div class="ov-line ${r.off ? 'off' : ''}"><span class="ov-l">${esc(r.label)}</span><span class="ov-v ${r.fps && !acc ? 'grad' : ''}"${r.fps && acc ? ` style="color:${acc}"` : r.col}>${esc(r.txt)}</span>${r.unit ? `<span class="ov-u">${esc(r.unit)}</span>` : ''}</div>`).join('')}</div>`
     : '<div class="muted" style="padding:6px 10px;font-size:12px">No items: the overlay shows nothing</div>';
 }
 function liveOverlay() { ovPreview(); }
@@ -1861,7 +1870,7 @@ function ovItems() {
       <span class="ov-grip" title="Drag to reorder" aria-hidden="true">⋮⋮</span>
       <span class="ov-src"><span class="ov-sname">${esc(ovDefaultLabel(it.source))}</span><span class="ov-sid" title="${esc(it.source)}">${esc(it.source)}</span></span>
       <input type="text" class="ov-label" data-i="${i}" value="${esc(it.label ?? '')}" placeholder="${esc(ovDefaultLabel(it.source))}" maxlength="${OV_LABEL_MAX}" spellcheck="false" aria-label="Label for ${esc(it.source)}">
-      <input type="color" class="ov-color ${it.color ? '' : 'unset'}" data-i="${i}" value="${it.color ?? '#ffffff'}" aria-label="Colour for ${esc(it.source)}" title="Value colour">
+      <input type="color" class="ov-color ${it.color ? '' : 'unset'}" data-i="${i}" value="${color(it.color, '#ffffff')}" aria-label="Colour for ${esc(it.source)}" title="Value colour">
       <button class="icon-btn ov-b" data-act="clr" data-i="${i}" title="Default colour" ${it.color ? '' : 'disabled'}>↺</button>
       <button class="icon-btn ov-b" data-act="up" data-i="${i}" title="Move up" ${i === 0 ? 'disabled' : ''}>↑</button>
       <button class="icon-btn ov-b" data-act="down" data-i="${i}" title="Move down" ${i === o.items.length - 1 ? 'disabled' : ''}>↓</button>
@@ -1916,8 +1925,8 @@ function bindOverlay() {
     $$('#ov-pos button').forEach(x => { x.classList.toggle('on', x === b); x.setAttribute('aria-checked', x === b); });
     commit(); ovPreview();
   };
-  const num = (id, k) => $(id).addEventListener('change', e => { o[k] = clamp(Math.round(+e.target.value) || 0, -200, 4000); e.target.value = o[k]; commit(); });
-  num('#ov-ox', 'offsetX'); num('#ov-oy', 'offsetY');
+  const numField = (id, k) => $(id).addEventListener('change', e => { o[k] = clamp(Math.round(+e.target.value) || 0, -200, 4000); e.target.value = o[k]; commit(); });
+  numField('#ov-ox', 'offsetX'); numField('#ov-oy', 'offsetY');
   const pct = v => Math.round(v * 100) + '%';
   bindSlider('ov-scale', pct, v => { o.scale = +v.toFixed(2); commit(); ovPreview(); });
   bindSlider('ov-opacity', pct, v => { o.opacity = +v.toFixed(2); commit(); ovPreview(); });
@@ -1975,7 +1984,7 @@ function liveSettings() {
   $('#p-cpu').textContent = S.selfCpu.toFixed(2) + '%';
   $('#p-mem').textContent = st.perf.privateMB + ' MB';
   $('#p-fps').textContent = st.perf.fps + ' fps';
-  $('#p-devs').innerHTML = Object.entries(st.perf.devices).map(([k, v]) => `<tr><td>${esc(hubName(k))}</td><td class="num">${v} fps</td></tr>`).join('');
+  $('#p-devs').innerHTML = Object.entries(st.perf.devices).map(([k, v]) => `<tr><td>${esc(hubName(k))}</td><td class="num">${esc(v)} fps</td></tr>`).join('');
   liveHa();
   liveUpdate();
   liveOpenRgb();

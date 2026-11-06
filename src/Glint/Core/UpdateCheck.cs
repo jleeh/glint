@@ -28,6 +28,7 @@ public sealed class UpdateChecker : IDisposable
     public UpdateInfo Info { get; private set; }
     public event Action<UpdateInfo>? Changed;
     public static readonly TimeSpan Interval = TimeSpan.FromHours(24);
+    public const int MaxResponseBytes = 1 << 20;
 
     /// <param name="handler">Tests pass a fake handler (no network at all).</param>
     public UpdateChecker(Func<GlintConfig> cfg, HttpMessageHandler? handler = null, string? current = null)
@@ -77,8 +78,19 @@ public sealed class UpdateChecker : IDisposable
             using var resp = await _http.SendAsync(req, timeout.Token);
             if (resp.StatusCode == HttpStatusCode.NotFound) return Set(new UpdateInfo(_current, null, null, false, DateTime.UtcNow, "no published release found"));
             if (!resp.IsSuccessStatusCode) return Set(new UpdateInfo(_current, null, null, false, DateTime.UtcNow, $"GitHub answered {(int)resp.StatusCode}"));
-            var json = await resp.Content.ReadAsStringAsync(timeout.Token);
-            using var doc = JsonDocument.Parse(json);
+            // a release description is a few KB: never buffer an unbounded answer
+            if (resp.Content.Headers.ContentLength > MaxResponseBytes) return Set(new UpdateInfo(_current, null, null, false, DateTime.UtcNow, "unexpected answer from GitHub"));
+            var buf = new MemoryStream();
+            await using (var st = await resp.Content.ReadAsStreamAsync(timeout.Token))
+            {
+                var chunk = new byte[16384]; int n;
+                while ((n = await st.ReadAsync(chunk, timeout.Token)) > 0)
+                {
+                    buf.Write(chunk, 0, n);
+                    if (buf.Length > MaxResponseBytes) return Set(new UpdateInfo(_current, null, null, false, DateTime.UtcNow, "unexpected answer from GitHub"));
+                }
+            }
+            using var doc = JsonDocument.Parse(buf.ToArray());
             var tag = doc.RootElement.TryGetProperty("tag_name", out var t) && t.ValueKind == JsonValueKind.String ? t.GetString() : null;
             var url = doc.RootElement.TryGetProperty("html_url", out var u) && u.ValueKind == JsonValueKind.String ? u.GetString() : null;
             // only ever open a page of our own repository

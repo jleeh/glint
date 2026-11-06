@@ -36,7 +36,7 @@ powershell -ExecutionPolicy Bypass -File install.ps1                        # in
 ```
 
 Dashboard work: the UI is plain HTML/CSS/JS in `src/Glint/web/`. Open `index.html` in a browser; `mock.js` fakes the
-app with a demo rig. `node tools/uitest.js <abs path to index.html> out.json` runs the headless UI tests
+app with a demo rig. `node tools/uitest.js <abs path to index.html> out.json` (Node 22.12+, after `npm ci` in `tools/`) runs the headless UI tests
 (set `CHROME_PATH` if Chrome isn't at the default location).
 
 Building the setup exe (needs [Inno Setup 6](https://jrsoftware.org/isinfo.php); CI does this on tags and in the `Installer test` workflow, which installs and uninstalls it silently):

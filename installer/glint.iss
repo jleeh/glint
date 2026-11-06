@@ -48,7 +48,7 @@ Source: "{#PublishDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
 Source: "..\selftest.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\NOTICE.md"; DestDir: "{app}"; Flags: ignoreversion
-Source: "helper.ps1"; DestDir: "{tmp}"; Flags: deleteafterinstall
+Source: "helper.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 ; Glint runs elevated, so shortcuts start it through its scheduled task (no UAC prompt).
@@ -56,7 +56,7 @@ Name: "{autoprograms}\Glint"; Filename: "{sys}\schtasks.exe"; Parameters: "/run 
 Name: "{autodesktop}\Glint"; Filename: "{sys}\schtasks.exe"; Parameters: "/run /tn ""Glint"""; IconFilename: "{app}\Glint.exe"; Flags: runminimized; Tasks: desktopicon
 
 [Run]
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{tmp}\helper.ps1"" -Action SignalRgb"; StatusMsg: "Disabling SignalRGB at startup..."; Flags: runhidden waituntilterminated; Tasks: disablesignalrgb
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\helper.ps1"" -Action SignalRgb"; StatusMsg: "Disabling SignalRGB at startup..."; Flags: runhidden waituntilterminated; Tasks: disablesignalrgb
 Filename: "{sys}\schtasks.exe"; Parameters: "/run /tn ""Glint"""; Description: "Start Glint now"; Flags: runhidden nowait postinstall
 
 [Code]
@@ -93,7 +93,7 @@ var
 begin
   WizardForm.StatusLabel.Caption := What;
   if Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
-          '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{tmp}\helper.ps1') + '" -Action ' + Action,
+          '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\helper.ps1') + '" -Action ' + Action,
           '', SW_HIDE, ewWaitUntilTerminated, rc) and (rc = 0) then
     Exit;
   if rc = 2 then
@@ -110,7 +110,7 @@ var
 begin
   WizardForm.StatusLabel.Caption := 'Registering startup tasks...';
   if Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
-          '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{tmp}\helper.ps1') + '" -Action Tasks -Dir "' + ExpandConstant('{app}') + '"',
+          '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\helper.ps1') + '" -Action Tasks -Dir "' + ExpandConstant('{app}') + '"',
           '', SW_HIDE, ewWaitUntilTerminated, rc) and (rc = 0) then
     Exit;
   SuppressibleMsgBox('Glint was installed, but its startup task could not be registered (code ' + IntToStr(rc) + '). ' +
@@ -148,3 +148,6 @@ begin
       DelTree(ExpandConstant('{userappdata}\Glint'), True, True, True);
   end;
 end;
+
+[UninstallDelete]
+Type: filesandordirs; Name: "{app}\webview-data"

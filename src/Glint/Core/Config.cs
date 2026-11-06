@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -54,13 +55,20 @@ public sealed class GlintConfig
     public static GlintConfig Load(string? path = null)
     {
         path ??= FilePath;
-        if (!File.Exists(path))
+        if (!UserFs.Exists(path))
         {
             var d = Defaults();
             d.Save(path);
             return d;
         }
-        var cfg = JsonSerializer.Deserialize<GlintConfig>(File.ReadAllText(path), Json) ?? Defaults();
+        var text = UserFs.Run(() =>
+        {
+            // a hand-edited (or hostile) file can't make the elevated process allocate gigabytes
+            if (new FileInfo(path).Length > MaxFileBytes) throw new InvalidDataException($"config.json is larger than {MaxFileBytes / 1048576} MB");
+            return File.ReadAllText(path);
+        });
+        var cfg = JsonSerializer.Deserialize<GlintConfig>(text, Json) ?? Defaults();
+        cfg.FillNulls();
         cfg.HomeAssistant ??= new();
         bool plain = cfg.HomeAssistant.Password != null;
         cfg.HomeAssistant.Normalize();
@@ -77,12 +85,57 @@ public sealed class GlintConfig
     public void Save(string? path = null)
     {
         path ??= FilePath;
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         (HomeAssistant ??= new()).Normalize();
-        var tmp = path + ".tmp";
-        File.WriteAllText(tmp, JsonSerializer.Serialize(this, Json));
-        File.Move(tmp, path, true);
+        UserFs.WriteAllTextAtomic(path, JsonSerializer.Serialize(this, Json));
     }
+
+    public const long MaxFileBytes = 16 << 20;
+
+    /// <summary>
+    /// "lighting": null, "profiles": null, a null rule in a list... is valid JSON but would crash the engines.
+    /// Replace every null that the model doesn't allow with its default (recursively); drop null list items.
+    /// </summary>
+    public void FillNulls() => Fill(this, 0);
+
+    static readonly NullabilityInfoContext _nullability = new();
+    static void Fill(object? o, int depth)
+    {
+        if (o == null || depth > 12) return;
+        var t = o.GetType();
+        if (t.IsPrimitive || o is string || t.IsEnum) return;
+        if (o is System.Collections.IDictionary dict)
+        {
+            foreach (var k in dict.Keys.Cast<object>().ToList())
+            {
+                var v = dict[k];
+                if (v == null) { var vt = t.GetGenericArguments().LastOrDefault(); var def = NewOf(vt); if (def != null) dict[k] = def; else dict.Remove(k); }
+                else Fill(v, depth + 1);
+            }
+            return;
+        }
+        if (o is System.Collections.IList list)
+        {
+            if (!t.IsArray) for (int i = list.Count - 1; i >= 0; i--) if (list[i] == null) list.RemoveAt(i);
+            foreach (var v in list) Fill(v, depth + 1);
+            return;
+        }
+        if (t.Namespace?.StartsWith("Glint") != true) return;
+        foreach (var pi in t.GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance))
+        {
+            if (!pi.CanRead || !pi.CanWrite || pi.GetIndexParameters().Length > 0) continue;
+            var v = pi.GetValue(o);
+            if (v == null)
+            {
+                if (pi.PropertyType.IsValueType || _nullability.Create(pi).WriteState != NullabilityState.NotNull) continue;
+                var def = NewOf(pi.PropertyType);
+                if (def != null) pi.SetValue(o, def);
+            }
+            else Fill(v, depth + 1);
+        }
+    }
+
+    static object? NewOf(Type? t) =>
+        t == null || t.IsValueType ? null : t == typeof(string) ? "" : t.IsArray ? null : t.GetConstructor(Type.EmptyTypes) is { } c ? c.Invoke(null) : null;
 
     public List<FanRule> Active => Profiles.TryGetValue(ActiveProfile, out var p) ? p : Profiles.Values.FirstOrDefault() ?? new();
 

@@ -45,7 +45,7 @@ public sealed class GlintService : IDisposable
         _thread.Start();
         try
         {
-            Directory.CreateDirectory(GlintConfig.Dir);
+            UserFs.CreateDirectory(GlintConfig.Dir);
             _watch = new FileSystemWatcher(GlintConfig.Dir, "config.json") { NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName };
             _watch.Changed += (_, _) => ReloadSoon();
             _watch.Renamed += (_, _) => ReloadSoon();
@@ -145,8 +145,7 @@ public sealed class GlintService : IDisposable
                 sensorReadMs = new { native = Math.Round(Rig.HubReadMs, 1), lhm = Math.Round(Rig.LhmReadMs, 1) },
             };
             var path = Path.Combine(GlintConfig.Dir, "status.json");
-            File.WriteAllText(path + ".tmp", System.Text.Json.JsonSerializer.Serialize(o, GlintConfig.Json));
-            File.Move(path + ".tmp", path, true);
+            UserFs.WriteAllTextAtomic(path, System.Text.Json.JsonSerializer.Serialize(o, GlintConfig.Json));
         }
         catch { }
     }

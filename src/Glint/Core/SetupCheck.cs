@@ -55,7 +55,11 @@ public static class SetupCheck
     public const string WebView2Url = "https://developer.microsoft.com/microsoft-edge/webview2/";
     public static readonly string InstallUrl = UpdateChecker.RepoUrl + "#install";
     /// <summary>URLs a fix button may open (nothing else).</summary>
-    public static bool AllowedUrl(string? u) => u != null && (u == PawnIoUrl || u == WebView2Url || u.StartsWith(UpdateChecker.RepoUrl, StringComparison.OrdinalIgnoreCase));
+    /// <summary>The only pages Glint ever opens: the two installers' pages and its own repository (exact https URLs, nothing that
+    /// could be a file, another scheme or another site).</summary>
+    public static bool AllowedUrl(string? u) => u != null && u.Length < 512 && !u.Any(c => char.IsWhiteSpace(c) || char.IsControl(c) || c is '"' or '\\' or '^' or '`')
+        && (u == PawnIoUrl || u == WebView2Url || u == UpdateChecker.RepoUrl || u.StartsWith(UpdateChecker.RepoUrl + "/", StringComparison.Ordinal) || u.StartsWith(UpdateChecker.RepoUrl + "#", StringComparison.Ordinal))
+        && Uri.TryCreate(u, UriKind.Absolute, out var x) && x.Scheme == Uri.UriSchemeHttps && x.UserInfo.Length == 0;
 
     /// <summary>Apps that drive the same RGB / fan hardware: name, process names, startup-entry keywords, what it fights over.</summary>
     public static readonly (string Name, string[] Processes, string[] RunKeys, string What)[] Conflicts =

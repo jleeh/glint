@@ -601,6 +601,95 @@ const fs = require('fs');
   }
 
   check('no JavaScript errors', errors.length === 0, errors.join(' | '));
+
+  // --- security: hostile strings from plugins, config.json, hardware and the host never become markup (the page can
+  // approve SMBus plugins in an elevated process, so script injection = privilege escalation). A fresh tab rewrites every
+  // host message through mock.js's __mockTamper hook; a MutationObserver records any injected element or handler.
+  {
+    const xp = await b.newPage();
+    await xp.setViewport({ width: 1320, height: 860 });
+    xp.setDefaultTimeout(4000);
+    const xerr = [];
+    xp.on('pageerror', e => xerr.push(e.message));
+    await xp.evaluateOnNewDocument(() => {
+      const P = `"'><img src=x onerror=window.__xss=1 data-xss>`;                               // text + attribute breakout
+      const C = `red;background:url(x)"><img src=x onerror=window.__xss=1 data-xss>`;           // colour: CSS + markup injection
+      window.__inj = [];
+      const BAD = 'img,script,iframe,object,embed,[data-xss],[onerror],[onload],[onclick],[onmouseover]';
+      const own = n => n.matches('script[src="mock.js"], script[src="app.js"]');                   // index.html's own scripts
+      const look = n => { if (n.nodeType !== 1) return; [n, ...n.querySelectorAll(BAD)].forEach(x => { if (x.matches(BAD) && !own(x)) window.__inj.push(x.outerHTML.slice(0, 120)); }); };
+      new MutationObserver(ms => ms.forEach(m => m.addedNodes.forEach(look))).observe(document, { childList: true, subtree: true });
+      const zone = { id: P, dev: P, start: 0, count: 8, kind: 'ring', cols: 0, category: P, name: P };
+      window.__mockTamper = m => {
+        if (m.type === 'init') {
+          const c = m.config, L = c.lighting, prof = c.profiles[c.activeProfile];
+          c.profiles[P] = structuredClone(prof); c.curves[P] = [[30, 20], [80, 100]];
+          prof[0].name = P; prof[0].override = P; prof[0].minDuty = P; prof[0].inputs[0].weight = P; prof[0].inputs[0].hysteresis = P; prof[0].inputs[0].smoothingSec = P;
+          prof[1].inputs.push({ sensor: P, curve: P, weight: 1, hysteresis: 2, smoothingSec: 0 }); prof[2].fixed = P;
+          c.fanNames['cc:fan1'] = P; c.sensorNames[P] = P; c.sensorNames.cpu = P; c.failsafeDuty = P; c.pollMs = P;
+          L.brightness = P; L.fps = P; L.presets[P] = { type: 'twinkle', colors: [C], background: C };
+          L.ledCounts['lnp:ch1'] = P; L.overrides[P] = { type: 'static', colors: [C] };
+          L.effect = { type: 'plugin', plugin: P, colors: [C], params: { [P]: P, col: C, cols: [C, C] } };
+          c.homeAssistant = { enabled: true, host: P, port: P, tls: false, username: P, discoveryPrefix: P, baseTopic: P };
+          c.openRgb = { enabled: true, host: P, port: P, exclude: [P] };
+          Object.assign(c.overlay, { offsetX: P, offsetY: P, scale: P, opacity: P, backgroundOpacity: P, accent: C, items: [{ source: P, label: P, color: C }, { source: 'fps', color: C }, ...c.overlay.items] });
+          m.deviceNames[P] = P; m.zones.push(zone); m.devices.push({ id: P, name: P, zones: [{ id: P, name: P, leds: P }] });
+          m.hubs[0].firmware = P; m.hubs[0].name = P; m.fans.push({ id: P, name: P, device: P });
+          m.version = P; m.plugins.exe = P;
+          m.plugins.list.push({ file: P, path: P, source: 'user', kind: P, name: P, enabled: true, ok: false, message: P, needsApproval: true });
+          m.plugins.effects.push({ name: P, description: P, preview: [C, C], params: {
+            [P]: { type: 'number', label: P, min: P, max: P, step: P, default: P }, col: { type: 'color', label: P, default: C },
+            cols: { type: 'colors', label: P, default: [C] }, sel: { type: 'select', label: P, options: [P] }, sen: { type: 'sensor', label: P, default: P }, on: { type: 'bool', label: P } } });
+        } else if (m.type === 'state') {
+          m.sensors[P] = 50; m.sensors['cc:' + P] = 40; m.rpm[P] = 900; m.perf.devices[P] = P;
+        } else if (m.type === 'sensors') {
+          m.catalog.hardware.push({ id: P, name: P, type: P, sub: [], sensors: [{ id: P, name: P, type: P, unit: P, value: 1, min: 1, max: 2, aliases: [P, '/' + P] }] });
+          m.catalog.error = P;
+        } else if (m.type === 'setup') {
+          m.report.items.push({ id: P, title: P, status: 'fail', detail: P, fixLabel: P, fix: P, fixArg: P, important: true });
+          m.report.items.push({ id: P + 2, title: P, status: P, detail: P, important: false });
+        }
+        return m;
+      };
+    });
+    await xp.goto('file://' + page);
+    await wait(900);
+    const xnav = async pg => { await xp.evaluate(g => go(g), pg); await wait(300); };
+    for (const pg of ['overview', 'cooling', 'sensors', 'lighting', 'devices', 'plugins', 'overlay', 'setup', 'settings']) await xnav(pg);
+    // every cooling rule (fixed, override, hostile sensor input), the lighting page with hostile built-in colours, plugin params and a zone
+    for (let i = 0; i < 3; i++) { await xp.evaluate(i => { S.profile = S.cfg.activeProfile; S.rule = i; S.curve = null; go('cooling'); }, i); await wait(200); }
+    await xp.evaluate(() => { const P = Object.keys(S.cfg.profiles).find(k => k.includes('<img')); S.profile = P; S.rule = 0; renderCooling(); });
+    await xp.evaluate(() => { go('lighting'); }); await wait(200);
+    await xp.evaluate(() => { const P = S.init.zones.at(-1).id; setTarget(P); }); await wait(150);
+    await xp.evaluate(() => { setTarget('all'); S.cfg.lighting.effect = { type: 'twinkle', colors: [S.cfg.overlay.accent], background: S.cfg.overlay.accent, speed: '<b>', angle: '<b>', range: ['<b>', '<i>'] }; renderLighting(); });
+    await xp.evaluate(() => { S.cfg.lighting.effect = { type: 'temperature', colors: [S.cfg.overlay.accent], sensor: 'cpu', range: ['"><img src=x data-xss>', 1] }; renderLighting(); });
+    await xp.evaluate(() => { go('overlay'); document.getElementById('ov-add').click(); }); await wait(1300);
+    await xp.evaluate(() => { go('sensors'); }); await wait(1300);
+    await xp.evaluate(() => { go('devices'); toast('"><img src=x onerror=window.__xss=1 data-xss>'); }); await wait(200);
+    const r = await xp.evaluate(() => ({
+      xss: window.__xss, inj: window.__inj, now: document.querySelectorAll('img, [data-xss]').length,
+      css: [...document.querySelectorAll('[style]')].filter(e => /url\(|;\s*background:\s*url/i.test(e.getAttribute('style'))).map(e => e.getAttribute('style').slice(0, 80)),
+      shown: document.body.innerHTML.includes('&lt;img src=x onerror'),
+    }));
+    check('xss: hostile plugin / config / sensor / setup strings inject no elements on any page', r.inj.length === 0 && r.now === 0, r.inj.slice(0, 3).join(' | '));
+    check('xss: no injected handler ran (window.__xss unset)', r.xss === undefined, r.xss);
+    check('xss: hostile colours never reach a style attribute (no url())', r.css.length === 0, r.css.slice(0, 3).join(' | '));
+    check('xss: hostile strings are shown as text', r.shown);
+    // CSP: even if markup got in, inline handlers / inline script must not run
+    const csp = await xp.evaluate(async () => {
+      const meta = document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.content ?? '';
+      const d = document.createElement('div'); document.body.append(d);
+      d.innerHTML = '<img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" onload="window.__cspInline=1" onerror="window.__cspInline=1">';
+      const s = document.createElement('script'); s.textContent = 'window.__cspScript=1'; document.body.append(s);
+      try { setTimeout('window.__cspEval=1', 0); } catch { }                // string timers are eval (DevTools' own evaluate is exempt from CSP)
+      await new Promise(r => setTimeout(r, 300)); d.remove(); s.remove();
+      return { meta, inline: window.__cspInline, script: window.__cspScript, evalRan: window.__cspEval, app: typeof go === 'function' && !!S.cfg };
+    });
+    check('csp: meta forbids inline/remote script', /script-src 'self'(;|$)/.test(csp.meta) && /default-src 'none'/.test(csp.meta) && /object-src 'none'/.test(csp.meta) && /base-uri 'none'/.test(csp.meta), csp.meta);
+    check('csp: inline handlers, inline <script> and eval are blocked; app.js + mock.js still load', csp.inline === undefined && csp.script === undefined && csp.evalRan === undefined && csp.app, JSON.stringify(csp));
+    check('xss: no JavaScript errors with hostile data', xerr.length === 0, xerr.slice(0, 3).join(' | '));
+    await xp.close();
+  }
   const report = { passed: checks.filter(x => x.pass).length, failed: checks.filter(x => !x.pass).length, checks, errors };
   fs.writeFileSync(out, JSON.stringify(report, null, 2));
   console.log(`passed ${report.passed} failed ${report.failed}`);

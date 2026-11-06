@@ -187,7 +187,9 @@
   };
   const et = new EventTarget();
   let t0 = performance.now(), cpu = 0, previewOn = false;
-  const emit = d => et.dispatchEvent(Object.assign(new Event('message'), { data: d }));
+  // tests: window.__mockTamper(msg) may rewrite every host message (hostile plugin / config data), __mockEmit sends one
+  const emit = d => et.dispatchEvent(Object.assign(new Event('message'), { data: window.__mockTamper ? window.__mockTamper(structuredClone(d)) : d }));
+  window.__mockEmit = emit; window.__mockInit = () => structuredClone(INIT);
   const sensorsAt = t => {
     const s = { ...BASE.sensors };
     s.cpu = +(s.cpu + 7 * Math.sin(t / 7) + 2.5 * Math.sin(t * 1.3)).toFixed(1);

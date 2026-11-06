@@ -157,22 +157,26 @@ public static class LayoutBackups
     /// <summary>Write a backup; returns its name.</summary>
     public static string Save(Dictionary<string, ZonePlacement> layout, string reason)
     {
-        Directory.CreateDirectory(Dir);
-        var now = DateTime.Now;
-        string name = now.ToString("yyyyMMdd-HHmmss-fff");
-        for (int n = 2; File.Exists(Path.Combine(Dir, name + ".json")); n++) name = now.ToString("yyyyMMdd-HHmmss-fff") + "-" + n;
-        var path = Path.Combine(Dir, name + ".json");
-        File.WriteAllText(path + ".tmp", System.Text.Json.JsonSerializer.Serialize(new Backup { Time = now, Reason = reason, Layout = layout }, GlintConfig.Json));
-        File.Move(path + ".tmp", path, true);
-        foreach (var old in Files().Skip(Keep)) try { File.Delete(old); } catch { }
-        return name;
+        // runs as the (non-elevated) user: the folder is user-writable, a planted link must not reach other files
+        return UserFs.Run(() =>
+        {
+            Directory.CreateDirectory(Dir);
+            var now = DateTime.Now;
+            string name = now.ToString("yyyyMMdd-HHmmss-fff");
+            for (int n = 2; File.Exists(Path.Combine(Dir, name + ".json")); n++) name = now.ToString("yyyyMMdd-HHmmss-fff") + "-" + n;
+            var path = Path.Combine(Dir, name + ".json");
+            File.WriteAllText(path + ".tmp", System.Text.Json.JsonSerializer.Serialize(new Backup { Time = now, Reason = reason, Layout = layout }, GlintConfig.Json));
+            File.Move(path + ".tmp", path, true);
+            foreach (var old in Files().Skip(Keep)) try { File.Delete(old); } catch { }
+            return name;
+        });
     }
 
     /// <summary>Backup files, newest first (names sort by time).</summary>
-    static IEnumerable<string> Files() =>
-        Directory.Exists(Dir) ? Directory.GetFiles(Dir, "*.json").OrderByDescending(f => File.GetLastWriteTimeUtc(f)).ThenByDescending(Path.GetFileName, StringComparer.Ordinal) : Enumerable.Empty<string>();
+    static IEnumerable<string> Files() => UserFs.Run(() =>
+        Directory.Exists(Dir) ? Directory.GetFiles(Dir, "*.json").OrderByDescending(f => File.GetLastWriteTimeUtc(f)).ThenByDescending(Path.GetFileName, StringComparer.Ordinal).ToList() : new List<string>());
 
-    public static List<object> List() => Files().Select(f =>
+    public static List<object> List() => UserFs.Run(() => Files().Select(f =>
     {
         try
         {
@@ -180,10 +184,12 @@ public static class LayoutBackups
             return (object)new { name = Path.GetFileNameWithoutExtension(f), time = b.Time, reason = b.Reason, zones = b.Layout.Count };
         }
         catch (Exception e) { return new { name = Path.GetFileNameWithoutExtension(f), error = e.Message }; }
-    }).ToList();
+    }).ToList());
 
     /// <summary>Load a backup by name, or "latest".</summary>
-    public static (string name, Dictionary<string, ZonePlacement> layout) Load(string name)
+    public static (string name, Dictionary<string, ZonePlacement> layout) Load(string name) => UserFs.Run(() => LoadInner(name));
+
+    static (string name, Dictionary<string, ZonePlacement> layout) LoadInner(string name)
     {
         string? file = name is "" or "latest" ? Files().FirstOrDefault()
             : Path.Combine(Dir, Path.GetFileNameWithoutExtension(Path.GetFileName(name)) + ".json");

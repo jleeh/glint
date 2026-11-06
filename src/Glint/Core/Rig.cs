@@ -23,7 +23,7 @@ public sealed class Rig : IDisposable
     public readonly List<IFanController> Controllers = new();
     public readonly List<ILightDevice> Lights = new();
     public readonly List<FanOutput> Fans = new();
-    public readonly List<string> Log = new();
+    public readonly LogBuffer Log = new();
     readonly Computer? _lhm;
     Smbus? _smbus;
     readonly Dictionary<string, ISensor> _lhmControls = new();
@@ -462,4 +462,27 @@ public sealed class Rig : IDisposable
         _lhm?.Close();
         _smbus?.Dispose();
     }
+}
+
+/// <summary>
+/// The device / plugin log: bounded (plugins write to it through dev.log and must not be able to grow it without
+/// limit), thread-safe (device threads, the control pipe and the dashboard use it at once), enumerated as a snapshot.
+/// </summary>
+public sealed class LogBuffer : IEnumerable<string>
+{
+    public const int MaxLines = 1000, MaxLineLength = 1000;
+    readonly Queue<string> _q = new();
+    public void Add(string line)
+    {
+        line ??= "";
+        if (line.Length > MaxLineLength) line = line[..MaxLineLength] + "…";
+        lock (_q)
+        {
+            _q.Enqueue(line);
+            while (_q.Count > MaxLines) _q.Dequeue();
+        }
+    }
+    public int Count { get { lock (_q) return _q.Count; } }
+    public IEnumerator<string> GetEnumerator() { string[] snap; lock (_q) snap = _q.ToArray(); return ((IEnumerable<string>)snap).GetEnumerator(); }
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
 }

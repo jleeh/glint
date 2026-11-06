@@ -54,9 +54,31 @@ public sealed class WebDashboard : Form
         int mica = 2; DwmSetWindowAttribute(Handle, 38, ref mica, 4);
     }
 
+    /// <summary>The only origin the dashboard is served from; messages and navigation from anywhere else are refused.</summary>
+    public const string Origin = "https://glint.local/";
+    public static bool IsLocal(string? uri) => uri != null && uri.StartsWith(Origin, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// WebView2 browser data. Elevated, the browser processes run as administrator, so their profile (code cache,
+    /// preferences...) must not sit in a folder any normal-privilege program can write: it goes under the install
+    /// folder (Program Files), per Windows user. Not elevated, the usual per-user location.
+    /// </summary>
+    public static string DataFolder(bool elevated) => elevated
+        ? Path.Combine(AppContext.BaseDirectory, "webview-data", System.Security.Principal.WindowsIdentity.GetCurrent().User!.Value)
+        : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Glint", "WebView2");
+
+    /// <summary>WEBVIEW2_* variables (browser folder, extra arguments, data folder...) override what we pass and come from
+    /// the user's environment, which a normal-privilege program can set: drop them before starting the browser.</summary>
+    public static void ClearWebView2Overrides()
+    {
+        foreach (var k in Environment.GetEnvironmentVariables().Keys.Cast<string>().Where(k => k.StartsWith("WEBVIEW2_", StringComparison.OrdinalIgnoreCase) || k.StartsWith("COREWEBVIEW2_", StringComparison.OrdinalIgnoreCase)).ToList())
+            Environment.SetEnvironmentVariable(k, null);
+    }
+
     async Task InitAsync()
     {
-        var data = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Glint", "WebView2");
+        ClearWebView2Overrides();
+        var data = DataFolder(_svc.Rig.Elevated);
         var env = await CoreWebView2Environment.CreateAsync(null, data, new CoreWebView2EnvironmentOptions("--disable-features=msSmartScreenProtection"));
         await _web.EnsureCoreWebView2Async(env);
         var cw = _web.CoreWebView2;
@@ -64,11 +86,27 @@ public sealed class WebDashboard : Form
         cw.Settings.IsStatusBarEnabled = false;
         cw.Settings.AreDefaultContextMenusEnabled = false;
         cw.Settings.IsZoomControlEnabled = false;
+        cw.Settings.AreHostObjectsAllowed = false;
+        cw.Settings.IsGeneralAutofillEnabled = false;
+        cw.Settings.IsPasswordAutosaveEnabled = false;
         var ui = Path.Combine(AppContext.BaseDirectory, "web");
         cw.SetVirtualHostNameToFolderMapping("glint.local", ui, CoreWebView2HostResourceAccessKind.DenyCors);
-        cw.WebMessageReceived += (_, e) => OnMessage(e.WebMessageAsJson);
-        cw.Navigate("https://glint.local/index.html");
+        // the page is the elevated process's remote control: it may only ever be our own local page
+        cw.NavigationStarting += (_, e) => { if (!IsLocal(e.Uri)) e.Cancel = true; };
+        cw.FrameNavigationStarting += (_, e) => { if (!IsLocal(e.Uri)) e.Cancel = true; };
+        cw.NewWindowRequested += (_, e) => { e.Handled = true; Program.OpenUrl(e.Uri); }; // only Glint's own pages open (in the real browser)
+        cw.DownloadStarting += (_, e) => e.Cancel = true;
+        cw.PermissionRequested += (_, e) => e.State = CoreWebView2PermissionState.Deny;
+        cw.WebMessageReceived += (_, e) => { if (IsLocal(e.Source)) OnMessage(e.WebMessageAsJson); };
+        cw.Navigate(Origin + "index.html");
     }
+
+    static string Sys(string exe) => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), exe);
+    static string Sys32(string exe) => Path.Combine(Environment.SystemDirectory, exe);
+    /// <summary>Show a folder: absolute explorer path (never a planted explorer.exe from the search path), quoted argument.</summary>
+    public static void OpenFolder(string dir) => Process.Start(new ProcessStartInfo(Sys("explorer.exe"), $"\"{dir}\"") { UseShellExecute = false });
+    /// <summary>Notepad by absolute path, for a plugin file / the config.</summary>
+    public static void OpenInNotepad(string file) => Process.Start(new ProcessStartInfo(Sys32("notepad.exe"), $"\"{file}\"") { UseShellExecute = false });
 
     void Push(object msg)
     {
@@ -147,11 +185,11 @@ public sealed class WebDashboard : Form
                 Program.Restart();
                 break;
             case "openConfig":
-                Process.Start(new ProcessStartInfo("explorer.exe", GlintConfig.Dir));
+                OpenFolder(GlintConfig.Dir);
                 break;
             case "openPlugins":
-                Directory.CreateDirectory(Plugins.PluginHost.UserDir);
-                Process.Start(new ProcessStartInfo("explorer.exe", Plugins.PluginHost.UserDir));
+                UserFs.CreateDirectory(Plugins.PluginHost.UserDir);
+                OpenFolder(Plugins.PluginHost.UserDir);
                 break;
             case "reloadPlugins":
                 Plugins.PluginHost.ReloadSoon();
@@ -183,7 +221,7 @@ public sealed class WebDashboard : Form
                 {
                     var f = Plugins.PluginHost.FindFile((string?)m!["file"] ?? "") ?? throw new FileNotFoundException("plugin not found");
                     if (Plugins.PluginHost.IsBundled(f)) throw new InvalidOperationException("bundled plugins can only be switched off");
-                    File.Delete(f);
+                    UserFs.Delete(f);
                     Task.Run(Plugins.PluginHost.ReloadNow);
                 }
                 catch (Exception e) { Push(new { type = "toast", kind = "error", text = e.Message }); }
@@ -191,7 +229,7 @@ public sealed class WebDashboard : Form
             case "openPluginFile":
                 {
                     var f = Plugins.PluginHost.FindFile((string?)m!["file"] ?? "");
-                    if (f != null) Process.Start(new ProcessStartInfo("notepad.exe", $"\"{f}\"") { UseShellExecute = false });
+                    if (f != null) OpenInNotepad(f);
                     break;
                 }
             case "newPlugin":
@@ -200,11 +238,11 @@ public sealed class WebDashboard : Form
                     var tpl = Path.Combine(AppContext.BaseDirectory, "plugin-templates", device ? "device-template.js" : "effect-template.js");
                     string baseName = device ? "my-device" : "my-effect", file;
                     int n = 1;
-                    do file = Path.Combine(Plugins.PluginHost.UserDir, $"{baseName}{(n > 1 ? "-" + n : "")}.js"); while (File.Exists(file) && ++n < 100);
+                    do file = Path.Combine(Plugins.PluginHost.UserDir, $"{baseName}{(n > 1 ? "-" + n : "")}.js"); while (UserFs.Exists(file) && ++n < 100);
                     var code = File.ReadAllText(tpl);
                     if (!device) code = code.Replace("name: 'My effect'", $"name: '{Path.GetFileNameWithoutExtension(file)}'");
-                    File.WriteAllText(file, code);
-                    Process.Start(new ProcessStartInfo("notepad.exe", $"\"{file}\"") { UseShellExecute = false });
+                    UserFs.Run(() => { Directory.CreateDirectory(Plugins.PluginHost.UserDir); File.WriteAllText(file, code); });
+                    OpenInNotepad(file);
                     Task.Run(Plugins.PluginHost.ReloadNow);
                     break;
                 }

@@ -291,7 +291,7 @@ static class Program
     /// <summary>Task Manager on its Startup apps tab.</summary>
     public static void OpenStartupApps()
     {
-        try { Process.Start(new ProcessStartInfo("taskmgr.exe", "/7 /startup") { UseShellExecute = true }); }
+        try { Process.Start(new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "taskmgr.exe"), "/7 /startup") { UseShellExecute = true }); }
         catch { try { Process.Start(new ProcessStartInfo("ms-settings:startupapps") { UseShellExecute = true }); } catch { } }
     }
 
@@ -402,9 +402,71 @@ static class Program
         C("config.patch validates openRgb.port", (bool?)orgbPatch?["result"]?["ok"] == false, orgbPatch?.ToJsonString() ?? "");
         var updPatch = Call("config.patch", new { path = "updates.check", value = false });
         C("config.patch updates.check", (bool?)updPatch?["result"]?["ok"] == true && svc.Config.Updates.Check == false, updPatch?.ToJsonString() ?? "");
+        SecurityApiChecks(svc, Call, C);
         File.WriteAllText(outPath, JsonSerializer.Serialize(new { failed, checks }, new JsonSerializerOptions { WriteIndented = true }));
         try { Directory.Delete(testDir, true); } catch { }
         return failed;
+    }
+
+    /// <summary>What a normal-privilege caller can do through the pipe to the elevated process (see SECURITY.md).</summary>
+    static void SecurityApiChecks(GlintService svc, Func<string, object?, JsonNode?> Call, Action<string, bool, string> Check)
+    {
+        void C(string n, bool ok, string d = "") => Check(n, ok, d);
+        // plugins folder replaced by a junction to a folder the user can't write: plugins.add / get / remove can't reach it
+        var root = Path.Combine(Path.GetTempPath(), "GlintCtSec_" + Environment.ProcessId);
+        Directory.CreateDirectory(root);
+        var userDir = Plugins.PluginHost.UserDir;
+        var moved = userDir + ".ct-moved";
+        try
+        {
+            using var prot = new SelfTestSecurity.Protected(root);
+            Directory.Move(userDir, moved);
+            SelfTestSecurity.Protected.Junction(userDir, prot.Dir);
+            var add = Call("plugins.add", new { file = "planted.js", code = "module.exports = { type: 'effect', name: 'x', render(c, l, o) {} };" });
+            C("plugins.add can't write through a planted junction to a folder the user can't write", add?["error"] != null && !File.Exists(Path.Combine(prot.Dir, "planted.js")), add?.ToJsonString() ?? "null");
+            var get = Call("plugins.get", new { file = "secret.js" });
+            C("plugins.get can't read through a planted junction", get?["error"] != null && get?["result"] == null, get?.ToJsonString() ?? "null");
+            var rm = Call("plugins.remove", new { file = "secret.js" });
+            C("plugins.remove can't delete through a planted junction", File.Exists(prot.Secret), rm?.ToJsonString() ?? "null");
+            Directory.Delete(userDir); // the junction only
+            Directory.Move(moved, userDir);
+        }
+        finally
+        {
+            if (Directory.Exists(moved)) { try { Directory.Delete(userDir); } catch { } try { Directory.Move(moved, userDir); } catch { } }
+            try { Directory.Delete(root, true); } catch { }
+        }
+        C("plugins.add rejects paths and streams", new[] { "..\\evil.js", "C:\\x.js", "a.js:stream", "a.js::$DATA", "../a.js" }
+            .All(f => Call("plugins.add", new { file = f, code = "x" }) is var r && (r?["error"] != null || ((string?)r?["result"]?["file"])?.IndexOfAny(new[] { '\\', '/', ':' }) < 0)));
+        foreach (var f in new[] { "evil.js", "x.js", "a.js" }) Call("plugins.remove", new { file = f });
+
+        // the stored MQTT password never leaves through the API, and a round-trip keeps it
+        Call("config.patch", new { path = "homeAssistant.password", value = "s3cret-pw" });
+        var stored = svc.Config.HomeAssistant.PasswordProtected;
+        var got = Call("config.get", null);
+        var text = got?.ToJsonString() ?? "";
+        C("config.get hides the stored MQTT password", stored != null && !text.Contains(stored) && !text.Contains("s3cret-pw") && (string?)got?["result"]?["homeAssistant"]?["passwordProtected"] == "***", "");
+        var back = Call("config.set", new { config = got?["result"] });
+        C("config.set with the hidden value keeps the stored password", (bool?)back?["result"]?["ok"] == true && svc.Config.HomeAssistant.PasswordProtected == stored && svc.Config.HomeAssistant.EffectivePassword() == "s3cret-pw", back?.ToJsonString() ?? "");
+        C("log / status output carry no password", !(Call("log", new { lines = 1000 })?.ToJsonString() ?? "").Contains("s3cret-pw") && !(Call("ha.status", null)?.ToJsonString() ?? "").Contains("s3cret-pw"));
+        Call("config.patch", new { path = "homeAssistant.password", value = "" });
+
+        // one oversized request line: refused, and the service keeps answering
+        string? reply = null;
+        try
+        {
+            using var c = new System.IO.Pipes.NamedPipeClientStream(".", ControlServer.PipeName, System.IO.Pipes.PipeDirection.InOut, System.IO.Pipes.PipeOptions.Asynchronous);
+            c.Connect(3000);
+            var w = new StreamWriter(c) { AutoFlush = false };
+            var r = new StreamReader(c);
+            var chunk = new string('x', 1 << 20);
+            var t = Task.Run(async () => { try { for (int i = 0; i < 8; i++) await w.WriteAsync(chunk); await w.FlushAsync(); } catch { } });
+            var rl = r.ReadLineAsync();
+            reply = rl.Wait(20000) ? rl.Result : null;
+        }
+        catch (Exception e) { reply ??= "exception " + e.Message; }
+        C("an oversized request is refused with an error", reply?.Contains("request longer than") == true, reply?.Length > 200 ? reply[..200] : reply ?? "null");
+        C("the pipe still answers after an oversized request", Call("help", null)?["result"] != null);
     }
 
     /// <summary>Fan / curve / profile / schema / validation / layout-guard methods of the control API.</summary>

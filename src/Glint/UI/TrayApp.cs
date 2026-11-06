@@ -131,7 +131,7 @@ public sealed class TrayApp : ApplicationContext
         if (_svc.Updates.Info is { Available: true } up)
             m.Items.Add($"Update available: v{up.Latest}…", null, (_, _) => Program.OpenUrl(up.Url ?? UpdateChecker.ReleasesUrl));
         m.Items.Add("Dashboard…", null, (_, _) => ShowDashboard());
-        m.Items.Add("Edit config file", null, (_, _) => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("notepad.exe", GlintConfig.FilePath)));
+        m.Items.Add("Edit config file", null, (_, _) => WebDashboard.OpenInNotepad(GlintConfig.FilePath));
         m.Items.Add(new ToolStripSeparator());
         m.Items.Add("Exit (hand fans back to hardware)", null, (_, _) => ExitThread());
     }

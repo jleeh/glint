@@ -14,6 +14,8 @@
     <ServerGarbageCollection>false</ServerGarbageCollection>
     <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- Glint runs elevated: never load assemblies named by DOTNET_STARTUP_HOOKS from the (user-writable) environment -->
+    <StartupHookSupport>false</StartupHookSupport>
     <TieredPGO>true</TieredPGO>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <ApplicationIcon>Resources\glint.ico</ApplicationIcon>
