@@ -6,16 +6,22 @@ namespace Glint.Core;
 /// <summary>What the last update check found. Available = a newer release than this build exists.</summary>
 public sealed record UpdateInfo(string Current, string? Latest, string? Url, bool Available, DateTime? CheckedAt, string? Note);
 
+/// <summary>The release the last check found (internal: the updater builds its download URLs from Tag).</summary>
+public sealed record ReleaseInfo(string Tag, Version Version, bool Prerelease, bool Draft);
+
 /// <summary>
 /// Optional update check: one request to GitHub's releases/latest API at startup (after a short delay) and every 24 h,
-/// only while <see cref="UpdateOptions.Check"/> is on. No other network, no telemetry, never downloads anything.
+/// only while <see cref="UpdateOptions.Check"/> is on. No other network, no telemetry. Downloading and installing is
+/// <see cref="Updater"/>'s job (only when the user asks, or opted into automatic installs).
 /// Offline, rate-limited, private or missing repo (404): silently "unknown". Runs on the thread pool (no thread of its own).
 /// </summary>
 public sealed class UpdateChecker : IDisposable
 {
-    /// <summary>The one place the repository lives.</summary>
-    public const string RepoUrl = "https://github.com/jleeh/glint";
-    public const string ApiUrl = "https://api.github.com/repos/jleeh/glint/releases/latest";
+    /// <summary>The one place the repository lives (owner/name). Every URL Glint opens, checks or downloads from derives from it.</summary>
+    public const string Repo = "jleeh/glint";
+    public const string RepoUrl = "https://github.com/" + Repo;
+    public const string ApiRepoUrl = "https://api.github.com/repos/" + Repo;
+    public const string ApiUrl = ApiRepoUrl + "/releases/latest";
     public static string ReleasesUrl => RepoUrl + "/releases/latest";
     public static string CurrentVersion => typeof(UpdateChecker).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
 
@@ -26,6 +32,9 @@ public sealed class UpdateChecker : IDisposable
     int _running;
     volatile bool _started;
     public UpdateInfo Info { get; private set; }
+    public string Current => _current;
+    /// <summary>The release behind <see cref="Info"/> (null when the last check found none).</summary>
+    public ReleaseInfo? Release { get; private set; }
     public event Action<UpdateInfo>? Changed;
     public static readonly TimeSpan Interval = TimeSpan.FromHours(24);
     public const int MaxResponseBytes = 1 << 20;
@@ -96,8 +105,12 @@ public sealed class UpdateChecker : IDisposable
             // only ever open a page of our own repository
             if (url == null || !url.StartsWith(RepoUrl + "/", StringComparison.OrdinalIgnoreCase)) url = ReleasesUrl;
             if (tag == null || Parse(tag) is not { } latest) return Set(new UpdateInfo(_current, null, null, false, DateTime.UtcNow, "release has no version tag"));
-            bool newer = Parse(_current) is { } cur && latest > cur;
-            return Set(new UpdateInfo(_current, latest.ToString(3), url, newer, DateTime.UtcNow, null));
+            bool pre = doc.RootElement.TryGetProperty("prerelease", out var pr) && pr.ValueKind == JsonValueKind.True
+                       || tag.IndexOfAny(new[] { '-', '+' }) >= 0;
+            bool draft = doc.RootElement.TryGetProperty("draft", out var dr) && dr.ValueKind == JsonValueKind.True;
+            // releases/latest never returns drafts or pre-releases; if it ever did, they are not offered
+            bool newer = !pre && !draft && Parse(_current) is { } cur && latest > cur;
+            return Set(new UpdateInfo(_current, latest.ToString(3), url, newer, DateTime.UtcNow, pre || draft ? "latest release is a pre-release" : null), new ReleaseInfo(tag, latest, pre, draft));
         }
         catch (Exception e) when (e is HttpRequestException or TaskCanceledException or OperationCanceledException or JsonException or IOException)
         {
@@ -106,8 +119,9 @@ public sealed class UpdateChecker : IDisposable
         finally { _running = 0; }
     }
 
-    UpdateInfo Set(UpdateInfo i)
+    UpdateInfo Set(UpdateInfo i, ReleaseInfo? r = null)
     {
+        Release = r;
         Info = i;
         try { Changed?.Invoke(i); } catch { }
         return i;

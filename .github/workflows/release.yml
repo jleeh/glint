@@ -3,10 +3,14 @@ on:
   push:
     tags: ['v*']
 permissions:
-  contents: write
+  contents: read
 jobs:
   release:
     runs-on: windows-latest
+    permissions:
+      contents: write       # create the release
+      id-token: write       # sign the build provenance (Sigstore, via GitHub's OIDC token)
+      attestations: write   # store the attestation; Glint's updater refuses a setup without one
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -60,6 +64,14 @@ jobs:
           }
           [IO.File]::WriteAllText("$PWD/out/SHA256SUMS.txt", ($lines -join "`n") + "`n")
           Get-Content out/SHA256SUMS.txt
+      # Build provenance (SLSA v1) for both downloads: lets anyone check a file came from this workflow at this tag
+      # (gh attestation verify <file> --repo jleeh/glint), and Glint's updater requires it before running a setup.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
+        with:
+          subject-path: |
+            out/Glint-Setup-${{ env.VERSION }}.exe
+            out/Glint-${{ env.VERSION }}-portable-win-x64.zip
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: |

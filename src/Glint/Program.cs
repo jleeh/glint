@@ -214,6 +214,11 @@ static class Program
         while (swSetup.ElapsedMilliseconds < 15000 && Eval("document.querySelectorAll('#setup-list .setup-row').length") is "0" or "timeout") Pump(200);
         C("setup check page gets the host's report", int.TryParse(Eval("document.querySelectorAll('#setup-list .setup-row').length"), out var rows) && rows >= 8 && Eval("S.setup.items.some(i => i.id === 'elevated') && S.setup.items.some(i => i.id === 'webview2' && i.status === 'ok')") == "true",
             $"{swSetup.ElapsedMilliseconds} ms: " + Eval("JSON.stringify(S.setup?.items.map(i => i.id + '=' + i.status))"));
+        Eval("go('settings')"); Pump(300);
+        C("settings: the host sends the update install state and whether this copy can install (a portable build: no Install button)",
+            Eval("S.state?.install?.state === 'idle' && typeof S.init.cannotInstall === 'string' && document.getElementById('upd-install').style.display === 'none' && !!document.getElementById('upd-auto')") == "true",
+            Eval("JSON.stringify({ install: S.state?.install, cannot: S.init.cannotInstall })"));
+        Eval("go('setup')"); Pump(200);
         C("setup badge reflects the report", Eval("document.getElementById('setup-badge').textContent === String(S.setup.fail || (S.setup.warn ? '•' : ''))") == "true", Eval("document.getElementById('setup-badge').textContent"));
         foreach (var pg in new[] { "overview", "cooling", "lighting", "devices", "setup", "settings" })
         {
@@ -402,6 +407,25 @@ static class Program
         C("config.patch validates openRgb.port", (bool?)orgbPatch?["result"]?["ok"] == false, orgbPatch?.ToJsonString() ?? "");
         var updPatch = Call("config.patch", new { path = "updates.check", value = false });
         C("config.patch updates.check", (bool?)updPatch?["result"]?["ok"] == true && svc.Config.Updates.Check == false, updPatch?.ToJsonString() ?? "");
+        var autoNoCheck = Call("config.patch", new { path = "updates.autoInstall", value = true });
+        C("config.patch refuses updates.autoInstall while the check is off", (bool?)autoNoCheck?["result"]?["ok"] == false && !svc.Config.Updates.AutoInstall, autoNoCheck?.ToJsonString() ?? "");
+        Call("config.patch", new { path = "updates.check", value = true });
+        var autoOn = Call("config.patch", new { path = "updates.autoInstall", value = true });
+        C("config.patch updates.autoInstall", (bool?)autoOn?["result"]?["ok"] == true && svc.Config.Updates.AutoInstall, autoOn?.ToJsonString() ?? "");
+        Call("config.patch", new { path = "updates.autoInstall", value = false });
+        // updates: status, and install only with confirm (this test build is a portable copy, so even confirmed it never downloads)
+        var us = Call("update.status")?["result"];
+        C("update.status reports version, install state and whether this copy can install", (string?)us?["current"] == UpdateChecker.CurrentVersion && (string?)us?["install"]?["state"] == "idle"
+            && us?["canInstall"] != null && us?["autoInstall"] != null, us?.ToJsonString() ?? "null");
+        var ui0 = Call("update.install");
+        C("update.install refused without confirm=true", (bool?)ui0?["result"]?["ok"] == false && (bool?)ui0?["result"]?["started"] == false && ((string?)ui0?["result"]?["message"])?.Contains("confirm=true") == true && svc.Updater.Status.State == "idle", ui0?.ToJsonString() ?? "");
+        if (svc.Updater.CannotInstall() != null)
+        {
+            var ui1 = Call("update.install", new { confirm = true });
+            C("update.install on a copy that can't install says why and starts nothing", (bool?)ui1?["result"]?["ok"] == false && (bool?)ui1?["result"]?["started"] == false && svc.Updater.Status.State == "idle" && !svc.Updater.Busy, ui1?.ToJsonString() ?? "");
+        }
+        C("MCP exposes glint_update_status and glint_update_install (confirm required)", mcpTools?.Any(t => (string?)t!["name"] == "glint_update_status") == true
+            && mcpTools?.FirstOrDefault(t => (string?)t!["name"] == "glint_update_install")?["inputSchema"]?["required"]?.AsArray().Any(x => (string?)x == "confirm") == true, "");
         SecurityApiChecks(svc, Call, C);
         File.WriteAllText(outPath, JsonSerializer.Serialize(new { failed, checks }, new JsonSerializerOptions { WriteIndented = true }));
         try { Directory.Delete(testDir, true); } catch { }
@@ -629,6 +653,8 @@ static class Program
         using var svc = new GlintService(cfg);
         // optional update check: one GitHub API call ~20 s after start (never delays startup), then every 24 h
         svc.Updates.Start(TimeSpan.FromSeconds(20));
+        // one-click updates: removes old download folders after a short delay; automatic install only if switched on
+        svc.Updater.StartBackground();
         Plugins.PluginHost.EffectsChanged += () => svc.Lighting.Apply(svc.Config);
         var tray = new UI.TrayApp(svc);
         var ui = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();

@@ -5,6 +5,7 @@ on:
     paths:
       - 'installer/**'
       - 'src/Glint/Glint.csproj'
+      - 'src/Glint/Core/Updater.cs'
       - '.github/workflows/installer-test.yml'
       - '.github/workflows/release.yml'
 permissions:
@@ -64,6 +65,35 @@ jobs:
           if (-not (Test-Path "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Glint.lnk")) { throw 'start menu shortcut missing' }
           $p = Start-Process (Join-Path $d 'Glint.exe') -ArgumentList 'selftest', "$PWD\selftest-installed.json" -Wait -PassThru -NoNewWindow -WorkingDirectory $d
           if ($p.ExitCode -ne 0) { Get-Content selftest-installed.json; throw 'selftest from install dir failed' }
+      - name: Silent upgrade (the same setup again, run the way Glint's one-click update runs it)
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          $d = Join-Path $env:ProgramFiles 'Glint'
+          $lnk = Join-Path $env:PUBLIC 'Desktop\Glint.lnk'
+          if (-not (Test-Path $lnk)) { throw 'desktop shortcut (task chosen at install) missing before the upgrade' }
+          # same switches as Updater.SetupArgs: no /TASKS, so the previous choices are kept
+          $p = Start-Process out\Glint-Setup-0.0.1.exe -ArgumentList '/SILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/NOCANCEL', '/MERGETASKS=!disablesignalrgb', '/LOG=upgrade-log.txt' -Wait -PassThru
+          if (Test-Path upgrade-log.txt) { Get-Content upgrade-log.txt -Tail 40 }
+          if ($p.ExitCode -ne 0) { throw "upgrade exit code $($p.ExitCode)" }
+          foreach ($f in 'Glint.exe', 'WebView2Loader.dll', 'ClearScriptV8.win-x64.dll', 'selftest.ps1', 'helper.ps1', 'unins000.exe', 'web\index.html') {
+            if (-not (Test-Path (Join-Path $d $f))) { throw "missing $f after the upgrade" }
+          }
+          foreach ($t in 'Glint', 'Glint selftest') {
+            if (-not (Get-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue)) { throw "scheduled task '$t' missing after the upgrade" }
+          }
+          $t = Get-ScheduledTask -TaskName 'Glint'
+          if ($t.Principal.RunLevel -ne 'Highest') { throw 'Glint task is not elevated after the upgrade' }
+          if ($t.Actions[0].Execute -ne (Join-Path $d 'Glint.exe')) { throw "Glint task points at $($t.Actions[0].Execute)" }
+          if (-not (Test-Path $lnk)) { throw 'the upgrade dropped the desktop shortcut (previous tasks not kept)' }
+          $log = Get-Content upgrade-log.txt -Raw
+          # Glint must come back by itself: the "Start Glint now" postinstall entry has to run in silent mode
+          if ($log -notmatch 'schtasks\.exe[\s\S]{0,200}/run /tn "Glint"') { throw 'the silent upgrade did not run the "Start Glint now" entry' }
+          if ($log -match '-Action SignalRgb') { throw 'the SignalRGB step ran during an upgrade' }
+          Start-Sleep 5
+          if (Get-Process Glint -ErrorAction SilentlyContinue) { 'Glint is running again after the upgrade' } else { 'note: Glint process not seen (runner session); the setup log shows the start entry ran' }
+          $p = Start-Process (Join-Path $d 'Glint.exe') -ArgumentList 'selftest', "$PWD\selftest-upgraded.json" -Wait -PassThru -NoNewWindow -WorkingDirectory $d
+          if ($p.ExitCode -ne 0) { Get-Content selftest-upgraded.json; throw 'selftest after the upgrade failed' }
       - name: Silent uninstall
         shell: pwsh
         run: |

@@ -160,6 +160,8 @@ public static class Cli
         T("overlay.stats", Obj());
         T("ha.status", Obj());
         T("setup.check", Obj());
+        T("update.status", Obj());
+        T("update.install", Obj(("confirm", "boolean", "Must be true, and only after the user agreed: installs the newer verified release and restarts Glint", true)));
         T("log", Obj(("lines", "number", "How many recent lines (default 100)", false)));
         T("app.restart", Obj());
         return d;

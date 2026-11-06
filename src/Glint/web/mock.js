@@ -151,9 +151,9 @@
   const INIT = {
     type: 'init', config, fans, zones, devices, hubs, deviceNames, placements, aspect: 1.6, plugins,
     log: ['Demo rig (mock.js): no hardware is accessed'], effects: [], elevated: true, version: '0.2.0', haHasPassword: false,
-    releasesUrl: 'https://github.com/jleeh/glint/releases/latest',
+    releasesUrl: 'https://github.com/jleeh/glint/releases/latest', cannotInstall: null,
   };
-  config.updates = { check: true };
+  config.updates = { check: true, autoInstall: false };
   config.openRgb = { enabled: false, host: '127.0.0.1', port: 6742, exclude: [] };
 
   /* ------------------------------------------------------------ setup check (a fictional, mostly healthy PC) */
@@ -172,13 +172,25 @@
       it('devices', 'No devices declined', 'ok', 'Every device a plugin claimed identified itself as expected.'),
       it('startupTask', 'Starts with Windows', 'ok', 'The "Glint" logon task is registered (runs Glint as admin without a UAC prompt).'),
       cfg.updates?.check === false ? it('version', 'Glint 0.2.0', 'ok', 'Update check is off (Settings).')
-        : it('version', 'Update available: v0.3.0', 'warn', "You have Glint 0.2.0. Download the new version from the release page; Glint never installs updates by itself.", 'Open release page', 'openUrl', UPDATE.url),
+        : it('version', 'Update available: v0.3.0', 'warn', "You have Glint 0.2.0. Install downloads the setup from Glint's GitHub releases, checks it against the release's SHA-256 list and GitHub's build attestation, runs it and restarts Glint.", 'Install update', 'installUpdate'),
       ...(window.__setupExtra ?? []),
     ];
     const n = st => items.filter(i => i.status === st).length;
     return { time: new Date().toISOString(), ok: n('ok'), warn: n('warn'), fail: n('fail'), importantFail: items.some(i => i.important && i.status === 'fail'), items };
   };
   let testPattern = null; // { zone, count }
+  // one-click update: walks through the real states; window.__mockUpdateFail = 'reason' makes verification fail
+  let install = { state: 'idle', version: null, message: null, bytes: 0, total: 0, at: new Date().toISOString() };
+  const setInstall = (state, message, bytes = 0, total = 0) => { install = { state, version: '0.3.0', message, bytes, total, at: new Date().toISOString() }; emit({ type: 'updater', install }); };
+  const runInstall = () => {
+    if (['downloading', 'verifying', 'installing'].includes(install.state)) return;
+    const T = 62914560;
+    setInstall('downloading', 'Downloading Glint-Setup-0.3.0.exe…', 0, T);
+    setTimeout(() => setInstall('downloading', 'Downloading Glint-Setup-0.3.0.exe…', T / 2, T), 150);
+    setTimeout(() => setInstall('verifying', 'Verifying checksum and build attestation…'), 300);
+    setTimeout(() => window.__mockUpdateFail ? setInstall('failed', 'Update not installed: ' + window.__mockUpdateFail + '.')
+      : setInstall('installing', 'Starting the Glint 0.3.0 setup. Glint closes and restarts by itself.'), 450);
+  };
 
   /* ------------------------------------------------------------ live state */
   const BASE = {
@@ -218,7 +230,7 @@
       lastError: ha.enabled && !ha.host ? 'no broker host set' : '', entities: ha.enabled && ha.host ? 27 : 0, reconnects: 0 };
     const cfgNow = window.__lastConfig ?? INIT.config;
     return { type: 'state', sensors, rpm, duty, explain: {}, profile: INIT.config.activeProfile, error: '', ha: haStatus,
-      update: cfgNow.updates?.check === false ? { ...UPDATE, latest: null, available: false, checkedAt: null } : UPDATE, openRgb: null, testPattern: testPattern?.zone ?? null,
+      update: cfgNow.updates?.check === false ? { ...UPDATE, latest: null, available: false, checkedAt: null } : UPDATE, install, openRgb: null, testPattern: testPattern?.zone ?? null,
       overrides: Object.fromEntries(Object.entries((window.__lastConfig ?? INIT.config).profiles).map(([k, rs]) => [k, rs.map(r => r.override ?? null)])),
       perf: { cpuSeconds: cpu, privateMB: 58, fps: 30, devices: { cc: 30, lnp: 18.9, mystic: 21.7, ram: 10.1, razer25a: 30, rival1720: 30 }, cores: 32 } };
   };
@@ -368,6 +380,7 @@
       if (m.type === 'config') window.__lastConfig = m.config;
       (window.__msgs ??= []).push(m);
       if (m.type === 'ready' || m.type === 'setupCheck') setTimeout(() => emit({ type: 'setup', report: setupReport() }), m.type === 'ready' ? 40 : 120);
+      if (m.type === 'installUpdate' || (m.type === 'setupFix' && m.fix === 'installUpdate')) runInstall();
       if (m.type === 'testPattern') testPattern = m.on ? { zone: m.zone, count: m.count } : (testPattern?.zone === m.zone ? null : testPattern);
       if (m.type === 'autoLayout') { const cfg = window.__lastConfig ?? INIT.config; cfg.lighting.layout = JSON.parse(JSON.stringify(AUTO)); setTimeout(() => emit({ type: 'layout', placements: AUTO, config: cfg }), 20); }
     },

@@ -460,6 +460,7 @@ public static class SelfTest
         // ---------------- v0.2: LED-count test pattern, setup check, update check, OpenRGB bridge (fake SDK server on 127.0.0.1)
         SelfTestV02.Run(C);
         SelfTestSecurity.Run(C);
+        SelfTestUpdater.Run(C);
 
         // ---------------- Home Assistant over MQTT (in-process fake broker on 127.0.0.1)
         try { HomeAssistantChecks(C); }

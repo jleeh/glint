@@ -33,6 +33,8 @@ SolidCompression=yes
 WizardStyle=modern
 CloseApplications=no
 RestartApplications=no
+; An upgrade (also Glint's own silent one-click update) keeps the tasks chosen last time.
+UsePreviousTasks=yes
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -57,6 +59,8 @@ Name: "{autodesktop}\Glint"; Filename: "{sys}\schtasks.exe"; Parameters: "/run /
 
 [Run]
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\helper.ps1"" -Action SignalRgb"; StatusMsg: "Disabling SignalRGB at startup..."; Flags: runhidden waituntilterminated; Tasks: disablesignalrgb
+; Deliberately no skipifsilent: postinstall entries also run in /SILENT and /VERYSILENT mode, which is how Glint comes
+; back after its one-click update (installer-test.yml checks the setup log for it).
 Filename: "{sys}\schtasks.exe"; Parameters: "/run /tn ""Glint"""; Description: "Start Glint now"; Flags: runhidden nowait postinstall
 
 [Code]

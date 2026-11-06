@@ -35,6 +35,7 @@ public sealed class TrayApp : ApplicationContext
         // any hardware sensor from the Sensors page catalog can be an overlay item (clocks, loads, power, VRAM ...)
         _overlay.ExtraResolver = src => _svc.Rig.CatalogValue(src.StartsWith("lhm:") ? src[4..] : src);
         RegisterHotkey(_svc.Config.Overlay?.Hotkey);
+        _svc.Updater.Changed += OnUpdater;
         _svc.ConfigApplied += c => Ui(() => RegisterHotkey(c.Overlay?.Hotkey));
         // Judge sensors on real readings, not at construction (LHM's first sample can be empty).
         if (!quiet)
@@ -129,11 +130,32 @@ public sealed class TrayApp : ApplicationContext
 
         m.Items.Add(new ToolStripSeparator());
         if (_svc.Updates.Info is { Available: true } up)
-            m.Items.Add($"Update available: v{up.Latest}…", null, (_, _) => Program.OpenUrl(up.Url ?? UpdateChecker.ReleasesUrl));
+        {
+            var st = _svc.Updater.Status;
+            if (_svc.Updater.Busy)
+                m.Items.Add(new ToolStripMenuItem($"Updating to v{st.Version ?? up.Latest}: {st.State}…") { Enabled = false });
+            else if (_svc.Updater.CannotInstall() == null)
+                m.Items.Add($"Install update v{up.Latest}", null, (_, _) => InstallUpdate(up.Latest!));
+            m.Items.Add($"Update available: v{up.Latest} (release page)…", null, (_, _) => Program.OpenUrl(up.Url ?? UpdateChecker.ReleasesUrl));
+        }
         m.Items.Add("Dashboard…", null, (_, _) => ShowDashboard());
         m.Items.Add("Edit config file", null, (_, _) => WebDashboard.OpenInNotepad(GlintConfig.FilePath));
         m.Items.Add(new ToolStripSeparator());
         m.Items.Add("Exit (hand fans back to hardware)", null, (_, _) => ExitThread());
+    }
+
+    void InstallUpdate(string version)
+    {
+        if (MessageBox.Show($"Install Glint v{version} now?\n\nGlint downloads the setup from its GitHub releases, checks its SHA-256 and GitHub build attestation, then closes and restarts with the new version.",
+                "Glint update", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
+        _svc.Updater.Start();
+    }
+
+    /// <summary>Install progress / errors in the tray (the dashboard may be closed).</summary>
+    void OnUpdater(UpdateStatus s)
+    {
+        if (s.State == "failed" && s.Message != null) Ui(() => _icon.ShowBalloonTip(10000, "Glint update", s.Message, ToolTipIcon.Warning));
+        else if (s.State == "installing" && s.Message != null) Ui(() => _icon.ShowBalloonTip(5000, "Glint update", s.Message, ToolTipIcon.Info));
     }
 
     public static EffectConfig Clone(EffectConfig e) =>

@@ -289,12 +289,39 @@ const fs = require('fs');
   check('settings: update status shows the new version', (await p.$eval('#upd-status', e => e.textContent)).includes('v0.3.0') && await p.$eval('#upd-open', e => e.style.display !== 'none'));
   await p.click('#upd-open'); await wait(100);
   check('settings: "Open release page" sends only the release URL', await p.evaluate(() => window.__msgs.some(m => m.type === 'openUrl' && m.url.startsWith('https://github.com/jleeh/glint/releases'))));
+  // one-click install
+  const updMsgs = () => p.evaluate(() => window.__msgs.filter(m => m.type === 'installUpdate').length);
+  check('settings: "Install update" shown next to an available update', await p.$eval('#upd-install', e => e.style.display !== 'none' && !e.disabled && e.textContent === 'Install update'));
+  let n0 = await updMsgs();
+  p.once('dialog', d => d.dismiss()); await p.click('#upd-install'); await wait(150);
+  check('settings: cancelling the confirmation installs nothing', (await updMsgs()) === n0, `${n0} → ${await updMsgs()}`);
+  await p.evaluate(() => { window.__mockUpdateFail = 'no valid build attestation from Glint\'s release workflow'; });
+  p.once('dialog', d => d.accept()); await p.click('#upd-install'); await wait(100);
+  check('settings: confirming sends installUpdate once', (await updMsgs()) === n0 + 1);
+  check('settings: install button disabled while it runs', await p.$eval('#upd-install', e => e.disabled && e.textContent.includes('Installing')));
+  check('settings: download progress shown in MB', /Downloading.*of 60\.0 MB/.test(await p.$eval('#upd-progress', e => e.textContent)), await p.$eval('#upd-progress', e => e.textContent));
+  await wait(500);
+  const failTxt = await p.$eval('#upd-progress', e => e.textContent);
+  check('settings: a failed verification is shown as an error with the reason', failTxt.startsWith('Failed') && failTxt.includes('attestation') && await p.$eval('#upd-progress', e => e.classList.contains('bad'))
+    && await p.$eval('#upd-install', e => !e.disabled && e.textContent === 'Try again'), failTxt);
+  await p.evaluate(() => { window.__mockUpdateFail = null; });
+  p.once('dialog', d => d.accept()); await p.click('#upd-install'); await wait(550);
+  check('settings: verified update goes downloading → verifying → installing', (await p.$eval('#upd-progress', e => e.textContent)).startsWith('Installing') && await p.$eval('#upd-install', e => e.disabled));
+  await p.evaluate(() => { S.init.cannotInstall = 'this is a portable copy: download the new version from the release page'; liveUpdate(); });
+  check('settings: a portable copy offers only the release page, and says why', await p.$eval('#upd-install', e => e.style.display === 'none') && await p.$eval('#upd-open', e => e.style.display !== 'none')
+    && (await p.$eval('#upd-progress', e => e.textContent)).includes('portable'));
+  await p.evaluate(() => { S.init.cannotInstall = null; liveUpdate(); });
+  // automatic install toggle
+  await p.click('#upd-auto'); c = await cfg();
+  check('settings: automatic install toggle saves updates.autoInstall', c.updates?.autoInstall === true && c.updates.check === true, JSON.stringify(c.updates));
   await p.click('#upd-check'); c = await cfg();
-  check('settings: update check toggle saves updates.check', c.updates?.check === false, JSON.stringify(c.updates));
+  check('settings: update check toggle saves updates.check (and switches automatic install off)', c.updates?.check === false && c.updates.autoInstall === false, JSON.stringify(c.updates));
+  await p.click('#upd-auto'); c = await cfg();
+  check('settings: automatic install can\'t be switched on without the check', c.updates.autoInstall === false && await p.$eval('#upd-auto', e => e.classList.contains('disabled') && !e.classList.contains('on')), JSON.stringify(c.updates));
   await wait(1100);
-  check('settings: update check off hides the release button', await p.$eval('#upd-open', e => e.style.display === 'none') && (await p.$eval('#upd-status', e => e.textContent)).includes('off'));
+  check('settings: update check off hides the release and install buttons', await p.$eval('#upd-open', e => e.style.display === 'none') && await p.$eval('#upd-install', e => e.style.display === 'none') && (await p.$eval('#upd-status', e => e.textContent)).includes('off'));
   await p.click('#upd-check'); c = await cfg();
-  check('settings: update check back on', c.updates?.check === true);
+  check('settings: update check back on', c.updates?.check === true && c.updates.autoInstall === false);
   // OpenRGB bridge card
   await p.click('#orgb-enabled'); c = await cfg();
   check('settings: OpenRGB bridge toggle saves openRgb.enabled', c.openRgb?.enabled === true && c.openRgb.host === '127.0.0.1' && c.openRgb.port === 6742, JSON.stringify(c.openRgb));
@@ -324,8 +351,10 @@ const fs = require('fs');
     await nav('setup'); await wait(300);
     await p.click('[data-fix="conflict:signalrgb"]'); await wait(100);
     check('setup: startup-apps fix sends setupFix', await p.evaluate(() => window.__msgs.some(m => m.type === 'setupFix' && m.fix === 'startupApps')));
-    await p.click('[data-fix="version"]'); await wait(100);
-    check('setup: update row opens the release page', await p.evaluate(() => window.__msgs.some(m => m.type === 'setupFix' && m.fix === 'openUrl' && m.arg.includes('/releases/'))));
+    const nInst = await p.evaluate(() => window.__msgs.filter(m => m.type === 'installUpdate').length);
+    p.once('dialog', d => d.accept()); await p.click('[data-fix="version"]'); await wait(100);
+    check('setup: update row installs the update (after confirming)', await p.evaluate(n => window.__msgs.filter(m => m.type === 'installUpdate').length === n + 1, nInst)
+      && await p.$eval('[data-fix="version"]', e => e.textContent === 'Install update'));
     const n0 = await p.evaluate(() => window.__msgs.filter(m => m.type === 'setupCheck').length);
     await p.click('#setup-recheck'); await wait(300);
     check('setup: Re-check asks again', await p.evaluate(n => window.__msgs.filter(m => m.type === 'setupCheck').length === n + 1, n0));

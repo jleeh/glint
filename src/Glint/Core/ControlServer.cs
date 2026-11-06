@@ -168,6 +168,8 @@ public sealed class ControlServer : IDisposable
         ("overlay.toggle", "Show / hide the in-game overlay (enabled given → set it, else flip).", "{ enabled?: boolean }"),
         ("overlay.stats", "Live overlay readings: fps, frameTimeMs, low1 (1% low), the target (foreground) process, which present events are used, and whether the ETW session is running.", ""),
         ("setup.check", "Setup check: is this PC set up right for Glint? Admin rights, PawnIO driver, WebView2, CPU temperature, conflicting RGB/fan apps (running or starting with Windows), plugins needing approval or failing, devices that declined, the startup task, version + update, OpenRGB bridge. Each item: status ok/warn/fail, plain-language detail, and the fix. Start here when something doesn't work.", ""),
+        ("update.status", "Updates: this version, the latest release, whether it can be installed from here (canInstall / cannotInstall), autoInstall, and the install progress (install.state idle|downloading|verifying|installing|failed, install.message).", ""),
+        ("update.install", "Install the newer release: downloads the setup from Glint's GitHub releases, checks it against SHA256SUMS.txt and GitHub's build attestation for the release workflow, then runs it silently (Glint closes and restarts). Only with the user's consent; requires confirm=true. Poll update.status for progress.", "{ confirm: true }"),
         ("log", "Recent device / plugin log lines.", "{ lines?: number }"),
         ("app.restart", "Restart Glint (needed after adding or changing device plugins).", ""),
     };
@@ -471,6 +473,16 @@ public sealed class ControlServer : IDisposable
                 return _svc.Overlay?.Stats() ?? (object)new { enabled = _svc.Config.Overlay?.Enabled ?? false, visible = false, note = "no overlay in this process" };
             case "ha.status": return _svc.HomeAssistant.Status();
             case "setup.check": return SetupCheck.Run(_svc);
+            case "update.status": return _svc.Updater.Describe();
+            case "update.install":
+                {
+                    if ((bool?)p["confirm"] != true)
+                        return new { ok = false, started = false, message = "Not done: installing an update closes and restarts Glint. Ask the user first, then call again with confirm=true." };
+                    if (_svc.Updater.CannotInstall() is { } why) return new { ok = false, started = false, message = "Can't install here: " + why + "." };
+                    if (_svc.Updater.Busy) return new { ok = true, started = false, message = "An install is already running.", status = _svc.Updater.Status };
+                    var st = _svc.Updater.Start();
+                    return new { ok = true, started = true, message = "Started; poll update.status. Glint closes and restarts when the setup runs.", status = st };
+                }
             case "log": return _svc.Rig.Log.TakeLast((int?)p["lines"] ?? 100);
             case "app.restart": _ui(() => Program.Restart()); return new { restarting = true };
             default: throw new ArgumentException($"unknown method '{method}' (try 'help')");

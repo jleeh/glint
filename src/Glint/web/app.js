@@ -172,6 +172,9 @@ bridge?.addEventListener('message', e => {
     setupBadge();
     if (S.page === 'setup') renderSetup();
     else if (S.page === 'overview') setupBanner();
+  } else if (m.type === 'updater') {
+    if (S.state) S.state.install = m.install;
+    liveUpdate();
   } else if (m.type === 'toast') toast(m.text, m.kind);
 });
 
@@ -1571,8 +1574,10 @@ function renderSettings() {
         <div class="muted" style="font-size:12px;margin-top:12px">Needs an MQTT broker, such as Home Assistant's Mosquitto add-on (Settings → Add-ons), with the MQTT integration enabled. Glint's entities then appear automatically; no YAML needed.</div>
       </div>
       <div class="card card-pad" id="upd-card">
-        <div class="row between card-head"><div><div class="card-title">Updates</div><div class="card-sub">One request to GitHub at startup and once a day. Nothing is downloaded or installed.</div></div><div class="toggle ${UPD().check !== false ? 'on' : ''}" id="upd-check" title="Check for updates"></div></div>
-        <div class="ha-status" id="upd-status"><span class="pdot off"></span><span>–</span><span class="spacer" style="flex:1"></span><button class="btn small primary" id="upd-open" style="display:none">Open release page</button></div>
+        <div class="row between card-head"><div><div class="card-title">Updates</div><div class="card-sub">One request to GitHub at startup and once a day. Nothing is installed unless you click Install or switch on automatic install.</div></div><div class="toggle ${UPD().check !== false ? 'on' : ''}" id="upd-check" title="Check for updates"></div></div>
+        <div class="ha-status" id="upd-status"><span class="pdot off"></span><span>–</span><span class="spacer" style="flex:1"></span><button class="btn small primary" id="upd-install" style="display:none">Install update</button><button class="btn small" id="upd-open" style="display:none">Open release page</button></div>
+        <div class="muted upd-progress" id="upd-progress" role="status" aria-live="polite"></div>
+        <div class="row between" style="gap:12px"><div><div style="font-size:13px">Install updates automatically</div><div class="muted" style="font-size:12px">Only after 10 minutes without input, with no game in front and not on battery. Every setup is checked against its SHA-256 and GitHub build attestation first.</div></div><div class="toggle ${UPD().autoInstall ? 'on' : ''}" id="upd-auto" title="Install updates automatically"></div></div>
       </div>
       <div class="card card-pad ha-card" id="orgb-card">
         <div class="row between card-head"><div><div class="card-title">OpenRGB bridge</div><div class="card-sub">Drive devices Glint doesn't support yet through OpenRGB's SDK server</div></div><div class="toggle ${ORGB().enabled ? 'on' : ''}" id="orgb-enabled" title="OpenRGB bridge"></div></div>
@@ -1598,12 +1603,34 @@ function renderSettings() {
 }
 
 /* Update check + OpenRGB bridge cards */
-function UPD() { return (S.cfg.updates ??= { check: true }); }
+function UPD() { return (S.cfg.updates ??= { check: true, autoInstall: false }); }
 function ORGB() { return (S.cfg.openRgb ??= { enabled: false, host: '127.0.0.1', port: 6742, exclude: [] }); }
 function bindUpdates() {
-  $('#upd-check').onclick = e => { UPD().check = !UPD().check; e.currentTarget.classList.toggle('on', UPD().check); commit(); liveUpdate(); };
+  $('#upd-check').onclick = e => {
+    UPD().check = !UPD().check; e.currentTarget.classList.toggle('on', UPD().check);
+    if (!UPD().check) UPD().autoInstall = false; // automatic install needs the check (the validator insists)
+    commit(); liveUpdate();
+  };
+  $('#upd-auto').onclick = e => {
+    if (UPD().check === false) return;
+    UPD().autoInstall = !UPD().autoInstall; e.currentTarget.classList.toggle('on', UPD().autoInstall); commit(); liveUpdate();
+  };
   $('#upd-open').onclick = () => { const url = S.state?.update?.url ?? S.init.releasesUrl; if (/^https:\/\//i.test(url ?? '')) send({ type: 'openUrl', url }); };
+  $('#upd-install').onclick = () => installUpdate();
   liveUpdate();
+}
+const UPD_BUSY = ['downloading', 'verifying', 'installing'];
+function installUpdate() {
+  const v = S.state?.update?.latest;
+  if (!confirm(`Install Glint v${v ?? ''} now?\n\nGlint downloads the setup from its GitHub releases, checks its SHA-256 and GitHub build attestation, then closes and restarts with the new version.`)) return;
+  send({ type: 'installUpdate' });
+}
+function installText(i) {
+  if (!i || i.state === 'idle') return '';
+  const mb = b => (b / 1048576).toFixed(1);
+  const pct = i.state === 'downloading' && i.total > 0 ? ` ${mb(i.bytes)} of ${mb(i.total)} MB` : '';
+  const head = { downloading: 'Downloading', verifying: 'Verifying', installing: 'Installing', failed: 'Failed' }[i.state] ?? i.state;
+  return `${head}: ${i.message ?? ''}${pct}`;
 }
 function updateText() {
   const u = S.state?.update, cur = u?.current ?? S.init.version;
@@ -1617,7 +1644,19 @@ function liveUpdate() {
   const [cls, txt] = updateText();
   $('.pdot', el).className = 'pdot ' + cls;
   $('span:nth-child(2)', el).textContent = txt;
-  $('#upd-open').style.display = S.state?.update?.available && UPD().check !== false ? '' : 'none';
+  const avail = S.state?.update?.available && UPD().check !== false, inst = S.state?.install, busy = UPD_BUSY.includes(inst?.state);
+  const canInstall = avail && !S.init.cannotInstall;
+  $('#upd-open').style.display = avail ? '' : 'none';
+  $('#upd-install').style.display = canInstall ? '' : 'none';
+  $('#upd-install').disabled = busy;
+  $('#upd-install').textContent = busy ? 'Installing…' : inst?.state === 'failed' ? 'Try again' : 'Install update';
+  const pr = $('#upd-progress'), t = avail && S.init.cannotInstall ? `Install it from the release page: ${S.init.cannotInstall}.` : installText(inst);
+  if (pr.textContent !== t) pr.textContent = t;
+  pr.classList.toggle('bad', inst?.state === 'failed');
+  const auto = $('#upd-auto');
+  auto.classList.toggle('on', !!UPD().autoInstall);
+  auto.classList.toggle('disabled', UPD().check === false);
+  auto.title = UPD().check === false ? 'Switch the update check on first' : 'Install updates automatically';
 }
 function bindOpenRgb() {
   const o = ORGB();
@@ -1683,6 +1722,7 @@ function renderSetup() {
     const it = S.setup.items.find(i => i.id === b.dataset.fix); if (!it) return;
     if (it.fix === 'page') { if (!own(PAGES, it.fixArg)) return; if (it.fixArg === 'plugins') PF.f = 'problems'; go(it.fixArg); return; }
     if (it.fix === 'restartAdmin' && !confirm('Restart Glint as administrator? Windows will ask for permission.')) return;
+    if (it.fix === 'installUpdate') { installUpdate(); return; }
     send({ type: 'setupFix', fix: it.fix, arg: it.fixArg });
   };
 }

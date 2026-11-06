@@ -139,11 +139,17 @@ public sealed class WebDashboard : Form
                         case "startupApps": Program.OpenStartupApps(); break;
                         case "restartAdmin": Program.RestartElevated(); break;
                         case "restart": Program.Restart(); break;
+                        case "installUpdate": _svc.Updater.Start(); break;
                     }
                     break;
                 }
             case "openUrl":
                 Program.OpenUrl((string?)m!["url"] ?? "");
+                break;
+            case "installUpdate":
+                // downloads, verifies (SHA256SUMS + build attestation) and runs only a newer release of Glint's own repository
+                _svc.Updater.Start();
+                Push(new { type = "updater", install = _svc.Updater.Status });
                 break;
             case "testPattern":
                 {
@@ -301,6 +307,7 @@ public sealed class WebDashboard : Form
         plugins = PluginsInfo(),
         version = UpdateChecker.CurrentVersion,
         releasesUrl = UpdateChecker.ReleasesUrl,
+        cannotInstall = _svc.Updater.CannotInstall(),
     };
 
     /// <summary>The config as the page sees it: without the stored (encrypted) MQTT password.</summary>
@@ -342,6 +349,7 @@ public sealed class WebDashboard : Form
             error = _svc.LastError,
             ha = _svc.HomeAssistant.Status(),
             update = _svc.Updates.Info,
+            install = _svc.Updater.Status,
             openRgb = _svc.Rig.OpenRgb?.Status,
             testPattern = _svc.Lighting.TestPatternZone,
             // manual fan overrides change outside the page (Home Assistant / API): the page syncs them from here

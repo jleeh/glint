@@ -88,7 +88,10 @@ public static class SetupCheck
         public List<Plugins.PluginStatus> Plugins = new();
         public List<string> DisabledPlugins = new();
         public UpdateInfo? Update;
-        public bool UpdatesOn;
+        public bool UpdatesOn, AutoInstall;
+        /// <summary>null = this copy can install updates itself; else why not.</summary>
+        public string? CannotInstall = "not checked";
+        public UpdateStatus? Install;
         public Devices.OpenRgbStatus? Bridge;
         public SetupInput() { }
         public SetupInput(GlintService s)
@@ -96,7 +99,8 @@ public static class SetupCheck
             Elevated = s.Rig.Elevated; SmbusOk = s.Rig.SmbusOk; SmbusError = s.Rig.SmbusError; Ring0 = s.Rig.LhmRing0;
             Cpu = s.Sensors.TryGetValue("cpu", out var c) ? c : null;
             Log = s.Rig.Log.ToList(); Plugins = global::Glint.Plugins.PluginHost.Status.ToList(); DisabledPlugins = s.Config.DisabledPlugins.ToList();
-            Update = s.Updates.Info; UpdatesOn = s.Config.Updates?.Check == true;
+            Update = s.Updates.Info; UpdatesOn = s.Config.Updates?.Check == true; AutoInstall = s.Config.Updates?.AutoInstall == true;
+            CannotInstall = s.Updater.CannotInstall(); Install = s.Updater.Status;
             BridgeOn = s.Config.OpenRgb?.Enabled == true; Bridge = s.Rig.OpenRgb?.Status;
         }
     }
@@ -202,7 +206,15 @@ public static class SetupCheck
         var u = g.Update;
         string cur = u?.Current ?? UpdateChecker.CurrentVersion;
         if (!g.UpdatesOn) Add(new("version", $"Glint {cur}", "ok", "Update check is off (Settings)."));
-        else if (u?.Available == true) Add(new("version", $"Update available: v{u.Latest}", "warn", $"You have Glint {cur}. Download the new version from the release page; Glint never installs updates by itself.", "Open release page", "openUrl", u.Url ?? UpdateChecker.ReleasesUrl));
+        else if (u?.Available == true && g.CannotInstall == null)
+        {
+            string how = "Install downloads the setup from Glint's GitHub releases, checks it against the release's SHA-256 list and GitHub's build attestation, runs it and restarts Glint.";
+            string extra = g.Install is { State: "failed", Message: { } m } ? " Last attempt: " + m
+                : g.Install is { State: "downloading" or "verifying" or "installing", Message: { } p } ? " Now: " + p
+                : g.AutoInstall ? " Automatic install is on: it happens when the PC has been idle for 10 minutes." : "";
+            Add(new("version", $"Update available: v{u.Latest}", "warn", $"You have Glint {cur}. {how}{extra}", "Install update", "installUpdate"));
+        }
+        else if (u?.Available == true) Add(new("version", $"Update available: v{u.Latest}", "warn", $"You have Glint {cur}. Download the new version from the release page ({g.CannotInstall}).", "Open release page", "openUrl", u.Url ?? UpdateChecker.ReleasesUrl));
         else if (u?.Latest != null) Add(new("version", $"Glint {cur} (latest)", "ok", "You're on the newest release."));
         else Add(new("version", $"Glint {cur}", "ok", u?.CheckedAt == null ? "Update check hasn't run yet." : $"Couldn't check for updates ({u.Note})."));
 

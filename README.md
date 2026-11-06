@@ -20,8 +20,8 @@
 
 ## Why Glint
 
-- **Free, forever.** GPL-3.0, no accounts, no cloud, no telemetry, no paid tier. (The only network request is an
-  optional update check you can switch off.)
+- **Free, forever.** GPL-3.0, no accounts, no cloud, no telemetry, no paid tier. (The only network requests are an
+  optional update check you can switch off, and downloading an update when you install one.)
 - **Light.** One small tray process. No Electron, no always-on browser: the dashboard only exists while it's
   open. Effects are rendered once per frame and devices are only written when their colours change.
 - **Fans that think about the whole PC.** Every fan curve can take several sensors at once: CPU, GPU, liquid,
@@ -103,9 +103,32 @@ agents get the same report from `Glint.exe ctl setup.check` / `glint_setup_check
 ## 🔄 Updates
 
 Glint can tell you when a new version is out: one request to GitHub's `releases/latest` API for this repository
-about 20 s after start and then once a day. Nothing else is sent, nothing is downloaded or installed. When there is
-a newer release you'll see *Update available* on the Setup check page, in Settings and in the tray menu (which opens
-the release page). Offline, or no release published: it stays quiet. Switch it off in Settings (`updates.check`).
+about 20 s after start and then once a day. Nothing else is sent. When there is a newer release you'll see *Update
+available* on the Setup check page, in Settings and in the tray menu. Offline, or no release published: it stays
+quiet. Switch it off in Settings (`updates.check`).
+
+### Updating
+
+Click **Install update** (Setup check page, Settings, or *Install update vX* in the tray menu). Glint shows
+*downloading → verifying → installing*, then the setup runs silently, closes Glint and starts the new version. Your
+settings, layouts, plugins and the choices you made in the setup (desktop shortcut, ...) are kept.
+
+Before anything is run, Glint checks:
+
+- it is a **newer** release of this repository (no pre-releases, no downgrades), downloaded only from this
+  repository's GitHub release (and GitHub's own download servers);
+- the setup's **SHA-256** matches the release's `SHA256SUMS.txt`;
+- GitHub has a **build attestation** for exactly that file, made by this repository's release workflow for that
+  version's tag, i.e. the file was built by GitHub Actions from the tagged source, not uploaded by hand;
+- the file is still the same right before it starts (it is kept in a folder only administrators can write).
+
+If any check fails nothing is run and Glint tells you why. Releases from before attestations were added can't be
+installed this way; use the release page. You can verify any download yourself with
+`gh attestation verify Glint-Setup-<version>.exe --repo jleeh/glint` (details in [SECURITY.md](SECURITY.md#updates)).
+
+**Automatic install** (Settings, off by default, `updates.autoInstall`): installs a new release by itself, but only
+after 10 minutes without keyboard/mouse input, with no game or fullscreen app in front, and not on battery; each
+version is tried at most once a day. The portable version doesn't update itself: download the new zip.
 
 ## Supported hardware
 

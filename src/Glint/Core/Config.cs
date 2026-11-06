@@ -31,7 +31,7 @@ public sealed class GlintConfig
     public HomeAssistantConfig HomeAssistant { get; set; } = new();
     /// <summary>In-game overlay (FPS from ETW present events + sensors).</summary>
     public OverlayConfig Overlay { get; set; } = new();
-    /// <summary>Optional update check (one GitHub API call at startup and every 24 h; nothing else).</summary>
+    /// <summary>Optional update check (one GitHub API call at startup and every 24 h) and optional automatic install.</summary>
     public UpdateOptions Updates { get; set; } = new();
     /// <summary>OpenRGB SDK bridge (off by default): drive devices an OpenRGB server on this PC knows.</summary>
     public OpenRgbConfig OpenRgb { get; set; } = new();
@@ -272,8 +272,11 @@ public sealed class OverlayItem
 
 public sealed class UpdateOptions
 {
-    /// <summary>Ask GitHub for the latest release at startup and every 24 h. Never downloads or installs anything.</summary>
+    /// <summary>Ask GitHub for the latest release at startup and every 24 h (the check itself never downloads anything).</summary>
     public bool Check { get; set; } = true;
+    /// <summary>Install a newer, verified release by itself while the PC is idle (no game in front, not on battery,
+    /// at most one attempt per version per day). Off by default; needs <see cref="Check"/>.</summary>
+    public bool AutoInstall { get; set; }
 }
 
 public sealed class OpenRgbConfig

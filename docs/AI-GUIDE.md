@@ -101,6 +101,17 @@ device before writing, and can never touch the SPD EEPROM (0x50–0x57).
   `{"items":[{"source":"fps"},{"source":"low1"},{"source":"gpu"},{"source":"<sensor id from sensors.all>","label":"GPU clock"}]}`.
   `overlay.toggle` shows or hides it; `overlay.stats` returns the live FPS of the game in front.
 
+## Recipe: updates
+
+- `update.status`: current version, `latest`, `available`, `canInstall` (false for a portable or non-elevated copy,
+  with `cannotInstall` saying why), `autoInstall`, and `install` = `{ state: idle|downloading|verifying|installing|failed, message }`.
+- `update.install` with `confirm=true` **only after the user agreed**: it downloads the setup from Glint's GitHub
+  release, verifies it (SHA256SUMS.txt + GitHub build attestation from the release workflow for that tag) and runs
+  it silently. Glint closes and restarts, so the pipe drops; that is expected. Poll `update.status` until then; on
+  `failed`, relay `install.message` (e.g. an older release without an attestation: point the user to the release page).
+- Automatic install: `config.patch path=updates.autoInstall value=true` (needs `updates.check`); it only runs when the
+  PC is idle for 10 minutes, no game is in front and it's not on battery.
+
 ## Troubleshooting
 
 - **Start with `setup.check`.** It returns one report: admin rights, the PawnIO driver, WebView2, whether the CPU
@@ -108,7 +119,7 @@ device before writing, and can never touch the SPD EEPROM (0x50–0x57).
   MSI Center, NZXT CAM, L-Connect, Synapse, G HUB, OpenRGB, FanControl), plugins needing approval or failing,
   devices that declined, the startup task, version + update, and the OpenRGB bridge. Each item has `status`
   (ok / warn / fail), a plain-language `detail` and a `fix` (`restartAdmin`, `openUrl`, `startupApps`, `page`,
-  `restart`). Relay the failures to the user in their words; most fixes (installing PawnIO, quitting another app,
+  `restart`, `installUpdate` = `update.install`). Relay the failures to the user in their words; most fixes (installing PawnIO, quitting another app,
   approving a plugin) need the user, not the API.
 - No CPU temperature / board fans: Glint isn't elevated or PawnIO isn't installed (`setup.check` says which).
 - Flickering colours or fans jumping: another app drives the same device (`setup.check` lists it).

@@ -11,6 +11,8 @@ public sealed class GlintService : IDisposable
     public HomeAssistantBridge HomeAssistant { get; }
     /// <summary>Optional update check; idle until the tray app calls Start (tests never do).</summary>
     public UpdateChecker Updates { get; }
+    /// <summary>One-click / automatic install of a verified release (idle until asked; the tray app starts its background part).</summary>
+    public Updater Updater { get; }
 
     public IReadOnlyDictionary<string, double> Sensors { get; private set; } = new Dictionary<string, double>();
     public IReadOnlyDictionary<string, int> Rpm { get; private set; } = new Dictionary<string, int>();
@@ -41,6 +43,7 @@ public sealed class GlintService : IDisposable
         HomeAssistant = new HomeAssistantBridge(this);
         HomeAssistant.Configure(cfg.HomeAssistant);
         Updates = new UpdateChecker(() => Config);
+        Updater = new Updater(Updates, () => Config);
         _thread = new Thread(Loop) { IsBackground = true, Name = "Glint fans", Priority = ThreadPriority.AboveNormal };
         _thread.Start();
         try
@@ -77,6 +80,7 @@ public sealed class GlintService : IDisposable
         HomeAssistant.Configure(cfg.HomeAssistant); // reconnects only if that section changed
         HomeAssistant.ConfigApplied();
         Updates.OnConfig(cfg);
+        Updater.Kick();
         try { ConfigApplied?.Invoke(cfg); } catch { }
     }
 
@@ -158,6 +162,7 @@ public sealed class GlintService : IDisposable
         _thread.Join(3000);
         _watch?.Dispose();
         Lighting.Dispose();
+        Updater.Dispose();
         Updates.Dispose();
         Rig.Dispose();
     }

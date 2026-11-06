@@ -170,7 +170,8 @@ public static class ConfigValidator
                     E.Add($"homeAssistant.{n} \"{v}\" must be a non-empty MQTT topic without spaces, wildcards (+ #) or leading/trailing '/'");
         }
         if (c.Sensors == null) E.Add("sensors options are missing (use { storage, memory, psu, controllers })");
-        if (c.Updates == null) E.Add("updates is missing (use { check: true })");
+        if (c.Updates == null) E.Add("updates is missing (use { check: true, autoInstall: false })");
+        else if (c.Updates.AutoInstall && !c.Updates.Check) E.Add("updates.autoInstall needs updates.check (the check is what finds a new release); switch autoInstall off first or check on");
 
         // ---- OpenRGB bridge
         if (c.OpenRgb == null) E.Add("openRgb is missing (use {} for the defaults)");
@@ -422,9 +423,10 @@ public static class ConfigValidator
                 ["psu"] = F("boolean", "PSU sensors (psu:*).", true, false),
                 ["controllers"] = F("boolean", "Fan / cooler controllers seen by LibreHardwareMonitor.", true, false),
             }),
-            ["updates"] = F("object", "Update check. Glint never downloads or installs anything by itself.", fields: new JsonObject
+            ["updates"] = F("object", "Update check and one-click / automatic install. Installs only a newer release of this repository whose setup matches the release's SHA256SUMS.txt and has a GitHub build attestation from its release workflow (update.status, update.install).", fields: new JsonObject
             {
                 ["check"] = F("boolean", "Ask GitHub for the latest release (one request to the releases/latest API at startup and every 24 h; no other network, no telemetry). Shown on the Setup check page, Settings and the tray menu.", true, false),
+                ["autoInstall"] = F("boolean", "Install a newer verified release by itself: only after 10 minutes without keyboard/mouse input, with no fullscreen game in front and not on battery; at most one attempt per version per day. Needs check. Off by default.", false, true),
             }),
             ["openRgb"] = F("object", "OpenRGB bridge (off by default; takes effect after app.restart). When enabled and an OpenRGB SDK server is reachable at startup, its devices become Glint lighting devices ('orgb-...'). Devices Glint already drives natively are skipped so two drivers never fight. Check with setup.check.", fields: new JsonObject
             {
