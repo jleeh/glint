@@ -1,0 +1,31 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  build-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Build
+        run: dotnet build src/Glint/Glint.csproj -c Release
+      - name: Selftest (offline, simulated devices)
+        shell: pwsh
+        run: |
+          $exe = 'src/Glint/bin/Release/net10.0-windows/Glint.exe'
+          $p = Start-Process $exe -ArgumentList 'selftest', "$PWD/selftest.json" -Wait -PassThru -NoNewWindow
+          Get-Content selftest.json | ConvertFrom-Json | ForEach-Object { "passed $($_.passed) failed $($_.failed)"; $_.checks | Where-Object { -not $_.Pass } | Format-List }
+          if ($p.ExitCode -ne 0) { exit 1 }
+      - name: Plugin tests (every bundled plugin against its simulated device)
+        shell: pwsh
+        run: |
+          $exe = 'src/Glint/bin/Release/net10.0-windows/Glint.exe'
+          $p = Start-Process $exe -ArgumentList 'plugincheck', 'all', "$PWD/plugincheck.txt" -Wait -PassThru -NoNewWindow
+          Get-Content plugincheck.txt
+          if ($p.ExitCode -ne 0) { exit 1 }

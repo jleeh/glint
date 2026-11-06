@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Glint</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+        <defs>
+          <linearGradient id="glint-grad" x1="4" y1="4" x2="28" y2="28" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#ff6a3d"/><stop offset=".55" stop-color="#d14bff"/><stop offset="1" stop-color="#6c7bff"/></linearGradient>
+        </defs>
+        <path d="M16 1.5C17.2 10.2 21.8 14.8 30.5 16C21.8 17.2 17.2 21.8 16 30.5C14.8 21.8 10.2 17.2 1.5 16C10.2 14.8 14.8 10.2 16 1.5Z" fill="url(#glint-grad)"/>
+        <path d="M16 7.5C16.6 12.4 19.6 15.4 24.5 16C19.6 16.6 16.6 19.6 16 24.5C15.4 19.6 12.4 16.6 7.5 16C12.4 15.4 15.4 12.4 16 7.5Z" fill="#fff" opacity=".28"/>
+      </svg>
+      <div><div class="brand-name">Glint</div><div class="brand-sub">Lighting &amp; cooling</div></div>
+    </div>
+    <nav class="nav" id="nav">
+      <button data-page="overview" class="active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="2"/><rect x="14" y="3" width="7" height="5" rx="2"/><rect x="14" y="12" width="7" height="9" rx="2"/><rect x="3" y="16" width="7" height="5" rx="2"/></svg>Overview</button>
+      <button data-page="cooling"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M12 10c0-4 1-7 4-7 2 0 3 2 2 4s-4 3-6 3M14 12c4 0 7 1 7 4 0 2-2 3-4 2s-3-4-3-6M12 14c0 4-1 7-4 7-2 0-3-2-2-4s4-3 6-3M10 12c-4 0-7-1-7-4 0-2 2-3 4-2s3 4 3 6"/></svg>Cooling</button>
+      <button data-page="sensors"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>Sensors</button>
+      <button data-page="lighting"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z"/></svg>Lighting</button>
+      <button data-page="devices"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3"/></svg>Devices</button>
+      <button data-page="plugins"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3v4M15 3v4M7 7h10v5a5 5 0 0 1-10 0z"/><path d="M12 17v4"/></svg>Plugins<span class="nav-badge" id="plugins-badge"></span></button>
+      <button data-page="overlay"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="4"/><path d="M7 10v4M5 12h4"/><circle cx="16" cy="11" r="1"/><circle cx="18" cy="13" r="1"/></svg>Game overlay</button>
+      <button data-page="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Settings</button>
+    </nav>
+    <div class="side-foot">
+      <div class="mini-card">
+        <div class="mini-label">Right now</div>
+        <div class="mini-row"><span>CPU</span><b id="mini-cpu">–</b></div>
+        <div class="mini-row"><span>GPU</span><b id="mini-gpu">–</b></div>
+        <div class="mini-row"><span>Liquid</span><b id="mini-liquid">–</b></div>
+      </div>
+      <div class="mini-card">
+        <div class="mini-label">Glint itself</div>
+        <div class="mini-row"><span>CPU</span><b id="mini-self-cpu">–</b></div>
+        <div class="mini-row"><span>Memory</span><b id="mini-self-mem">–</b></div>
+      </div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div>
+        <div class="page-title" id="page-title">Overview</div>
+        <div class="page-sub" id="page-sub"></div>
+      </div>
+      <div class="spacer"></div>
+      <div class="seg" id="profile-seg" title="Fan profile"></div>
+    </header>
+    <div class="content" id="content">
+      <section class="page active" id="page-overview"></section>
+      <section class="page" id="page-cooling"></section>
+      <section class="page" id="page-sensors"></section>
+      <section class="page" id="page-lighting"></section>
+      <section class="page" id="page-devices"></section>
+      <section class="page" id="page-plugins"></section>
+      <section class="page" id="page-overlay"></section>
+      <section class="page" id="page-settings"></section>
+    </div>
+  </main>
+</div>
+<div class="toast-host" id="toasts"></div>
+<script src="mock.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

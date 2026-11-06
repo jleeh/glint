@@ -1,0 +1,30 @@
+# Allowlist: ignore everything, then add back only source. Local logs, test reports, configs and
+# machine-specific files can never be committed by accident.
+/*
+!/.gitignore
+!/.gitattributes
+!/.github/
+!/LICENSE
+!/NOTICE.md
+!/README.md
+!/CONTRIBUTING.md
+!/install.ps1
+!/selftest.ps1
+!/docs/
+/docs/*
+!/docs/screenshots/
+!/docs/brand/
+!/src/
+!/installer/
+!/tools/
+
+# build output / local
+bin/
+obj/
+*.user
+.vs/
+node_modules/
+/tools/*
+!/tools/*.js
+!/tools/package.json
+!/tools/package-lock.json

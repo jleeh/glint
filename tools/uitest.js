@@ -1,0 +1,527 @@
+// Headless UI test for the Glint dashboard (web/), driven against mock.js.
+// usage: node uitest.js <path-to-web/index.html> <report.json>   (browser: $CHROME_PATH, default /usr/bin/google-chrome)
+// Every check asserts on the config the page sends back to the host, not on pixels.
+const puppeteer = require('puppeteer-core');
+const fs = require('fs');
+
+(async () => {
+  try {
+  const [, , page, out] = process.argv;
+  const b = await puppeteer.launch({ executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome', headless: 'new', args: ['--no-sandbox'] });
+  const p = await b.newPage();
+  await p.setViewport({ width: 1320, height: 860 });
+  p.setDefaultTimeout(4000);
+  const errors = [], checks = [];
+  p.on('pageerror', e => errors.push(e.message));
+  p.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
+  const wait = ms => new Promise(r => setTimeout(r, ms));
+  const cfg = async () => { await wait(350); return p.evaluate(() => window.__lastConfig); };
+  const check = (name, pass, detail = '') => { checks.push({ name, pass: !!pass, detail: String(detail) }); console.log((pass ? 'ok   ' : 'FAIL ') + name + (detail !== '' ? '  ' + detail : '')); };
+  const nav = async pg => { await p.click(`#nav button[data-page="${pg}"]`); await wait(250); };
+
+  await p.goto('file://' + page);
+  await wait(700);
+
+  // --- every page renders
+  for (const pg of ['overview', 'cooling', 'sensors', 'lighting', 'devices', 'overlay', 'settings']) {
+    await nav(pg);
+    const n = await p.$eval(`#page-${pg}`, el => el.children.length);
+    check(`page ${pg} renders`, n > 0, `${n} children`);
+  }
+
+  // --- overview
+  await nav('overview');
+  check('overview shows 3 hero temps', (await p.$$('[data-tile]')).length === 3);
+  check('overview lists other sensors', (await p.$$('[data-small]')).length >= 3, (await p.$$('[data-small]')).length);
+  await p.click('#profile-seg button:nth-child(1)');
+  let c = await cfg();
+  check('profile switch sends activeProfile', c?.activeProfile === (await p.$eval('#profile-seg button:nth-child(1)', e => e.dataset.p)), c?.activeProfile);
+
+  // --- cooling
+  await nav('cooling');
+  const prof = await p.$eval('#c-profile', e => e.value);
+  const rules = await p.$$('[data-ri]');
+  await p.click(`[data-ri="${rules.length - 1}"]`); await wait(200);
+  const idx = rules.length - 1;
+  await p.click('#c-combine button[data-c="average"]');
+  c = await cfg();
+  check('combine → average', c.profiles[prof][idx].combine === 'average', c.profiles[prof][idx].combine);
+  const nIn = c.profiles[prof][idx].inputs.length;
+  await p.click('#c-addin'); c = await cfg();
+  check('add sensor input', c.profiles[prof][idx].inputs.length === nIn + 1, `${nIn} → ${c.profiles[prof][idx].inputs.length}`);
+  await p.click(`[data-rm="${nIn}"]`); c = await cfg();
+  check('remove sensor input', c.profiles[prof][idx].inputs.length === nIn);
+  // drag first handle up
+  const curveName = await p.$eval('#c-curve', e => e.value);
+  const before = JSON.stringify(c.curves[curveName][1]);
+  await p.$eval('#curve', e => e.scrollIntoView({ block: 'center' })); await wait(150);
+  const h = await p.$('[data-h="1"] circle:last-child'); const bb = await h.boundingBox();
+  await p.mouse.move(bb.x + bb.width / 2, bb.y + bb.height / 2); await p.mouse.down();
+  await p.mouse.move(bb.x + bb.width / 2 + 10, bb.y - 60, { steps: 6 }); await p.mouse.up();
+  c = await cfg();
+  check('drag curve point changes curve', JSON.stringify(c.curves[curveName][1]) !== before, `${before} → ${JSON.stringify(c.curves[curveName][1])}`);
+  const nPts = c.curves[curveName].length;
+  await p.$eval('#curve', e => e.scrollIntoView({ block: 'center' })); await wait(150);
+  const svg = await (await p.$('#curve')).boundingBox();
+  // aim at the midpoint between the first two curve points, at 50% duty (never on a handle)
+  const aim = await p.evaluate(() => {
+    const pts = S.cfg.curves[S.curve], t = Math.round((pts[0][0] + pts[1][0]) / 2);
+    const el = document.getElementById('curve'), W = el.clientWidth, H = el.clientHeight;
+    const pw = W - CX.padL - CX.padR, ph = H - CX.padT - CX.padB;
+    return { x: (CX.padL + (t - CX.t0) / (CX.t1 - CX.t0) * pw) / W, y: (CX.padT + 0.5 * ph) / H };
+  });
+  await p.mouse.click(svg.x + svg.width * aim.x, svg.y + svg.height * aim.y, { count: 2 });
+  c = await cfg();
+  check('double-click adds curve point', c.curves[curveName].length === nPts + 1, `${nPts} → ${c.curves[curveName].length}`);
+  // fan assignment moves a fan between rules
+  const mbFan = await p.$eval('.fan-chip[data-fan^="mb:"]', e => e.dataset.fan);
+  await p.click(`.fan-chip[data-fan="${mbFan}"]`); c = await cfg();
+  check('assign motherboard header to rule', c.profiles[prof][idx].fans.includes(mbFan), mbFan);
+  const other = c.profiles[prof].findIndex((r, i) => i !== idx && r.fans.length);
+  const stolen = c.profiles[prof][other].fans[0];
+  await p.click(`.fan-chip[data-fan="${stolen}"]`); c = await cfg();
+  check('fan belongs to exactly one rule', c.profiles[prof][idx].fans.includes(stolen) && !c.profiles[prof][other].fans.includes(stolen), stolen);
+  await p.click('#c-fixed'); c = await cfg();
+  check('fixed speed toggle', c.profiles[prof][idx].fixed === 50, c.profiles[prof][idx].fixed);
+  await p.click('#c-add'); c = await cfg();
+  check('new rule', c.profiles[prof].length === rules.length + 1);
+  await p.click('#c-del'); c = await cfg();
+  check('delete rule', c.profiles[prof].length === rules.length);
+
+  // --- lighting: every effect card applies
+  await nav('lighting');
+  const fxs = await p.$$eval('[data-fx]', els => els.map(e => e.dataset.fx));
+  let okFx = 0;
+  for (const f of fxs) {
+    await p.click(`[data-fx="${f}"]`); c = await cfg();
+    if (c.lighting.effect.type.toLowerCase() === f.toLowerCase()) okFx++;
+    else check(`effect ${f}`, false, c.lighting.effect.type);
+  }
+  check(`all ${fxs.length} effect cards apply`, okFx === fxs.length, `${okFx}/${fxs.length}`);
+  // a one-colour palette (e.g. after Static) must not turn multi-colour effects into a single colour
+  await p.click('[data-fx="Static"]'); await p.evaluate(() => { S.cfg.lighting.effect.colors = ['#004000']; });
+  for (const f of ['ColorWave', 'Comet', 'Spin', 'Ripple']) {
+    await p.click('[data-fx="Static"]'); await p.evaluate(() => { S.cfg.lighting.effect.colors = ['#004000']; });
+    await p.click(`[data-fx="${f}"]`); c = await cfg();
+    const own = await p.evaluate(t => Object.values(S.cfg.lighting.presets).find(x => x.type === t)?.colors ?? null, f.charAt(0).toLowerCase() + f.slice(1));
+    check(`${f} from a one-colour palette gets its own colours`, own ? JSON.stringify(c.lighting.effect.colors) === JSON.stringify(own) : c.lighting.effect.colors.length >= 2, JSON.stringify(c.lighting.effect.colors));
+  }
+  // an effect card brings its own colours, not the previous preset's
+  {
+    const pr = await p.evaluate(() => { const ps = S.cfg.lighting.presets; const a = Object.keys(ps).find(k => ps[k].type === 'temperature'); const b = Object.keys(ps).find(k => ps[k].type === 'twinkle'); return { a, b, bc: b && ps[b].colors }; });
+    if (pr.a && pr.b) {
+      await p.click(`#page-lighting [data-preset="${pr.a}"]`); await wait(150);
+      await p.click('[data-fx="Twinkle"]'); c = await cfg();
+      check('effect card uses its own colours, not the last preset\'s', JSON.stringify(c.lighting.effect.colors) === JSON.stringify(pr.bc), JSON.stringify(c.lighting.effect.colors));
+    } else check('mock has temperature + twinkle presets', false, JSON.stringify(pr));
+  }
+  await p.click('[data-fx="Static"]'); c = await cfg();
+  check('Static keeps the palette (no forced change)', c.lighting.effect.colors.length >= 1);
+  // click the first fan ring on the stage → zone override
+  await p.click('[data-fx="Static"]'); await wait(200);
+  await p.$eval('#stage', e => e.scrollIntoView({ block: 'center' })); await wait(150);
+  const st = await (await p.$('#stage-c')).boundingBox();
+  const ring = await p.evaluate(() => { const z = S.init.zones.find(z => z.kind === 'ring' && z.count <= 16); const pl = placement(z.id); return { x: (pl.x + pl.w / 2) * stageGeo.W, y: (pl.y + pl.h / 2) * stageGeo.H, id: z.id }; });
+  await p.mouse.click(st.x + ring.x, st.y + ring.y); await wait(250);
+  await p.click('[data-fx="Comet"]'); c = await cfg();
+  check('click fan on stage → per-fan override', c.lighting.overrides[ring.id]?.type === 'comet', ring.id + ' ' + JSON.stringify(c.lighting.overrides[ring.id]?.type));
+  check('override leaves global effect alone', c.lighting.effect.type === 'static', c.lighting.effect.type);
+  await p.click('#l-reset'); c = await cfg();
+  check('reset override', !c.lighting.overrides[ring.id]);
+  await p.click('[data-t="all"]'); await wait(200);
+  // selection scoping: a device selection must be obvious and easy to leave
+  {
+    const dev = await p.$eval('[data-t]:not([data-t="all"])', e => e.dataset.t);
+    await p.click(`[data-t="${dev}"]`); await wait(150);
+    check('selecting a device shows the scoped bar', await p.$eval('.target-bar', e => e.classList.contains('scoped')));
+    check('scoped bar has a back-to-all button', !!(await p.$('#l-all')));
+    await p.click(`[data-t="${dev}"]`); await wait(150);
+    check('clicking the selected device again goes back to all lights', await p.evaluate(() => S.target === 'all'));
+    await p.click(`[data-t="${dev}"]`); await wait(150);
+    await p.keyboard.press('Escape'); await wait(150);
+    check('Esc goes back to all lights', await p.evaluate(() => S.target === 'all'));
+    await p.click(`[data-t="${dev}"]`); await wait(150);
+    await p.click('#l-all'); await wait(150);
+    check('back-to-all button works', await p.evaluate(() => S.target === 'all') && !(await p.$('.target-bar.scoped')));
+    const preset = await p.$eval('#page-lighting [data-preset]', e => e.dataset.preset);
+    await p.click(`#page-lighting [data-preset="${preset}"]`); c = await cfg();
+    check('preset with all lights selected changes the global effect', JSON.stringify(c.lighting.effect) === JSON.stringify(await p.evaluate(n => S.cfg.lighting.presets[n], preset)));
+  }
+  const nCol = c.lighting.effect.colors.length;
+  await p.click('#fx-addcol'); c = await cfg();
+  check('add colour', c.lighting.effect.colors.length === nCol + 1, `${nCol} → ${c.lighting.effect.colors.length}`);
+  const preset = await p.$eval('#page-lighting [data-preset]', e => e.dataset.preset);
+  await p.click(`#page-lighting [data-preset="${preset}"]`); c = await cfg();
+  check('apply preset', !!c.lighting.effect.type, preset);
+  await p.click('#l-enabled'); c = await cfg();
+  check('lights toggle', c.lighting.enabled === false);
+  await p.click('#l-enabled');
+
+  // --- plugin effects
+  await p.click('[data-t="all"]'); await wait(200);
+  check('plugin effects listed in gallery', (await p.$$('[data-pfx]')).length === 12, (await p.$$('[data-pfx]')).length);
+  await p.click('[data-pfx="Aurora"]'); c = await cfg();
+  check('plugin effect applies', c.lighting.effect.type === 'plugin' && c.lighting.effect.plugin === 'Aurora', JSON.stringify([c.lighting.effect.type, c.lighting.effect.plugin]));
+  check('plugin params rendered from schema', (await p.$$('#pp-speed, #pp-depth')).length === 2);
+  await p.$eval('#pp-speed', e => { e.value = 1.25; e.dispatchEvent(new Event('input')); }); c = await cfg();
+  check('plugin number param saved', c.lighting.effect.params?.speed === 1.25, JSON.stringify(c.lighting.effect.params));
+  await p.click('[data-ppadd="colors"]'); c = await cfg();
+  check('plugin colours param add', c.lighting.effect.params?.colors?.length === 4, JSON.stringify(c.lighting.effect.params?.colors));
+  await p.click('[data-pfx="Heartbeat"]'); await wait(200);
+  check('sensor param renders a sensor picker', (await p.$$('select[data-pps="sensor"] option')).length > 3);
+
+  // --- layout editor
+  await p.click('[data-t="all"]'); await wait(200);
+  await p.$eval('#stage', e => e.scrollIntoView({ block: 'center' })); await wait(150);
+  check('layout: every zone listed in the legend', (await p.$$('.lg-zone')).length === 14, (await p.$$('.lg-zone')).length);
+  const fieldDrawn = await p.evaluate(() => { const c = document.getElementById('stage-c'), g = c.getContext('2d'); const d = g.getImageData(c.width * 0.05, c.height * 0.5, 1, 1).data; return d[0] + d[1] + d[2]; });
+  check('layout: effect field painted behind the devices', fieldDrawn > 30, fieldDrawn);
+  await p.click('#lay-arrange'); await wait(200);
+  const geo = await p.evaluate(() => { const c = document.getElementById('stage-c').getBoundingClientRect(); const pl = placement('cc:fan2'); return { left: c.left, top: c.top, W: c.width, H: c.height, x: pl.x, y: pl.y, w: pl.w, h: pl.h }; });
+  const sx = geo.left + (geo.x + geo.w / 2) * geo.W, sy = geo.top + (geo.y + geo.h / 2) * geo.H;
+  await p.mouse.move(sx, sy); await p.mouse.down(); await p.mouse.move(sx + 120, sy + 30, { steps: 8 }); await p.mouse.up();
+  c = await cfg();
+  const moved = c.lighting.layout?.['cc:fan2'];
+  check('arrange: dragging a fan saves its new position', moved && Math.abs(moved.x - geo.x - 120 / geo.W) < 0.02, JSON.stringify(moved));
+  await p.keyboard.press('ArrowRight'); await p.keyboard.press('r'); c = await cfg();
+  check('arrange: arrow nudges, R rotates the selected zone', Math.abs(c.lighting.layout['cc:fan2'].x - moved.x - 0.005) < 1e-6 && c.lighting.layout['cc:fan2'].rotation === 90, JSON.stringify(c.lighting.layout['cc:fan2']));
+  p.once('dialog', d => d.accept());
+  await p.click('#lay-auto'); await wait(400);
+  check('auto-arrange asks, then applies the automatic layout', (await p.evaluate(() => window.__msgs.some(m => m.type === 'autoLayout'))) && (await p.evaluate(() => Math.abs(S.cfg.lighting.layout['cc:fan2'].x - S.init.placements['cc:fan2'].x) < 1e-9)));
+  await p.click('#lay-arrange'); await wait(200);
+  await p.click('[data-identify="lnp"]'); await wait(100);
+  check('identify sends the device id', await p.evaluate(() => window.__msgs.some(m => m.type === 'identify' && m.target === 'lnp')));
+  await p.click('[data-t="all"]'); await wait(200);
+  await p.click('[data-fx="Wave"]'); await wait(200);
+  await p.$eval('#fx-angle', e => { e.value = 90; e.dispatchEvent(new Event('input')); }); c = await cfg();
+  check('Direction dial saves the angle', c.lighting.effect.angle === 90, c.lighting.effect.angle);
+
+  // --- devices
+  await nav('devices');
+  await p.click('[data-leds="lnp:ch1"]', { count: 3 }); await p.keyboard.type('34'); c = await cfg();
+  check('edit LED count', c.lighting.ledCounts['lnp:ch1'] === 34, c.lighting.ledCounts['lnp:ch1']);
+  check('restart banner shown', await p.$eval('#restart-banner', e => !e.classList.contains('hidden')));
+  check('devices page summarises plugins', (await p.$eval('#page-devices', e => e.textContent)).includes('42 installed'));
+  {
+    const txt = await p.$eval('#page-devices', e => e.innerText);
+    check('devices: no empty "Firmware" label when the host sends none', !/Firmware\s*·/.test(txt));
+    const titles = await p.$$eval('#page-devices .card-title', els => els.map(e => e.textContent));
+    const raw = await p.evaluate(() => S.init.devices.map(d => d.id));
+    check('devices: every card has a readable name, never a raw id', !titles.some(t => raw.includes(t)), titles.join(' | '));
+    check('devices: keyboard and mouse get their own icons', await p.evaluate(() => { const h = document.getElementById('page-devices').innerHTML, norm = x => { const t = document.createElement('div'); t.innerHTML = x; return t.innerHTML; }; return h.includes(norm(IC.keyboard)) && h.includes(norm(IC.mouse)); }));
+    check('devices: user-set LED counts editable on MSI ARGB headers', !!(await p.$('[data-leds="mystic:jrainbow1"]')));
+  }
+  await p.click('[data-fanname="cc:fan1"]', { count: 3 }); await p.keyboard.type('Front top'); c = await cfg();
+  check('rename fan', c.fanNames['cc:fan1'] === 'Front top', c.fanNames['cc:fan1']);
+  await nav('overview');
+  check('renamed fan shows on overview', (await p.content()).includes('Front top'));
+
+  // --- plugins manager
+  await nav('plugins');
+  const rows0 = (await p.$$('.plug-row')).length;
+  check('plugins page lists every plugin', rows0 === 42, rows0);
+  await p.type('#pl-q', 'razer'); await wait(150);
+  check('search filters the list', (await p.$$('.plug-row')).length === 1, (await p.$$('.plug-row')).length);
+  await p.$eval('#pl-q', e => { e.value = ''; e.dispatchEvent(new Event('input')); });
+  await p.click('[data-pf="problems"]'); await wait(150);
+  check('Problems filter shows errors + approvals', (await p.$$('.plug-row')).length === 2 && (await p.$$('[data-approve]')).length === 1, (await p.$$('.plug-row')).length);
+  await p.click('[data-pf="all"]'); await wait(150);
+  check('sidebar badge flags plugins needing attention', await p.$eval('#plugins-badge', e => e.textContent === '2' && e.classList.contains('warn')));
+  await p.click('[data-en="lava.js"]'); await wait(100);
+  let msgs = await p.evaluate(() => window.__msgs.filter(m => m.type === 'setPluginEnabled'));
+  check('toggle sends setPluginEnabled', msgs.some(m => m.file === 'lava.js' && m.enabled === false), JSON.stringify(msgs.at(-1)));
+  p.once('dialog', d => d.accept());
+  await p.click('[data-rm="sunset.js"]'); await wait(100);
+  msgs = await p.evaluate(() => window.__msgs.filter(m => m.type === 'removePlugin'));
+  check('delete asks, then sends removePlugin', msgs.some(m => m.file === 'sunset.js'));
+  check('bundled plugins have no delete button', !(await p.$('[data-rm="aurora.js"]')));
+  p.once('dialog', d => d.accept());
+  await p.click('[data-pf="problems"]'); await wait(100); await p.click('[data-approve]'); await wait(100);
+  msgs = await p.evaluate(() => window.__msgs.filter(m => m.type === 'approvePlugin'));
+  check('approve asks, then sends approvePlugin', msgs.some(m => m.file === 'patriot-viper.js'));
+  await p.click('[data-pf="all"]'); await wait(100);
+  check('MCP command shown for Windows and WSL', (await p.$eval('#pl-mcp', e => e.textContent)).includes('Glint.exe" mcp') && (await p.$eval('#pl-mcp-wsl', e => e.textContent)).includes('/mnt/c/Program Files/Glint/Glint.exe'),
+    await p.$eval('#pl-mcp-wsl', e => e.textContent));
+  await p.click('#pl-new-fx'); await wait(100);
+  check('New effect sends newPlugin', (await p.evaluate(() => window.__msgs.some(m => m.type === 'newPlugin' && m.kind === 'effect'))));
+  // gallery search + cap
+  await nav('lighting');
+  const visible = async () => p.$$eval('#pfx-grid .fx[data-pfx]', els => els.filter(e => getComputedStyle(e).display !== 'none').length);
+  check('plugin gallery capped when long', (await visible()) === 11, await visible());
+  await p.type('#fx-q', 'storm'); await wait(150);
+  check('effect search finds plugin effects', (await visible()) === 1, await visible());
+  await p.$eval('#fx-q', e => { e.value = ''; e.dispatchEvent(new Event('input')); });
+
+  // --- settings
+  await nav('settings');
+  await p.$eval('#s-fail', e => { e.value = 80; e.dispatchEvent(new Event('input')); }); c = await cfg();
+  check('fail-safe slider', c.failsafeDuty === 80, c.failsafeDuty);
+
+
+  // --- sensors page
+  await nav('sensors'); await wait(1300);
+  {
+    const msgs = await p.evaluate(() => window.__msgs.filter(m => m.type === 'sensorsWanted'));
+    check('sensors: opening the page asks for the catalog (and resets min/max)', msgs.length >= 1 && msgs[0].reset === true, JSON.stringify(msgs.slice(0, 2)));
+    const rows = (await p.$$('#sens-tree .sr')).length;
+    check('sensors: tree lists every sensor of the catalog', rows > 80 && rows === await p.evaluate(() => { let n = 0; const w = h => { n += h.sensors.length; h.sub?.forEach(w); }; S.sens.hardware.forEach(w); return n; }), rows);
+    const hw = await p.$$eval('#sens-tree .sg.hw > .sg-h .hw-name', els => els.map(e => e.textContent));
+    check('sensors: grouped by hardware (CPU, GPU, board + Super I/O chip, drives, memory, network, hub)', ['AMD Ryzen 7 7800X3D', 'NVIDIA GeForce RTX 4070 SUPER', 'Nuvoton NCT6687D', 'Samsung SSD 990 PRO 2TB', 'Total Memory', 'Ethernet', 'Corsair Commander Core'].every(n => hw.includes(n)), hw.join(', '));
+    const heads = await p.$$eval('[data-g="/amdcpu/0"] > .sg-body > .sg > .sg-h', els => els.map(e => e.textContent.replace(/\d+$/, '').trim()));
+    check('sensors: then by sensor type', JSON.stringify(heads) === JSON.stringify(['Temperatures', 'Voltages', 'Powers', 'Clocks', 'Utilization']), heads.join(', '));
+    const txt = await p.$eval('#sens-tree', e => e.innerText);
+    const units = { '°C': /(^|\s)\d+\.\d °C/, V: /(^|\s)\d+\.\d{3} V/, MHz: /(^|\s)[\d,]+ MHz/, '%': /(^|\s)\d+\.\d %/, W: /(^|\s)\d+\.\d W/, RPM: /(^|\s)[\d,]+ RPM/, GB: /(^|\s)\d+(\.\d+)? (GB|TB)/, MB: /(^|\s)[\d,]+ MB\b/, 'MB/s': /(^|\s)\d+(\.\d+)? (KB|MB)\/s/ };
+    const miss = Object.entries(units).filter(([, re]) => !re.test(txt)).map(([u]) => u);
+    check('sensors: units formatted (°C, V, MHz, %, W, RPM, GB, MB, MB/s)', miss.length === 0, 'missing ' + miss.join(' '));
+    check('sensors: Value / Min / Max columns', (await p.$$eval('.sens-head span', e => e.map(x => x.textContent))).join() === 'Sensor,Value,Min,Max');
+    const tags = await p.$$eval('#sens-tree .stag', els => els.map(e => e.textContent));
+    check('sensors: friendly aliases tagged (cpu, gpu, liquid)', ['cpu', 'gpu', 'liquid'].every(t => tags.includes(t)), [...new Set(tags)].slice(0, 12).join(', '));
+    const drive = await p.$$eval('#sens-tree .stag.drive', els => els.map(e => e.closest('.sr').querySelector('.sname').textContent + '@' + e.closest('.sr').dataset.sid));
+    check('sensors: sensors used by fan curves get a "drives fans" tag', drive.length >= 2 && drive.some(d => d.startsWith('Core (Tctl/Tdie)')) && drive.some(d => d.startsWith('liquid')), drive.join(', '));
+    check('sensors: board fan headers show the fan\'s name', tags.includes('Front intake 1'), '');
+    // live values + min/max
+    await wait(2200);
+    const spread = await p.evaluate(() => [...document.querySelectorAll('#sens-tree .sr')].filter(r => r.children[2].textContent !== r.children[3].textContent).length);
+    check('sensors: min/max track changing values', spread > 5, spread);
+    const vals0 = await p.$eval('[data-sid="/amdcpu/0/clock/0"] [data-v]', e => e.textContent).catch(() => null);
+    await wait(1100);
+    const vals1 = await p.$eval('[data-sid="/amdcpu/0/clock/0"] [data-v]', e => e.textContent).catch(() => null);
+    check('sensors: values update live (~1 Hz)', vals0 && vals1 && vals0 !== vals1, `${vals0} → ${vals1}`);
+    await p.click('#sens-reset');
+    const after = await p.evaluate(() => [...document.querySelectorAll('#sens-tree .sr')].filter(r => r.children[2].textContent !== r.children[1].textContent || r.children[3].textContent !== r.children[1].textContent).length);
+    check('sensors: Reset min/max sets min = max = value', after === 0, after + ' rows differ');
+    check('sensors: Reset sends sensorsReset to the host', await p.evaluate(() => window.__msgs.some(m => m.type === 'sensorsReset')));
+    await wait(1100);
+    const mmAfter = await p.evaluate(() => { const x = S.sens.hardware[0].sensors.find(s => s.type === 'Clock'); return [x.min, x.max]; });
+    check('sensors: host min/max restart after reset', await p.evaluate(() => { let ok = 0, n = 0; const w = h => { h.sensors.forEach(x => { if (x.value == null) return; n++; if (x.min <= x.value && x.max >= x.value) ok++; }); h.sub?.forEach(w); }; S.sens.hardware.forEach(w); return ok === n; }), JSON.stringify(mmAfter));
+    // keep-alive while open
+    const kept = await p.evaluate(() => window.__msgs.filter(m => m.type === 'sensorsWanted').length);
+    check('sensors: page keeps the catalog alive while open', kept >= 4, kept);
+    // search
+    await p.type('#sens-q', 'tctl'); await wait(150);
+    let vis = await p.$$eval('#sens-tree .sr', els => els.filter(e => e.offsetParent).map(e => e.querySelector('.sname').textContent));
+    check('sensors: search filters rows', vis.length === 1 && vis[0] === 'Core (Tctl/Tdie)', vis.join(', '));
+    const hwVis = await p.$$eval('#sens-tree .sg.hw', els => els.filter(e => e.offsetParent).length);
+    check('sensors: search hides hardware with no matches', hwVis === 1, hwVis);
+    await p.$eval('#sens-q', e => { e.value = ''; e.dispatchEvent(new Event('input')); });
+    await p.type('#sens-q', 'gpu fan'); await wait(150);
+    vis = await p.$$eval('#sens-tree .sr', els => els.filter(e => e.offsetParent).length);
+    check('sensors: multi-word search', vis === 4, vis);
+    await p.$eval('#sens-q', e => { e.value = 'zzznothing'; e.dispatchEvent(new Event('input')); }); await wait(100);
+    check('sensors: empty search result says so', await p.$eval('#sens-none', e => !!e.offsetParent && e.textContent.includes('zzznothing')));
+    await p.$eval('#sens-q', e => { e.value = ''; e.dispatchEvent(new Event('input')); }); await wait(100);
+    // collapse
+    const gpuRows = () => p.$$eval('[data-g="/gpu-nvidia/0"] .sr', els => els.filter(e => e.offsetParent).length);
+    const n0 = await gpuRows();
+    await p.click('[data-tg="/gpu-nvidia/0"]'); await wait(100);
+    check('sensors: clicking a hardware header collapses it', n0 > 10 && (await gpuRows()) === 0 && await p.$eval('[data-tg="/gpu-nvidia/0"]', e => e.getAttribute('aria-expanded') === 'false'), `${n0} → ${await gpuRows()}`);
+    await wait(1100);
+    check('sensors: collapsed state survives live updates', (await gpuRows()) === 0);
+    await p.click('[data-tg="/gpu-nvidia/0"]'); await wait(100);
+    check('sensors: and expands again', (await gpuRows()) === n0);
+    await p.click('[data-tg="/gpu-nvidia/0|Clock"]'); await wait(100);
+    check('sensors: type groups collapse on their own', (await gpuRows()) === n0 - 3, await gpuRows());
+    await p.click('#sens-collapse'); await wait(100);
+    check('sensors: Collapse all', (await p.$$eval('#sens-tree .sr', els => els.filter(e => e.offsetParent).length)) === 0);
+    await p.click('#sens-expand'); await wait(100);
+    check('sensors: Expand all', (await p.$$eval('#sens-tree .sr', els => els.filter(e => e.offsetParent).length)) === rows);
+  }
+  // leaving the page stops the keep-alive
+  await nav('overview');
+  {
+    const k0 = await p.evaluate(() => window.__msgs.filter(m => m.type === 'sensorsWanted').length);
+    await wait(2100);
+    const k1 = await p.evaluate(() => window.__msgs.filter(m => m.type === 'sensorsWanted').length);
+    check('sensors: closing the page stops asking for the catalog', k0 === k1, `${k0} → ${k1}`);
+  }
+
+  // --- cooling: manual override badge + back to auto
+  await nav('cooling');
+  {
+    const prof2 = await p.$eval('#c-profile', e => e.value);
+    await p.click('[data-ri="1"]'); await wait(150);
+    // the host (Home Assistant / API) sets an override: it arrives with the live state
+    await p.evaluate(pr => { const c = window.__lastConfig ?? S.cfg; window.__lastConfig = JSON.parse(JSON.stringify(c)); window.__lastConfig.profiles[pr][1].override = 65; }, prof2);
+    await wait(2600);
+    check('override: badge on the rule list', (await p.$eval('[data-ri="1"]', e => e.textContent)).includes('Held 65%'));
+    check('override: "Held at 65% by override" bar in the editor', (await p.$eval('#c-ovr', e => e.textContent).catch(() => '')).includes('Held at 65% by override'));
+    check('override: overview explains it', await p.evaluate(pr => winner(S.cfg.profiles[pr][1], {}).label === 'Held at 65% by override', prof2));
+    await p.click('#c-auto'); c = await cfg();
+    check('override: Back to auto sends override = null', c.profiles[prof2][1].override == null && 'override' in c.profiles[prof2][1] && !(await p.$('#c-ovr')), JSON.stringify(c.profiles[prof2][1].override));
+    await wait(1200);
+    check('override: badge stays gone after the next state update', !(await p.$('#c-ovr')) && !(await p.$eval('[data-ri="1"]', e => e.textContent)).includes('Held'));
+  }
+
+  // --- settings: Home Assistant card
+  await nav('settings');
+  {
+    check('HA: card rendered', !!(await p.$('#ha-card')) && (await p.$eval('#ha-card', e => e.textContent)).includes('Mosquitto'));
+    const retype = async (sel, v) => { await p.focus(sel); await p.keyboard.down('Control'); await p.keyboard.press('a'); await p.keyboard.up('Control'); await p.keyboard.type(v); await p.keyboard.press('Tab'); };
+    check('HA: status says off while disabled', (await p.$eval('#ha-status', e => e.textContent)).trim() === 'Off');
+    await p.click('#ha-enabled'); c = await cfg();
+    check('HA: enable toggle saves', c.homeAssistant.enabled === true);
+    await retype('#ha-host', 'broker.example');
+    await retype('#ha-port', '1884');
+    await retype('#ha-user', 'glint');
+    await retype('#ha-prefix', 'ha');
+    await retype('#ha-topic', 'desk-pc');
+    await p.click('#ha-tls'); c = await cfg();
+    const h = c.homeAssistant;
+    check('HA: fields save (host, port, tls, username, prefix, topic)', h.host === 'broker.example' && h.port === 1884 && h.tls === true && h.username === 'glint' && h.discoveryPrefix === 'ha' && h.baseTopic === 'desk-pc', JSON.stringify(h));
+    check('HA: no password sent until one is typed', !('password' in h));
+    const n0 = await p.evaluate(() => window.__msgs.length);
+    await p.click('#ha-pass'); await p.keyboard.type('s3cret-pw'); await p.keyboard.press('Tab'); c = await cfg();
+    const sent = await p.evaluate(n => window.__msgs.slice(n).filter(m => m.type === 'config').map(m => m.config.homeAssistant.password ?? null), n0);
+    check('HA: typed password is sent once', sent.filter(x => x === 's3cret-pw').length === 1, JSON.stringify(sent));
+    check('HA: password field is empty after saving and says it is saved', await p.$eval('#ha-pass', e => e.value === '' && /Saved/.test(e.placeholder)));
+    await p.click('#ha-enabled'); await p.click('#ha-enabled'); c = await cfg();
+    check('HA: later saves do not resend the password', !('password' in c.homeAssistant) && c.homeAssistant.enabled === true, JSON.stringify(c.homeAssistant));
+    await nav('overview'); await nav('settings');
+    check('HA: password never echoed into the page', await p.evaluate(() => !document.documentElement.outerHTML.includes('s3cret-pw') && !JSON.stringify(S.cfg).includes('s3cret-pw') && document.getElementById('ha-pass').value === ''));
+    check('HA: re-rendered card keeps the saved fields', await p.$eval('#ha-host', e => e.value === 'broker.example') && await p.$eval('#ha-port', e => e.value === '1884'));
+    await wait(1100);
+    check('HA: status line shows the connection', /Connected to mqtts:\/\/broker\.example:1884 · 27 entities/.test(await p.$eval('#ha-status', e => e.textContent)), await p.$eval('#ha-status', e => e.textContent));
+    await p.click('#ha-pass-clear'); c = await cfg();
+    check('HA: Clear sends an empty password (removes the saved one)', await p.evaluate(() => window.__msgs.filter(m => m.type === 'config').at(-1).config.homeAssistant.password === '') && await p.$eval('#ha-pass', e => e.placeholder === 'Not set'));
+    await p.click('#ha-enabled'); c = await cfg();
+    check('HA: disable saves', c.homeAssistant.enabled === false);
+  }
+
+  // --- game overlay page
+  await nav('overlay');
+  {
+    const retype = async (sel, v) => { await p.focus(sel); await p.keyboard.down('Control'); await p.keyboard.press('a'); await p.keyboard.up('Control'); if (v) await p.keyboard.type(v); else await p.keyboard.press('Backspace'); await p.keyboard.press('Tab'); };
+    const ov = async () => (await cfg()).overlay;
+    check('overlay: card renders with the items and a preview', !!(await p.$('#ov-card')) && (await p.$$('#ov-items .ov-item')).length === 7 && (await p.$eval('#ov-preview', e => e.textContent)).includes('FPS'));
+    await p.click('#ov-enabled'); let o = await ov();
+    check('overlay: enable toggle saves', o.enabled === false, o.enabled);
+    await p.click('#ov-game'); o = await ov();
+    check('overlay: only-while-gaming toggle saves', o.onlyWhenGame === true);
+    await p.click('#ov-pos [data-pos="bottom-right"]'); o = await ov();
+    check('overlay: position picker saves', o.position === 'bottom-right' && await p.$eval('#ov-pos [data-pos="bottom-right"]', e => e.classList.contains('on')), o.position);
+    await p.click('#ov-layout [data-l="compact"]'); o = await ov();
+    check('overlay: layout saves', o.layout === 'compact');
+    await p.click('#ov-layout [data-l="detailed"]');
+    await retype('#ov-ox', '40'); await retype('#ov-oy', '-20'); o = await ov();
+    check('overlay: offsets save', o.offsetX === 40 && o.offsetY === -20, `${o.offsetX},${o.offsetY}`);
+    await p.$eval('#ov-scale', e => { e.value = 1.5; e.dispatchEvent(new Event('input')); });
+    await p.$eval('#ov-opacity', e => { e.value = 0.8; e.dispatchEvent(new Event('input')); });
+    await p.$eval('#ov-bg', e => { e.value = 0.3; e.dispatchEvent(new Event('input')); }); o = await ov();
+    check('overlay: scale / opacity / background sliders save', o.scale === 1.5 && o.opacity === 0.8 && o.backgroundOpacity === 0.3, `${o.scale} ${o.opacity} ${o.backgroundOpacity}`);
+    await p.$eval('#ov-accent', e => { e.value = '#00e5ff'; e.dispatchEvent(new Event('input', { bubbles: true })); }); o = await ov();
+    check('overlay: accent colour saves', o.accent === '#00e5ff', o.accent);
+    await p.click('#ov-accent-reset'); o = await ov();
+    check('overlay: accent reset goes back to the Glint gradient (null)', o.accent === null);
+    // hotkey
+    await retype('#ov-hotkey', 'Ctrl+Alt+F9'); o = await ov();
+    check('overlay: valid hotkey saves', o.hotkey === 'Ctrl+Alt+F9', o.hotkey);
+    await retype('#ov-hotkey', 'banana'); o = await ov();
+    check('overlay: invalid hotkey shows an error state and is not saved', o.hotkey === 'Ctrl+Alt+F9' && await p.$eval('#ov-hotkey', e => e.classList.contains('invalid') && e.getAttribute('aria-invalid') === 'true') && (await p.$eval('#ov-hotkey-err', e => e.textContent)).length > 5, o.hotkey);
+    await retype('#ov-hotkey', 'O'); check('overlay: bare letter key is rejected', await p.$eval('#ov-hotkey', e => e.classList.contains('invalid')));
+    await retype('#ov-hotkey', ''); o = await ov();
+    check('overlay: empty hotkey (none) is valid', o.hotkey === '' && await p.$eval('#ov-hotkey', e => !e.classList.contains('invalid')), o.hotkey);
+    // items: add catalog sensors
+    const n0 = o.items.length;
+    await p.click('#ov-add'); await wait(900);
+    check('overlay: opening the picker asks for the sensor catalog', await p.evaluate(() => window.__msgs.some(m => m.type === 'sensorsWanted')));
+    const groups = await p.$$eval('#ov-plist .ov-ph', els => els.map(e => e.textContent.replace(/\d+$/, '')));
+    check('overlay: picker lists built-ins, fans and hardware groups', ['Built-in', 'Fans'].every(g => groups.includes(g)) && groups.some(g => /Ryzen/.test(g)) && groups.some(g => /GeForce/.test(g)), groups.join(' | '));
+    await p.type('#ov-q', 'tctl'); await wait(150);
+    const picks = await p.$$eval('#ov-plist .ov-pick', els => els.map(e => e.dataset.src));
+    check('overlay: search narrows the picker', picks.length >= 1 && picks.length < 5, picks.join(', '));
+    await p.click('#ov-plist .ov-pick'); o = await ov();
+    check('overlay: adding a catalog sensor appends an item', o.items.length === n0 + 1 && o.items.at(-1).source === picks[0], JSON.stringify(o.items.at(-1)));
+    await p.$eval('#ov-q', e => { e.value = 'dimm'; e.dispatchEvent(new Event('input')); }); await wait(100);
+    await p.click('#ov-plist .ov-pick'); o = await ov();
+    check('overlay: a memory sensor can be added too', o.items.length === n0 + 2, o.items.at(-1).source);
+    await p.$eval('#ov-q', e => { e.value = 'fan'; e.dispatchEvent(new Event('input')); }); await wait(100);
+    check('overlay: fans offer fan:<id> and duty:<id>', await p.$$eval('#ov-plist .ov-pick', els => els.some(e => /^fan:/.test(e.dataset.src)) && els.some(e => /^duty:/.test(e.dataset.src))));
+    await p.click('#ov-add');
+    // label + colour
+    const last = o.items.length - 1;
+    await p.$eval(`.ov-label[data-i="${last}"]`, e => { e.value = 'Package'; e.dispatchEvent(new Event('input', { bubbles: true })); });
+    await p.$eval(`.ov-color[data-i="${last}"]`, e => { e.value = '#ff6a3d'; e.dispatchEvent(new Event('input', { bubbles: true })); }); o = await ov();
+    check('overlay: item label and colour save', o.items[last].label === 'Package' && o.items[last].color === '#ff6a3d', JSON.stringify(o.items[last]));
+    check('overlay: preview shows the custom label', (await p.$eval('#ov-preview', e => e.textContent)).toUpperCase().includes('PACKAGE'));
+    // reorder
+    const before = o.items.map(i => i.source);
+    await p.click(`[data-act="up"][data-i="${last}"]`); o = await ov();
+    check('overlay: move up reorders', o.items[last - 1].source === before[last] && o.items[last].source === before[last - 1], o.items.map(i => i.source).join(','));
+    await p.click('[data-act="down"][data-i="0"]'); o = await ov();
+    check('overlay: move down reorders', o.items[0].source === before[1] && o.items[1].source === before[0]);
+    const cur = (await ov()).items.map(i => i.source);
+    await p.evaluate(() => { const rows = document.querySelectorAll('#ov-items .ov-item'), dt = new DataTransfer(); rows[2].dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt })); rows[0].dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt })); rows[0].dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt })); });
+    const ids2 = (await ov()).items.map(i => i.source);
+    check('overlay: drag and drop reorders', ids2[0] === cur[2] && ids2[1] === cur[0], ids2.join(','));
+    // remove
+    const nr = ids2.length;
+    await p.click('[data-act="rm"][data-i="0"]'); o = await ov();
+    check('overlay: remove drops the item', o.items.length === nr - 1 && o.items[0].source === ids2[1], `${nr} -> ${o.items.length}`);
+    check('overlay: saved overlay uses the host field names', ['enabled', 'hotkey', 'position', 'offsetX', 'offsetY', 'scale', 'opacity', 'backgroundOpacity', 'accent', 'layout', 'onlyWhenGame', 'items'].every(k => k in o));
+    await nav('overview'); await nav('overlay');
+    check('overlay: has its own sidebar item and is not on Settings', !!(await p.$('#nav button[data-page="overlay"]')) && await p.evaluate(() => { go('settings'); const none = !document.querySelector('#page-settings #ov-card'); go('overlay'); return none; }));
+    check('overlay: card survives a page switch', (await p.$$('#ov-items .ov-item')).length === o.items.length && await p.$eval('#ov-hotkey', e => e.value === ''));
+  }
+
+  // --- nothing spills out horizontally, on any page, at narrow / medium / wide windows
+  for (const width of [1000, 1150, 1320, 1600]) {
+    await p.setViewport({ width, height: 860 }); await wait(200);
+    const bad = [];
+    for (const pg of ['overview', 'cooling', 'sensors', 'lighting', 'devices', 'plugins', 'overlay', 'settings']) {
+      await nav(pg);
+      if (pg === 'cooling') { await p.click('[data-ri="1"]'); await wait(200); }
+      const o = await p.evaluate(() => { const c = document.getElementById('content'); return c.scrollWidth - c.clientWidth; });
+      if (o > 1) bad.push(`${pg} +${o}px`);
+    }
+    check(`no horizontal overflow at ${width}px`, bad.length === 0, bad.join(', '));
+  }
+  await p.setViewport({ width: 1320, height: 860 });
+
+  // --- brand, naming, privacy
+  await nav('overview');
+  check('brand: inline SVG spark with the accent gradient', await p.evaluate(() => { const s = document.querySelector('.brand svg.brand-mark'); return !!s && !!s.querySelector('linearGradient stop[stop-color="#ff6a3d"]') && !!s.querySelector('path[fill^="url(#"]'); }));
+  {
+    const small = await p.$$eval('[data-small] .k', els => els.map(e => e.textContent));
+    check('overview: friendly sensor names (Storage, Memory, renamed board sensors)', ['Storage', 'Memory', 'Motherboard'].every(n => small.includes(n)), small.join(', '));
+    check('overview: per-hub copy of the liquid temperature is not repeated', !small.some(n => /liquid/i.test(n)), small.join(', '));
+  }
+  check('privacy: no user paths or serials in the page or the mock data', await p.evaluate(() => {
+    const blob = document.documentElement.outerHTML + JSON.stringify(S.init);
+    return !/[A-Z]:\\{1,2}Users\\{1,2}/i.test(blob) && !/"serial"/i.test(blob) && !/AppData\\{1,2}Roaming/i.test(blob);
+  }));
+  // --- lighting: labels, honest preview, empty state
+  await nav('lighting');
+  {
+    const lg = await p.$$eval('.lg-zone span:first-child', els => els.map(e => e.textContent));
+    check('legend: MSI headers and fan rings get friendly names', lg.includes('ARGB header 1') && lg.includes('Radiator 2') && !lg.some(n => n.includes(':')), lg.join(', '));
+    const chips = await p.$$eval('.target-bar [data-t]', els => els.map(e => e.textContent.trim()));
+    check('device chips use product names', chips.includes('Razer BlackWidow V3 Pro') && !chips.some(t => /^[a-z]+[0-9a-f]*$/.test(t)), chips.join(', '));
+    await p.click('[data-t="all"]'); await p.click('[data-fx="Static"]'); await wait(100);
+    await p.evaluate(() => { S.cfg.lighting.effect.colors = ['#ff0000']; commit(); });
+    await wait(400);
+    const px = await p.evaluate(() => [...S.rgb.slice(0, 3)]);
+    check('mock preview follows the configured effect', px[0] > 200 && px[1] < 30 && px[2] < 30, JSON.stringify(px));
+    const empty = await p.evaluate(() => { const z = S.init.zones; S.init.zones = []; renderLighting(); const ok = !!document.querySelector('#page-lighting .empty-state [data-go-plugins]'); S.init.zones = z; renderLighting(); return ok; });
+    check('lighting: empty state when no RGB devices are found', empty);
+  }
+  // --- keyboard access
+  {
+    const t = await p.$eval('#l-enabled', e => [e.tabIndex, e.getAttribute('role'), e.getAttribute('aria-checked')]);
+    check('toggles are focusable switches', t[0] === 0 && t[1] === 'switch' && t[2] === 'true', JSON.stringify(t));
+    const before = await p.evaluate(() => S.cfg.lighting.enabled);
+    await p.focus('#l-enabled'); await p.keyboard.press(' '); c = await cfg();
+    check('Space on a focused toggle flips it', c.lighting.enabled === !before, c.lighting.enabled);
+    await p.focus('#l-enabled'); await p.keyboard.press('Enter'); c = await cfg();
+    check('Enter on a focused toggle flips it back', c.lighting.enabled === before);
+    check('icon-only buttons have accessible names', await p.$$eval('#page-lighting .icon-btn', els => els.every(e => e.getAttribute('aria-label'))));
+    check('current page marked for screen readers', await p.$eval('#nav button[data-page="lighting"]', e => e.hasAttribute('aria-current')));
+  }
+
+  check('no JavaScript errors', errors.length === 0, errors.join(' | '));
+  const report = { passed: checks.filter(x => x.pass).length, failed: checks.filter(x => !x.pass).length, checks, errors };
+  fs.writeFileSync(out, JSON.stringify(report, null, 2));
+  console.log(`passed ${report.passed} failed ${report.failed}`);
+  await b.close();
+  process.exit(report.failed);
+  } catch (e) { console.log('ABORT', e.message); process.exit(99); }
+})();

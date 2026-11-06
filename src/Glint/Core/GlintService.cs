@@ -1,0 +1,160 @@
+using System.Diagnostics;
+
+namespace Glint.Core;
+
+public sealed class GlintService : IDisposable
+{
+    public Rig Rig { get; }
+    public LightingEngine Lighting { get; }
+    public FanEngine Engine { get; } = new();
+    public GlintConfig Config { get; private set; }
+    public HomeAssistantBridge HomeAssistant { get; }
+
+    public IReadOnlyDictionary<string, double> Sensors { get; private set; } = new Dictionary<string, double>();
+    public IReadOnlyDictionary<string, int> Rpm { get; private set; } = new Dictionary<string, int>();
+    public IReadOnlyDictionary<string, int> Duty { get; private set; } = new Dictionary<string, int>();
+    public IReadOnlyDictionary<string, string> Explain { get; private set; } = new Dictionary<string, string>();
+    public string LastError { get; private set; } = "";
+    public event Action? Updated;
+    /// <summary>Raised after a new config is applied (any thread).</summary>
+    public event Action<GlintConfig>? ConfigApplied;
+    /// <summary>The in-game overlay, when this process runs one (tray app, tests).</summary>
+    public GameOverlay.OverlayController? Overlay { get; set; }
+    public bool NoSave { get; set; }
+
+    readonly Thread _thread;
+    volatile bool _stop;
+    readonly FileSystemWatcher? _watch;
+    DateTime _selfWrite;
+    const int UnassignedDuty = 60;
+
+    public GlintService(GlintConfig cfg, Rig? rig = null)
+    {
+        (cfg.HomeAssistant ??= new()).Normalize();
+        Config = cfg;
+        Plugins.PluginHost.Disabled = () => Config.DisabledPlugins;
+        Rig = rig ?? new Rig(cfg);
+        Lighting = new LightingEngine(Rig, cfg, () => Sensors);
+        Lighting.Start();
+        HomeAssistant = new HomeAssistantBridge(this);
+        HomeAssistant.Configure(cfg.HomeAssistant);
+        _thread = new Thread(Loop) { IsBackground = true, Name = "Glint fans", Priority = ThreadPriority.AboveNormal };
+        _thread.Start();
+        try
+        {
+            Directory.CreateDirectory(GlintConfig.Dir);
+            _watch = new FileSystemWatcher(GlintConfig.Dir, "config.json") { NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName };
+            _watch.Changed += (_, _) => ReloadSoon();
+            _watch.Renamed += (_, _) => ReloadSoon();
+            _watch.EnableRaisingEvents = true;
+        }
+        catch { }
+    }
+
+    int _reloadPending;
+    void ReloadSoon()
+    {
+        if ((DateTime.UtcNow - _selfWrite).TotalMilliseconds < 1500) return;
+        if (Interlocked.Exchange(ref _reloadPending, 1) == 1) return;
+        Task.Delay(400).ContinueWith(_ =>
+        {
+            _reloadPending = 0;
+            try { Apply(GlintConfig.Load(), save: false); }
+            catch (Exception e) { LastError = "config: " + e.Message; }
+        });
+    }
+
+    /// <summary>Swap in a new config (from UI or file edit).</summary>
+    public void Apply(GlintConfig cfg, bool save = true)
+    {
+        (cfg.HomeAssistant ??= new()).Normalize(); // never keep a plain-text MQTT password around
+        Config = cfg;
+        Lighting.Apply(cfg);
+        if (save && !NoSave) { _selfWrite = DateTime.UtcNow; cfg.Save(); }
+        HomeAssistant.Configure(cfg.HomeAssistant); // reconnects only if that section changed
+        HomeAssistant.ConfigApplied();
+        try { ConfigApplied?.Invoke(cfg); } catch { }
+    }
+
+    bool Native(string fanId) => Rig.Controllers.Any(c => fanId.StartsWith(c.Id + ":"));
+
+    void Loop()
+    {
+        var sw = Stopwatch.StartNew();
+        double last = 0;
+        while (!_stop)
+        {
+            double now = sw.Elapsed.TotalSeconds;
+            double cpu0 = CpuMeter.ThreadMs();
+            double dt = last == 0 ? 1 : now - last;
+            last = now;
+            try
+            {
+                var rpm = new Dictionary<string, int>();
+                var s = Rig.ReadSensors(rpm);
+                Sensors = s; Rpm = rpm;
+                var duty = Engine.Compute(Config, s, dt);
+                foreach (var f in Rig.Fans)
+                    if (!duty.ContainsKey(f.Id) && Native(f.Id)) // unassigned LHM headers (board, Kraken...) stay on their own control
+                    {
+                        duty[f.Id] = UnassignedDuty;
+                        Engine.LastExplain[f.Id] = $"{UnassignedDuty}% (not in any rule)";
+                    }
+                Rig.ApplyDuty(duty);
+                Duty = duty;
+                Explain = new Dictionary<string, string>(Engine.LastExplain);
+                LastError = "";
+            }
+            catch (Exception e)
+            {
+                LastError = e.Message;
+                try { Rig.ApplyDuty(Rig.Fans.Where(f => Native(f.Id)).ToDictionary(f => f.Id, _ => Config.FailsafeDuty)); } catch { }
+            }
+            CpuMeter.Add("sensors + fans", CpuMeter.ThreadMs() - cpu0);
+            Updated?.Invoke();
+            if (now - _lastStatus >= 5) { _cpuParts = CpuMeter.Snapshot(now - _lastStatus); _lastStatus = now; WriteStatus(); }
+            int sleep = Config.PollMs - (int)((sw.Elapsed.TotalSeconds - now) * 1000);
+            if (sleep > 0) Thread.Sleep(sleep);
+        }
+    }
+
+    double _lastStatus = 0;
+    Dictionary<string, double> _cpuParts = new();
+    public IReadOnlyDictionary<string, double> CpuParts => _cpuParts;
+    /// <summary>Small machine-readable snapshot for verification / scripts (%APPDATA%\Glint\status.json).</summary>
+    void WriteStatus()
+    {
+        if (NoSave) return;
+        try
+        {
+            var proc = Process.GetCurrentProcess();
+            var o = new
+            {
+                time = DateTime.Now, profile = Config.ActiveProfile, elevated = Rig.Elevated, error = LastError,
+                sensors = Sensors.Where(k => !k.Key.StartsWith('/')).ToDictionary(k => k.Key, k => Math.Round(k.Value, 1)),
+                rpm = Rpm, duty = Duty,
+                lighting = new { effect = Config.Lighting.Effect.Type.ToString(), fps = Math.Round(Lighting.ActualFps, 1), devices = Lighting.DeviceFps.ToDictionary(k => k.Key, k => Math.Round(k.Value, 1)), status = Lighting.Status },
+                devices = Rig.Log,
+                process = new { cpuSeconds = Math.Round(proc.TotalProcessorTime.TotalSeconds, 1), privateMB = proc.PrivateMemorySize64 / 1048576, managedMB = GC.GetTotalMemory(false) / 1048576 },
+                cpuPercentOfOneCore = _cpuParts,
+                pluginHeapMB = Rig.Lights.OfType<Plugins.JintPluginDevice>().Concat(Rig.Controllers.OfType<Plugins.JintPluginDevice>()).Distinct().ToDictionary(p => p.Id, p => Math.Round(p.HeapMB, 1)),
+                sensorReadMs = new { native = Math.Round(Rig.HubReadMs, 1), lhm = Math.Round(Rig.LhmReadMs, 1) },
+            };
+            var path = Path.Combine(GlintConfig.Dir, "status.json");
+            File.WriteAllText(path + ".tmp", System.Text.Json.JsonSerializer.Serialize(o, GlintConfig.Json));
+            File.Move(path + ".tmp", path, true);
+        }
+        catch { }
+    }
+
+    public void Dispose()
+    {
+        Overlay?.Dispose(); // stops the ETW session
+        HomeAssistant.Dispose(); // publishes "offline" while the broker link is still up
+        _stop = true;
+        _thread.Join(3000);
+        _watch?.Dispose();
+        Lighting.Dispose();
+        Rig.Dispose();
+    }
+}

@@ -1,0 +1,70 @@
+name: Installer test
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'installer/**'
+      - 'src/Glint/Glint.csproj'
+      - '.github/workflows/installer-test.yml'
+      - '.github/workflows/release.yml'
+permissions:
+  contents: read
+jobs:
+  installer-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Publish (self-contained, win-x64)
+        run: dotnet publish src/Glint/Glint.csproj -c Release -r win-x64 --self-contained true -p:PublishReadyToRun=false -o out/publish
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+      - name: Build installer
+        shell: pwsh
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DVersion=0.0.1" "/DPublishDir=..\out\publish" installer\glint.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: Silent install (no PawnIO, no WebView2 download, no SignalRGB step)
+        shell: pwsh
+        run: |
+          $p = Start-Process out\Glint-Setup-0.0.1.exe -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/NOCANCEL', '/LOG=install-log.txt', '/TASKS=desktopicon' -Wait -PassThru
+          if (Test-Path install-log.txt) { Get-Content install-log.txt -Tail 40 }
+          if ($p.ExitCode -ne 0) { throw "setup exit code $($p.ExitCode)" }
+      - name: Check install
+        shell: pwsh
+        run: |
+          $d = Join-Path $env:ProgramFiles 'Glint'
+          foreach ($f in 'Glint.exe', 'WebView2Loader.dll', 'ClearScriptV8.win-x64.dll', 'selftest.ps1', 'LICENSE', 'NOTICE.md', 'unins000.exe') {
+            if (-not (Test-Path (Join-Path $d $f))) { throw "missing $f" }
+          }
+          if (-not (Test-Path (Join-Path $d 'web\index.html'))) { throw 'missing web\index.html' }
+          foreach ($t in 'Glint', 'Glint selftest') {
+            $task = Get-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue
+            if (-not $task) { throw "scheduled task '$t' missing" }
+          }
+          $t = Get-ScheduledTask -TaskName 'Glint'
+          if ($t.Principal.RunLevel -ne 'Highest') { throw 'Glint task is not elevated' }
+          if ($t.Settings.ExecutionTimeLimit -ne 'PT0S') { throw "unexpected time limit $($t.Settings.ExecutionTimeLimit)" }
+          if (-not (Test-Path "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Glint.lnk")) { throw 'start menu shortcut missing' }
+          $p = Start-Process (Join-Path $d 'Glint.exe') -ArgumentList 'selftest', "$PWD\selftest-installed.json" -Wait -PassThru -NoNewWindow -WorkingDirectory $d
+          if ($p.ExitCode -ne 0) { Get-Content selftest-installed.json; throw 'selftest from install dir failed' }
+      - name: Silent uninstall
+        shell: pwsh
+        run: |
+          $d = Join-Path $env:ProgramFiles 'Glint'
+          $p = Start-Process (Join-Path $d 'unins000.exe') -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "uninstall exit code $($p.ExitCode)" }
+          Start-Sleep 3
+      - name: Check cleanup
+        shell: pwsh
+        run: |
+          $d = Join-Path $env:ProgramFiles 'Glint'
+          if (Test-Path (Join-Path $d 'Glint.exe')) { throw 'Glint.exe still installed' }
+          foreach ($t in 'Glint', 'Glint selftest') {
+            if (Get-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue) { throw "scheduled task '$t' still present" }
+          }
+          if (Test-Path "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Glint.lnk") { throw 'start menu shortcut still present' }

@@ -1,0 +1,55 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Version
+        shell: pwsh
+        run: |
+          $v = '${{ github.ref_name }}'.TrimStart('v')
+          "VERSION=$v" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Build
+        run: dotnet build src/Glint/Glint.csproj -c Release
+      - name: Selftest (offline, simulated devices)
+        shell: pwsh
+        run: |
+          $exe = 'src/Glint/bin/Release/net10.0-windows/Glint.exe'
+          $p = Start-Process $exe -ArgumentList 'selftest', "$PWD/selftest.json" -Wait -PassThru -NoNewWindow
+          if ($p.ExitCode -ne 0) { Get-Content selftest.json; exit 1 }
+      - name: Plugin tests
+        shell: pwsh
+        run: |
+          $exe = 'src/Glint/bin/Release/net10.0-windows/Glint.exe'
+          $p = Start-Process $exe -ArgumentList 'plugincheck', 'all', "$PWD/plugincheck.txt" -Wait -PassThru -NoNewWindow
+          if ($p.ExitCode -ne 0) { Get-Content plugincheck.txt; exit 1 }
+      - name: Publish (self-contained, win-x64)
+        run: dotnet publish src/Glint/Glint.csproj -c Release -r win-x64 --self-contained true -p:PublishReadyToRun=false -p:Version=${{ env.VERSION }} -o out/publish
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+      - name: Build installer
+        shell: pwsh
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DVersion=${{ env.VERSION }}" "/DPublishDir=..\out\publish" installer\glint.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: Portable zip
+        shell: pwsh
+        run: |
+          Copy-Item install.ps1, selftest.ps1, LICENSE, NOTICE.md, README.md out/publish/
+          Compress-Archive out/publish/* "out/Glint-${{ env.VERSION }}-portable-win-x64.zip"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            out/Glint-Setup-${{ env.VERSION }}.exe
+            out/Glint-${{ env.VERSION }}-portable-win-x64.zip
+          generate_release_notes: true
