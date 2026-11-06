@@ -168,6 +168,7 @@ tests: [{
   name: 'firmware query, then one colour packet',
   device: { productId: 0x5678, reportSize: 65, inputSize: 65, interface: 0 },     // what the fake device looks like
   replies: [{ when: '0001', reply: '00010203' }],     // when a written report starts with these hex bytes, the device answers this
+                                                      // (add skip: n to make it ignore the first n, e.g. to test retries)
   colors: ['#ff0000'],                                // or omit for a ramp: LED i = (3i, 3i+1, 3i+2)
   expectZones: 30,                                    // total LEDs init should declare
   expectInit: ['0001'],                               // reports init must send (hex prefixes, report id first)

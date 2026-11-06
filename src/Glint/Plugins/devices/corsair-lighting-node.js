@@ -10,8 +10,13 @@ module.exports = {
   reportSize: 64,
 
   init(dev) {
-    // firmware query (0x02) — also proves we're talking to a Lighting Node
-    const r = send(dev, 0x02, [], true);
+    // firmware query (0x02) — also proves we're talking to a Lighting Node. Retried: right after another app (or a
+    // previous Glint that was force-closed mid-frame) used it, the controller can miss the first query.
+    let r = null;
+    for (let attempt = 0; attempt < 4 && !r; attempt++) {
+      if (attempt > 0) { while (dev.read(20)) { } dev.sleep(250); }   // drop stale replies, give it a moment
+      r = send(dev, 0x02, [], true);
+    }
     if (!r) return false;
     dev.log(`firmware ${r[2]}.${r[3]}.${r[4]}`);
     const zones = [];
@@ -50,6 +55,18 @@ module.exports = {
       expectZones: 240,
       expectInit: ['0002'],
       expectFrame: ['00380002', '003200003200000306090C', '0032000032010104070A'],
+    },
+    {
+      name: 'busy controller misses the first two firmware queries: retried, then found',
+      device: { reportSize: 65, inputSize: 17 },
+      replies: [{ when: '0002', reply: '0002000A04', skip: 2 }],
+      expectZones: 240,
+    },
+    {
+      name: 'never answers: declined after the retries',
+      device: { reportSize: 65, inputSize: 17 },
+      replies: [{ when: '0002', reply: '0002000A04', skip: 99 }],
+      expectDeclined: true,
     },
   ],
 };

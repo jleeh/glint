@@ -8,7 +8,7 @@ namespace Glint.Plugins;
 /// <summary>
 /// Runs the `tests` a plugin declares against a simulated device: proof that a plugin speaks its protocol
 /// correctly without owning the hardware. Format (see PLUGINS.md):
-///   tests: [{ name, device: { productId, reportSize, inputSize, interface }, replies: [{ when: 'hex', reply: 'hex' }],
+///   tests: [{ name, device: { productId, reportSize, inputSize, interface }, replies: [{ when: 'hex', reply: 'hex', skip?: n }],
 ///             colors: 'ramp' | ['#rrggbb', ...], expectZones: n, expectInit: ['hex'...], expectFrame: ['hex'...],
 ///             bus: { '0x19': { '0x43': 26 } }, expectBusWrites: ['19:31#0C...'] }]
 /// Hex values are prefixes of the full report as written (report id first); spaces are ignored.
@@ -86,11 +86,13 @@ public static class PluginCheck
             int Get(string k, int fallback) => d.ValueKind == JsonValueKind.Object && d.TryGetProperty(k, out var v) ? v.GetInt32() : fallback;
             int pid = Get("productId", desc.GetProperty("productIds").EnumerateArray().First().GetInt32());
             int report = Get("reportSize", desc.TryGetProperty("reportSize", out var rs) && rs.ValueKind == JsonValueKind.Number ? rs.GetInt32() : 65);
+            // skip: n = the device ignores the first n matching writes (e.g. a controller still busy right after start-up)
             var replies = t.TryGetProperty("replies", out var rp)
-                ? rp.EnumerateArray().Select(x => (when: Norm(x.GetProperty("when").GetString()!), reply: Convert.FromHexString(Norm(x.GetProperty("reply").GetString()!)))).ToList()
+                ? rp.EnumerateArray().Select(x => (when: Norm(x.GetProperty("when").GetString()!), reply: Convert.FromHexString(Norm(x.GetProperty("reply").GetString()!)),
+                    skip: new int[] { x.TryGetProperty("skip", out var sk) ? sk.GetInt32() : 0 })).ToList()
                 : new();
             port = new SelfTest.FakePort(desc.GetProperty("vendorId").GetInt32(), pid, report,
-                w => { var h = Hex(w); foreach (var r in replies) if (h.StartsWith(r.when)) return r.reply.Length < Get("inputSize", report) ? r.reply.Concat(new byte[Get("inputSize", report) - r.reply.Length]).ToArray() : r.reply; return null; },
+                w => { var h = Hex(w); foreach (var r in replies) if (h.StartsWith(r.when)) { if (r.skip[0] > 0) { r.skip[0]--; return null; } return r.reply.Length < Get("inputSize", report) ? r.reply.Concat(new byte[Get("inputSize", report) - r.reply.Length]).ToArray() : r.reply; } return null; },
                 Get("interface", -1));
             f = def.OpenWith(port, x => x, (z, dflt) => dflt, logs.Add);
         }
