@@ -97,10 +97,10 @@ begin
           '', SW_HIDE, ewWaitUntilTerminated, rc) and (rc = 0) then
     Exit;
   if rc = 2 then
-    MsgBox('Could not download ' + Action + ' (no internet connection?). Setup will continue without it. ' +
-           'You can install it later from its official site and Glint will pick it up.', mbInformation, MB_OK)
+    SuppressibleMsgBox('Could not download ' + Action + ' (no internet connection?). Setup will continue without it. ' +
+           'You can install it later from its official site and Glint will pick it up.', mbInformation, MB_OK, IDOK)
   else
-    MsgBox('Installing ' + Action + ' did not complete (code ' + IntToStr(rc) + '). Setup will continue without it.', mbInformation, MB_OK);
+    SuppressibleMsgBox('Installing ' + Action + ' did not complete (code ' + IntToStr(rc) + '). Setup will continue without it.', mbInformation, MB_OK, IDOK);
 end;
 
 // The logon task is what starts Glint (elevated, no UAC prompt each boot), so a failure here must be visible.
@@ -113,8 +113,8 @@ begin
           '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{tmp}\helper.ps1') + '" -Action Tasks -Dir "' + ExpandConstant('{app}') + '"',
           '', SW_HIDE, ewWaitUntilTerminated, rc) and (rc = 0) then
     Exit;
-  MsgBox('Glint was installed, but its startup task could not be registered (code ' + IntToStr(rc) + '). ' +
-         'Details are in %TEMP%\glint-setup-helper.log. You can run install.ps1 from the install folder to retry.', mbError, MB_OK);
+  SuppressibleMsgBox('Glint was installed, but its startup task could not be registered (code ' + IntToStr(rc) + '). ' +
+         'Details are in %TEMP%\glint-setup-helper.log. You can run install.ps1 from the install folder to retry.', mbError, MB_OK, IDOK);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -143,8 +143,8 @@ begin
   end
   else if CurUninstallStep = usPostUninstall then
   begin
-    if MsgBox('Also delete your Glint settings and layouts (' + ExpandConstant('{userappdata}\Glint') + ')?' + #13#10 +
-              'Choose No to keep them for a future install.', mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
+    if SuppressibleMsgBox('Also delete your Glint settings and layouts (' + ExpandConstant('{userappdata}\Glint') + ')?' + #13#10 +
+              'Choose No to keep them for a future install.', mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDNO) = IDYES then
       DelTree(ExpandConstant('{userappdata}\Glint'), True, True, True);
   end;
 end;

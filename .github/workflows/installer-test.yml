@@ -29,6 +29,7 @@ jobs:
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DVersion=0.0.1" "/DPublishDir=..\out\publish" installer\glint.iss
           if ($LASTEXITCODE -ne 0) { exit 1 }
       - name: Silent install (no PawnIO, no WebView2 download, no SignalRGB step)
+        timeout-minutes: 10
         shell: pwsh
         run: |
           $p = Start-Process out\Glint-Setup-0.0.1.exe -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/NOCANCEL', '/LOG=install-log.txt', '/TASKS=desktopicon' -Wait -PassThru
@@ -36,6 +37,13 @@ jobs:
           $h = Join-Path $env:TEMP 'glint-setup-helper.log'
           if (Test-Path $h) { '--- helper log ---'; Get-Content $h }
           if ($p.ExitCode -ne 0) { throw "setup exit code $($p.ExitCode)" }
+      - name: Setup logs
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path install-log.txt) { Get-Content install-log.txt -Tail 60 }
+          $h = Join-Path $env:TEMP 'glint-setup-helper.log'
+          if (Test-Path $h) { '--- helper log ---'; Get-Content $h }
       - name: Check install
         shell: pwsh
         run: |
