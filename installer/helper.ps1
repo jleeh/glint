@@ -19,12 +19,12 @@ switch ($Action) {
     'Tasks' {
         $task = 'Glint'
         $user = "$env:USERDOMAIN\$env:USERNAME"
-        $action = New-ScheduledTaskAction -Execute (Join-Path $Dir 'Glint.exe') -WorkingDirectory $Dir
+        $taskAction = New-ScheduledTaskAction -Execute (Join-Path $Dir 'Glint.exe') -WorkingDirectory $Dir
         $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
         $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
         $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) `
             -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1) -Priority 4
-        Register-ScheduledTask -TaskName $task -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+        Register-ScheduledTask -TaskName $task -Action $taskAction -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
         $stAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$Dir\selftest.ps1`"" -WorkingDirectory $Dir
         Register-ScheduledTask -TaskName 'Glint selftest' -Action $stAction -Principal $principal -Settings $settings -Force | Out-Null
     }
