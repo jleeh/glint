@@ -53,6 +53,7 @@ if (Test-Path (Join-Path $PSScriptRoot 'Glint.exe')) {
     $pubArgs = @('publish', "`"$src`"", '-c', 'Release', '-r', 'win-x64', '--self-contained', 'false', '-p:PublishReadyToRun=true',
               '-o', "`"$dest`"", '--nologo', '-v', 'q', '--disable-build-servers', '-p:UseSharedCompilation=false', '-nodeReuse:false')
     $p = Start-Process dotnet -ArgumentList $pubArgs -NoNewWindow -PassThru
+    $null = $p.Handle   # cache the handle now, or ExitCode reads as null later (PowerShell quirk)
     $marker = Join-Path $PSScriptRoot 'src\Glint\obj\Release\net10.0-windows\win-x64'
     $done = $false
     for ($i = 0; $i -lt 600 -and -not $done; $i++) {
@@ -66,7 +67,7 @@ if (Test-Path (Join-Path $PSScriptRoot 'Glint.exe')) {
         Start-Sleep 1
     }
     $ok = (Get-Item (Join-Path $dest 'Glint.dll') -ErrorAction SilentlyContinue).LastWriteTime -gt $started
-    if ($p.HasExited -and $p.ExitCode -ne 0) { $ok = $false }
+    if ($p.HasExited -and $null -ne $p.ExitCode -and $p.ExitCode -ne 0) { $ok = $false }
     dotnet build-server shutdown | Out-Null
     if (-not $ok) { throw 'publish failed' }
 }

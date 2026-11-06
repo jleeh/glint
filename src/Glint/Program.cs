@@ -160,6 +160,7 @@ static class Program
         ApplicationConfiguration.Initialize();
         Plugins.PluginHost.LoadAll();
         var cfg = GlintConfig.Defaults();
+        cfg.Lighting.LedCounts["strip"] = 20; // a user-set LED count: the Devices page offers the test pattern for it
         // one simulated RGB device so the Lighting page shows its effect gallery (with none it shows the empty state)
         var rig = new Rig(cfg, useLhm: false, hardware: false);
         rig.Lights.Add(new SelfTest.FakeLight("demo", new LightZone("fan1", "Fan 1", 8, ZoneKind.Ring), new LightZone("strip", "Strip", 20)));
@@ -198,7 +199,23 @@ static class Program
         Pump(1200);
         C("plugin effect click reaches the service", svc.Config.Lighting.Effect.Type == EffectType.Plugin && svc.Config.Lighting.Effect.Plugin == "Aurora", $"{svc.Config.Lighting.Effect.Type} {svc.Config.Lighting.Effect.Plugin}");
         C("lighting engine runs the plugin without errors", svc.Lighting.Status == "", svc.Lighting.Status);
-        foreach (var pg in new[] { "overview", "cooling", "lighting", "devices", "settings" })
+        // v0.2: LED-count test pattern through the real page → engine, and the setup check computed by the real host
+        Eval("go('devices'); document.querySelector('[data-tp=\"strip\"]').click()");
+        Pump(600);
+        C("test pattern toggle reaches the lighting engine", svc.Lighting.TestPatternZone == "strip", svc.Lighting.TestPatternZone ?? "off");
+        Pump(400);
+        var tpFrame = svc.Lighting.Preview.Skip(8).Take(20).ToArray();
+        C("test pattern frame on the zone (white first, red last)", tpFrame[0] == new Rgb(255, 255, 255) && tpFrame[19] == new Rgb(255, 0, 0), string.Join(" ", tpFrame.Take(3)) + " … " + tpFrame[19]);
+        Eval("go('overview')");
+        Pump(600);
+        C("leaving the Devices page stops the test pattern", svc.Lighting.TestPatternZone == null, svc.Lighting.TestPatternZone ?? "off");
+        Eval("go('setup')");
+        var swSetup = Stopwatch.StartNew();
+        while (swSetup.ElapsedMilliseconds < 15000 && Eval("document.querySelectorAll('#setup-list .setup-row').length") is "0" or "timeout") Pump(200);
+        C("setup check page gets the host's report", int.TryParse(Eval("document.querySelectorAll('#setup-list .setup-row').length"), out var rows) && rows >= 8 && Eval("S.setup.items.some(i => i.id === 'elevated') && S.setup.items.some(i => i.id === 'webview2' && i.status === 'ok')") == "true",
+            $"{swSetup.ElapsedMilliseconds} ms: " + Eval("JSON.stringify(S.setup?.items.map(i => i.id + '=' + i.status))"));
+        C("setup badge reflects the report", Eval("document.getElementById('setup-badge').textContent === String(S.setup.fail || (S.setup.warn ? '•' : ''))") == "true", Eval("document.getElementById('setup-badge').textContent"));
+        foreach (var pg in new[] { "overview", "cooling", "lighting", "devices", "setup", "settings" })
         {
             Eval($"go('{pg}')"); Pump(300);
             C($"page {pg} renders in WebView2", Eval($"document.getElementById('page-{pg}').children.length > 0") == "true");
@@ -254,6 +271,28 @@ static class Program
             }
         }
         return fails;
+    }
+
+    /// <summary>Relaunch as administrator (UAC prompt); this instance exits only if the user said yes.</summary>
+    public static void RestartElevated()
+    {
+        try { Process.Start(new ProcessStartInfo(Environment.ProcessPath!, "--restarted") { UseShellExecute = true, Verb = "runas" }); }
+        catch (System.ComponentModel.Win32Exception) { return; } // UAC cancelled: keep running
+        Application.Exit();
+    }
+
+    /// <summary>Open one of Glint's own web pages (fix buttons, release page) in the default browser.</summary>
+    public static void OpenUrl(string url)
+    {
+        if (!SetupCheck.AllowedUrl(url)) return;
+        try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); } catch { }
+    }
+
+    /// <summary>Task Manager on its Startup apps tab.</summary>
+    public static void OpenStartupApps()
+    {
+        try { Process.Start(new ProcessStartInfo("taskmgr.exe", "/7 /startup") { UseShellExecute = true }); }
+        catch { try { Process.Start(new ProcessStartInfo("ms-settings:startupapps") { UseShellExecute = true }); } catch { } }
     }
 
     /// <summary>Start a fresh instance (inherits elevation) and exit this one; the new one waits for our mutex.</summary>
@@ -351,6 +390,18 @@ static class Program
         C("MCP tools/call returns data", mcp.FirstOrDefault(m => (int?)m["id"] == 4)?["result"]?["content"]?[0]?["text"]?.ToString().Contains("aurora.js") == true);
         FanApiChecks(svc, Call, C, mcp.FirstOrDefault(m => (int?)m["id"] == 2)?["result"]?["tools"]?.AsArray());
         GameOverlay.OverlayTests.ApiChecks(svc, Call, C, mcp.FirstOrDefault(m => (int?)m["id"] == 2)?["result"]?["tools"]?.AsArray());
+        // setup.check: the same report as the dashboard's Setup check page
+        var sc = Call("setup.check");
+        var scItems = sc?["result"]?["items"]?.AsArray();
+        C("setup.check returns items with status, detail and fixes", scItems != null && scItems.Count >= 8 && scItems.All(i => (string?)i!["status"] is "ok" or "warn" or "fail" && ((string?)i["detail"])?.Length > 10)
+            && scItems.Any(i => (string?)i!["id"] == "elevated") && scItems.Any(i => (string?)i!["id"] == "cpuTemp" && (string?)i["status"] == "fail") && sc?["result"]?["fail"] != null, sc?.ToJsonString() ?? "null");
+        var mcpTools = mcp.FirstOrDefault(m => (int?)m["id"] == 2)?["result"]?["tools"]?.AsArray();
+        C("MCP exposes glint_setup_check", mcpTools?.Any(t => (string?)t!["name"] == "glint_setup_check" && ((string?)t["description"])?.Contains("PawnIO") == true) == true);
+        C("help lists setup.check", Call("help")?["result"]?.AsArray().Any(h => (string?)h!["method"] == "setup.check") == true);
+        var orgbPatch = Call("config.patch", new { path = "openRgb.port", value = 0 });
+        C("config.patch validates openRgb.port", (bool?)orgbPatch?["result"]?["ok"] == false, orgbPatch?.ToJsonString() ?? "");
+        var updPatch = Call("config.patch", new { path = "updates.check", value = false });
+        C("config.patch updates.check", (bool?)updPatch?["result"]?["ok"] == true && svc.Config.Updates.Check == false, updPatch?.ToJsonString() ?? "");
         File.WriteAllText(outPath, JsonSerializer.Serialize(new { failed, checks }, new JsonSerializerOptions { WriteIndented = true }));
         try { Directory.Delete(testDir, true); } catch { }
         return failed;
@@ -514,6 +565,8 @@ static class Program
         Plugins.PluginHost.Disabled = () => cfg.DisabledPlugins;
         Plugins.PluginHost.LoadAll();
         using var svc = new GlintService(cfg);
+        // optional update check: one GitHub API call ~20 s after start (never delays startup), then every 24 h
+        svc.Updates.Start(TimeSpan.FromSeconds(20));
         Plugins.PluginHost.EffectsChanged += () => svc.Lighting.Apply(svc.Config);
         var tray = new UI.TrayApp(svc);
         var ui = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();

@@ -70,7 +70,11 @@ function fontEnv() {
   for (const g of ['/amdcpu/0|Clock', '/amdcpu/0|Load', '/amdcpu/0|Power']) await p.click(`[data-tg="${g}"]`); // show more of the tree
   await shot('sensors');
 
-  await nav('devices'); await shot('devices');
+  await nav('devices');
+  await p.click('[data-tp="mystic:jrainbow1"]');                // LED-count test pattern switched on for one ARGB header
+  await shot('devices');
+  await nav('setup'); await wait(600);                          // fictional report: one failing plugin, a few warnings
+  await shot('setup-check');
   await nav('plugins'); await shot('plugins');
 
   await nav('overlay');

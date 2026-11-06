@@ -127,6 +127,7 @@ public sealed class ControlServer : IDisposable
         ("overlay.set", "Change overlay settings (partial: only the fields given change; 'items' replaces the list). Item sources: fps, frametime, low1, time, glint.cpu, fan:<id>, duty:<id>, or a sensor id. Validated; invalid → {ok:false, errors} and nothing saved.", "{ enabled?, hotkey?, position?: 'top-left'|'top-right'|'bottom-left'|'bottom-right', offsetX?, offsetY?, scale?, opacity?, backgroundOpacity?, accent?: '#rrggbb'|null, layout?: 'compact'|'detailed', onlyWhenGame?, items? }"),
         ("overlay.toggle", "Show / hide the in-game overlay (enabled given → set it, else flip).", "{ enabled?: boolean }"),
         ("overlay.stats", "Live overlay readings: fps, frameTimeMs, low1 (1% low), the target (foreground) process, which present events are used, and whether the ETW session is running.", ""),
+        ("setup.check", "Setup check: is this PC set up right for Glint? Admin rights, PawnIO driver, WebView2, CPU temperature, conflicting RGB/fan apps (running or starting with Windows), plugins needing approval or failing, devices that declined, the startup task, version + update, OpenRGB bridge. Each item: status ok/warn/fail, plain-language detail, and the fix. Start here when something doesn't work.", ""),
         ("log", "Recent device / plugin log lines.", "{ lines?: number }"),
         ("app.restart", "Restart Glint (needed after adding or changing device plugins).", ""),
     };
@@ -425,6 +426,7 @@ public sealed class ControlServer : IDisposable
             case "overlay.stats":
                 return _svc.Overlay?.Stats() ?? (object)new { enabled = _svc.Config.Overlay?.Enabled ?? false, visible = false, note = "no overlay in this process" };
             case "ha.status": return _svc.HomeAssistant.Status();
+            case "setup.check": return SetupCheck.Run(_svc);
             case "log": return _svc.Rig.Log.TakeLast((int?)p["lines"] ?? 100);
             case "app.restart": _ui(() => Program.Restart()); return new { restarting = true };
             default: throw new ArgumentException($"unknown method '{method}' (try 'help')");

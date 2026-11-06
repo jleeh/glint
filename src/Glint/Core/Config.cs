@@ -30,6 +30,10 @@ public sealed class GlintConfig
     public HomeAssistantConfig HomeAssistant { get; set; } = new();
     /// <summary>In-game overlay (FPS from ETW present events + sensors).</summary>
     public OverlayConfig Overlay { get; set; } = new();
+    /// <summary>Optional update check (one GitHub API call at startup and every 24 h; nothing else).</summary>
+    public UpdateOptions Updates { get; set; } = new();
+    /// <summary>OpenRGB SDK bridge (off by default): drive devices an OpenRGB server on this PC knows.</summary>
+    public OpenRgbConfig OpenRgb { get; set; } = new();
 
     // ------------------------------------------------------------------ io
 
@@ -211,6 +215,21 @@ public sealed class OverlayItem
     public string? Label { get; set; }
     /// <summary>"#rrggbb" for the value, or null for the default.</summary>
     public string? Color { get; set; }
+}
+
+public sealed class UpdateOptions
+{
+    /// <summary>Ask GitHub for the latest release at startup and every 24 h. Never downloads or installs anything.</summary>
+    public bool Check { get; set; } = true;
+}
+
+public sealed class OpenRgbConfig
+{
+    public bool Enabled { get; set; }
+    public string Host { get; set; } = "127.0.0.1";
+    public int Port { get; set; } = 6742;
+    /// <summary>OpenRGB devices to leave alone: device name (or part of it) or Glint id ("orgb-...").</summary>
+    public List<string> Exclude { get; set; } = new();
 }
 
 public sealed class SensorOptions

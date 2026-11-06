@@ -32,6 +32,11 @@ public sealed class Rig : IDisposable
     readonly HashSet<string> _lhmTouched = new();
     public bool Elevated { get; }
     public bool LhmRing0 { get; private set; }
+    /// <summary>SMBus (RAM RGB) state: null = working, else why not (no admin, no PawnIO, unsupported chipset...).</summary>
+    public string? SmbusError { get; private set; } = "not started";
+    public bool SmbusOk => _smbus != null;
+    /// <summary>OpenRGB bridge, when enabled in the config (connected once at startup).</summary>
+    public OpenRgbBridge? OpenRgb { get; private set; }
     public double HubReadMs, LhmReadMs;
 
     readonly SensorOptions _sensorCfg;
@@ -47,10 +52,10 @@ public sealed class Rig : IDisposable
         if (!nativeDevices) Log.Add("LHM-only mode (benchmark)");
         else if (Elevated && Smbus.Available)
         {
-            try { _smbus = new Smbus(); Log.Add($"SMBus {_smbus.Identity}"); }
-            catch (Exception e) { Log.Add($"SMBus unavailable: {e.Message}"); }
+            try { _smbus = new Smbus(); SmbusError = null; Log.Add($"SMBus {_smbus.Identity}"); }
+            catch (Exception e) { SmbusError = e.Message; Log.Add($"SMBus unavailable: {e.Message}"); }
         }
-        else Log.Add("SMBus devices (RAM RGB) need admin + PawnIO (install.ps1)");
+        else { SmbusError = !Elevated ? "Glint is not running as administrator" : "PawnIO is not installed"; Log.Add("SMBus devices (RAM RGB) need admin + PawnIO (install.ps1)"); }
 
         if (nativeDevices)
         {
@@ -58,6 +63,12 @@ public sealed class Rig : IDisposable
             var (lights, fans) = DriverRegistry.Discover(ctx);
             Lights.AddRange(lights);
             Controllers.AddRange(fans);
+            // OpenRGB bridge: only when switched on; one connect attempt (loopback refuses instantly when OpenRGB isn't running)
+            if (cfg.OpenRgb is { Enabled: true } orgb)
+            {
+                OpenRgb = OpenRgbBridge.Connect(orgb, Lights.ToList(), DriverRegistry.ClaimedVidPids(), ctx.Unique, Log.Add);
+                Lights.AddRange(OpenRgb.Devices);
+            }
         }
         foreach (var c in Controllers)
             foreach (var ch in c.Channels)
@@ -446,6 +457,7 @@ public sealed class Rig : IDisposable
         foreach (var k in _lhmTouched) try { _lhmControls[k].Control.SetDefault(); } catch { }
         foreach (var c in Controllers) { try { c.Release(); } catch { } }
         foreach (var l in Lights) try { l.Dispose(); } catch { }
+        OpenRgb?.Dispose();
         foreach (var c in Controllers) try { c.Dispose(); } catch { }
         _lhm?.Close();
         _smbus?.Dispose();

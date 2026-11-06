@@ -117,6 +117,13 @@ public static class DriverRegistry
     /// <summary>Which driver/plugin took this physical device ("" if none).</summary>
     public static string ClaimedBy(HidDevice d) { lock (_claims) return _claims.GetValueOrDefault(PhysicalKey(d), ""); }
 
+    /// <summary>USB VID/PID pairs of every physical device a Glint driver or plugin claimed.</summary>
+    public static HashSet<(int vid, int pid)> ClaimedVidPids()
+    {
+        lock (_claims) return _claims.Keys.Select(k => k.Split(':')).Where(p => p.Length >= 2)
+            .Select(p => (Convert.ToInt32(p[0], 16), Convert.ToInt32(p[1], 16))).ToHashSet();
+    }
+
     static int SafeOut(HidDevice d) { try { return d.GetMaxOutputReportLength(); } catch { return 0; } }
     static int SafeFeature(HidDevice d) { try { return d.GetMaxFeatureReportLength(); } catch { return 0; } }
 

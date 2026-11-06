@@ -103,6 +103,19 @@ device before writing, and can never touch the SPD EEPROM (0x50–0x57).
 
 ## Troubleshooting
 
+- **Start with `setup.check`.** It returns one report: admin rights, the PawnIO driver, WebView2, whether the CPU
+  temperature is readable, other RGB / fan apps running or starting with Windows (SignalRGB, iCUE, Armoury Crate,
+  MSI Center, NZXT CAM, L-Connect, Synapse, G HUB, OpenRGB, FanControl), plugins needing approval or failing,
+  devices that declined, the startup task, version + update, and the OpenRGB bridge. Each item has `status`
+  (ok / warn / fail), a plain-language `detail` and a `fix` (`restartAdmin`, `openUrl`, `startupApps`, `page`,
+  `restart`). Relay the failures to the user in their words; most fixes (installing PawnIO, quitting another app,
+  approving a plugin) need the user, not the API.
+- No CPU temperature / board fans: Glint isn't elevated or PawnIO isn't installed (`setup.check` says which).
+- Flickering colours or fans jumping: another app drives the same device (`setup.check` lists it).
+- LED strip / ARGB header the wrong length: the user sets `lighting.ledCounts.<zone>` (or the Devices page, whose
+  test pattern shows white on the first LED and red on the last); then `app.restart`.
+- Device not supported but OpenRGB knows it: `config.patch path=openRgb.enabled value=true` (with OpenRGB's SDK
+  server running), then `app.restart`; its devices appear as `orgb-…` in `devices`.
 - `log`: recent device and plugin messages (identification, errors, declined devices).
 - `status`: live temperatures, fan speeds, per-device lighting frame rates and Glint's own CPU/memory use.
 - `ha.status`: the Home Assistant connection.

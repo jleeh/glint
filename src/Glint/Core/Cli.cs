@@ -159,6 +159,7 @@ public static class Cli
         T("overlay.toggle", Obj(("enabled", "boolean", "true = show, false = hide; omit to flip", false)));
         T("overlay.stats", Obj());
         T("ha.status", Obj());
+        T("setup.check", Obj());
         T("log", Obj(("lines", "number", "How many recent lines (default 100)", false)));
         T("app.restart", Obj());
         return d;
@@ -194,7 +195,7 @@ public static class Cli
                         protocolVersion = (string?)msg!["params"]?["protocolVersion"] ?? "2025-06-18",
                         capabilities = new { tools = new { } },
                         serverInfo = new { name = "glint", version = typeof(Cli).Assembly.GetName().Version?.ToString(3) ?? "1.0" },
-                        instructions = "Glint controls this PC's RGB lighting and fans. For cooling, start with glint_fans_list (rules, curves, sensor ids, live duty/rpm) " +
+                        instructions = "Glint controls this PC's RGB lighting and fans. If something doesn't work (no CPU temperature, a device missing, flickering), run glint_setup_check first. For cooling, start with glint_fans_list (rules, curves, sensor ids, live duty/rpm) " +
                                        "and change it with glint_fans_setRule / glint_curves_set / glint_fans_override; glint_config_schema documents every config field. " +
                                        "Writes are validated: {ok:false, errors} means nothing was saved. Never run glint_lighting_autoLayout without the user's consent. " +
                                        "To add hardware or effects, read glint_plugins_docs first, " +

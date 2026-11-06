@@ -6,6 +6,7 @@ const S = {
   init: null, cfg: null, state: null, hist: {}, page: 'overview',
   profile: null, rule: 0, curve: null, target: 'all',
   rgb: null, ledCountsDirty: false, lastPerf: null, selfCpu: 0,
+  setup: null, setupChecking: false, testZone: null, testTimer: null,
 };
 const HIST = 150;
 const INPUT_COLORS = ['#8b6cff', '#3fd0ff', '#ffb547', '#3ddc97', '#ff6a8a', '#c9a0ff'];
@@ -160,6 +161,11 @@ bridge?.addEventListener('message', e => {
     toast('Layout auto-arranged: drag anything that is in the wrong place');
   } else if (m.type === 'docs') {
     navigator.clipboard?.writeText(m.text).then(() => toast('Plugin guide copied: paste it into your AI chat'), () => toast('Could not copy', 'error'));
+  } else if (m.type === 'setup') {
+    S.setup = m.report; S.setupChecking = false;
+    setupBadge();
+    if (S.page === 'setup') renderSetup();
+    else if (S.page === 'overview') setupBanner();
   } else if (m.type === 'toast') toast(m.text, m.kind);
 });
 
@@ -181,6 +187,7 @@ const PAGES = {
   devices: ['Devices', 'Detected hardware, names and LED counts'],
   plugins: ['Plugins', 'Add hardware support and effects with small JavaScript files'],
   overlay: ['Game overlay', 'FPS, temperatures and clocks on top of your games'],
+  setup: ['Setup check', 'Is this PC set up right for Glint? Each problem comes with a fix'],
   settings: ['Settings', 'Safety, performance and files'],
 };
 $('#nav').addEventListener('click', e => {
@@ -188,6 +195,8 @@ $('#nav').addEventListener('click', e => {
   go(b.dataset.page);
 });
 function go(page) {
+  if (page !== 'devices' && S.testZone) testPatternOff();          // the LED-count test pattern only lives on the Devices page
+  if (page === 'setup' && S.page !== 'setup') { S.setupChecking = true; send({ type: 'setupCheck' }); }
   if (page === 'sensors' && S.page !== 'sensors') send({ type: 'sensorsWanted', reset: true }); // min/max since the page opened
   S.page = page;
   $$('#nav button').forEach(b => { b.classList.toggle('active', b.dataset.page === page); b.toggleAttribute('aria-current', b.dataset.page === page); });
@@ -206,7 +215,7 @@ function renderAll() {
 }
 function renderPage(p) {
   if (!S.cfg) return;
-  ({ overview: renderOverview, cooling: renderCooling, sensors: renderSensors, lighting: renderLighting, devices: renderDevices, plugins: renderPlugins, overlay: renderOverlay, settings: renderSettings })[p]();
+  ({ overview: renderOverview, cooling: renderCooling, sensors: renderSensors, lighting: renderLighting, devices: renderDevices, plugins: renderPlugins, overlay: renderOverlay, setup: renderSetup, settings: renderSettings })[p]();
   live();
 }
 function renderProfiles() {
@@ -269,6 +278,7 @@ function renderOverview() {
   const others = Object.keys(s).filter(k => !['cpu', 'gpu', 'liquid'].includes(k) && !(k.endsWith(':liquid') && s[k] === s.liquid) && !(k.startsWith('mb:') && (s[k] < 10 || s[k] > 110)));
   const rules = S.cfg.profiles[S.cfg.activeProfile] ?? [];
   $('#page-overview').innerHTML = `
+    <div id="setup-banner"></div>
     <div class="grid temps-hero">
       ${hero.map(([k, n, ic]) => `
       <div class="card temp-tile" data-tile="${k}">
@@ -307,6 +317,7 @@ function renderOverview() {
         ${Object.keys(S.cfg.lighting.presets).slice(0, 12).map(p => `<button class="chip" data-preset="${esc(p)}">${esc(p)}</button>`).join('')}
       </div>
     </div>`;
+  setupBanner();
   const pg = $('#page-overview');
   pg.onclick = e => {
     const g = e.target.closest('[data-go]'); if (g) return go(g.dataset.go);
@@ -1201,8 +1212,8 @@ function renderDevices() {
     cards.push(`
     <div class="card card-pad dev-card">
       <div class="dev-head"><div class="dev-ico">${devIcon(d.id)}</div><div style="flex:1"><div class="card-title">${esc(hubName(d.id))}</div><div class="card-sub">${hubName(d.id) !== d.name ? esc(d.name) + ' · ' : ''}${d.zones.length} zone${d.zones.length === 1 ? '' : 's'} · ${d.zones.reduce((a, z) => a + (L.ledCounts[z.id] ?? z.leds), 0)} LEDs</div></div><span class="status-dot"></span></div>
-      <table class="t">${d.zones.map(z => `<tr><td>${esc(zoneLabel(z.id))}</td><td>${editable(z) ? `<input type="number" min="0" max="300" data-leds="${esc(z.id)}" value="${L.ledCounts[z.id] ?? z.leds}"> <span class="muted">LEDs</span>` : `<span class="muted">${z.leds} LED${z.leds === 1 ? '' : 's'}</span>`}</td></tr>`).join('')}</table>
-      ${d.zones.some(editable) ? '<div class="muted" style="font-size:12px;margin-top:10px">These ports can\'t report their length. Set the real LED count; use 0 for an empty header.</div>' : ''}
+      <table class="t">${d.zones.map(z => `<tr><td>${esc(zoneLabel(z.id))}</td><td>${editable(z) ? `<input type="number" min="0" max="300" data-leds="${esc(z.id)}" value="${L.ledCounts[z.id] ?? z.leds}"> <span class="muted">LEDs</span>${tpNote(z)}` : `<span class="muted">${z.leds} LED${z.leds === 1 ? '' : 's'}</span>`}</td>${editable(z) ? `<td><div class="tp-row"><span class="tp-label">Test pattern</span><div class="toggle ${S.testZone === z.id ? 'on' : ''}" data-tp="${esc(z.id)}" title="Test pattern: white first LED, red last LED, a new colour every 8 LEDs"></div></div></td>` : '<td></td>'}</tr>`).join('')}</table>
+      ${d.zones.some(editable) ? '<div class="muted" style="font-size:12px;margin-top:10px">These ports can\'t report their length. Set the real LED count; use 0 for an empty header. Switch on <b>Test pattern</b>: the first LED turns white, the last one red, and the colour changes every 8 LEDs (one fan). The count is right when the red LED is the last one lit.</div>' : ''}
     </div>`);
   }
   const mb = I.fans.filter(f => f.id.startsWith('mb:'));
@@ -1221,17 +1232,46 @@ function renderDevices() {
         <button class="btn small" data-go="plugins">Manage plugins →</button></div>
     </div>`);
   $('#page-devices').innerHTML = `
-    <div class="banner ${S.ledCountsDirty ? '' : 'hidden'}" id="restart-banner">${IC.bolt.replace('<svg', '<svg width="18" height="18"')}<span>LED counts changed. Glint needs a quick restart to rebuild the lighting layout.</span><span class="spacer"></span><button class="btn small primary" id="restart">Restart Glint</button></div>
+    <div class="banner ${S.ledCountsDirty ? '' : 'hidden'}" id="restart-banner">${IC.bolt.replace('<svg', '<svg width="18" height="18"')}<span>LED counts changed. The test pattern already uses the new count; Glint needs a quick restart for the effects and the device to use it.</span><span class="spacer"></span><button class="btn small primary" id="restart">Restart Glint</button></div>
     <div class="grid dev-grid">${cards.join('')}</div>`;
   const pg = $('#page-devices');
   pg.oninput = e => {
     const el = e.target;
     if (el.dataset.fanname != null) { if (el.value.trim()) S.cfg.fanNames[el.dataset.fanname] = el.value.trim(); else delete S.cfg.fanNames[el.dataset.fanname]; commit(); }
     if (el.dataset.sensorname != null) { S.cfg.sensorNames ??= {}; if (el.value.trim()) S.cfg.sensorNames[el.dataset.sensorname] = el.value.trim(); else delete S.cfg.sensorNames[el.dataset.sensorname]; commit(); }
-    if (el.dataset.leds != null) { L.ledCounts[el.dataset.leds] = clamp(+el.value || 0, 0, 300); S.ledCountsDirty = true; $('#restart-banner').classList.remove('hidden'); commit(); }
+    if (el.dataset.leds != null) {
+      const id = el.dataset.leds;
+      L.ledCounts[id] = clamp(+el.value || 0, 0, 300); S.ledCountsDirty = true; $('#restart-banner').classList.remove('hidden'); commit();
+      if (S.testZone === id) testPatternOn(id);                       // live: the pattern follows the typed count
+      const z = S.init.zones.find(x => x.id === id), note = pg.querySelector(`[data-tp-note="${CSS.escape(id)}"]`);
+      if (z && note) note.outerHTML = tpNote(z);
+    }
+  };
+  pg.onclick = e => {
+    const t = e.target.closest('[data-tp]'); if (!t) return;
+    if (S.testZone === t.dataset.tp) testPatternOff(); else testPatternOn(t.dataset.tp);
+    $$('#page-devices [data-tp]').forEach(x => x.classList.toggle('on', x.dataset.tp === S.testZone));
   };
   $('#restart').onclick = () => { send({ type: 'config', config: S.cfg }); setTimeout(() => send({ type: 'restart' }), 300); };
   pg.querySelectorAll('[data-go]').forEach(b => b.onclick = () => go(b.dataset.go));
+}
+/* ARGB LED-count test pattern: the host paints the zone (white first, red last, a colour per 8 LEDs) for up to 60 s */
+const TP_SECONDS = 60;
+function tpCount(id) { const z = S.init.zones.find(x => x.id === id); return S.cfg.lighting.ledCounts?.[id] ?? z?.count ?? 0; }
+function tpNote(z) {
+  const n = S.cfg.lighting.ledCounts?.[z.id] ?? z.count;
+  return `<div class="tp-note" data-tp-note="${esc(z.id)}"${n > z.count ? '' : ' hidden'}>Only ${z.count} LEDs exist until Glint restarts</div>`;
+}
+function testPatternOn(id) {
+  S.testZone = id;
+  send({ type: 'testPattern', zone: id, count: tpCount(id), on: true });
+  clearTimeout(S.testTimer);
+  S.testTimer = setTimeout(() => { testPatternOff(); $$('#page-devices [data-tp]').forEach(x => x.classList.remove('on')); }, TP_SECONDS * 1000);
+}
+function testPatternOff() {
+  if (!S.testZone) return;
+  send({ type: 'testPattern', zone: S.testZone, on: false });
+  S.testZone = null; clearTimeout(S.testTimer);
 }
 function liveDevices() {
   const st = S.state; if (!st) return;
@@ -1522,6 +1562,20 @@ function renderSettings() {
         </div>
         <div class="muted" style="font-size:12px;margin-top:12px">Needs an MQTT broker, such as Home Assistant's Mosquitto add-on (Settings → Add-ons), with the MQTT integration enabled. Glint's entities then appear automatically; no YAML needed.</div>
       </div>
+      <div class="card card-pad" id="upd-card">
+        <div class="row between card-head"><div><div class="card-title">Updates</div><div class="card-sub">One request to GitHub at startup and once a day. Nothing is downloaded or installed.</div></div><div class="toggle ${UPD().check !== false ? 'on' : ''}" id="upd-check" title="Check for updates"></div></div>
+        <div class="ha-status" id="upd-status"><span class="pdot off"></span><span>–</span><span class="spacer" style="flex:1"></span><button class="btn small primary" id="upd-open" style="display:none">Open release page</button></div>
+      </div>
+      <div class="card card-pad ha-card" id="orgb-card">
+        <div class="row between card-head"><div><div class="card-title">OpenRGB bridge</div><div class="card-sub">Drive devices Glint doesn't support yet through OpenRGB's SDK server</div></div><div class="toggle ${ORGB().enabled ? 'on' : ''}" id="orgb-enabled" title="OpenRGB bridge"></div></div>
+        <div class="ha-status" id="orgb-status"><span class="pdot off"></span><span>–</span></div>
+        <div class="ha-grid">
+          <div class="field ha-host"><label for="orgb-host">SDK server host</label><input type="text" id="orgb-host" value="${esc(ORGB().host ?? '127.0.0.1')}" spellcheck="false"></div>
+          <div class="field"><label for="orgb-port">Port</label><input type="number" id="orgb-port" value="${ORGB().port ?? 6742}" min="1" max="65535"></div>
+          <div class="field" style="grid-column:1/-1"><label for="orgb-exclude">Leave these OpenRGB devices alone (names, comma-separated)</label><input type="text" id="orgb-exclude" value="${esc((ORGB().exclude ?? []).join(', '))}" spellcheck="false" placeholder="e.g. Razer, Corsair Vengeance"></div>
+        </div>
+        <div class="row" style="margin-top:12px;gap:10px"><div class="muted" style="font-size:12px;flex:1">In OpenRGB: SDK Server tab → Start Server. Glint connects when it starts, skips devices it already drives itself, and sends frames at up to 30 fps.</div><button class="btn small" id="orgb-restart">Restart Glint</button></div>
+      </div>
       <div class="card card-pad">
         <div class="card-head"><div class="card-title">About</div></div>
         <div class="kv"><span class="k">Version</span><span>${esc(I.version ?? '1.0')}</span><span class="k">Fan outputs</span><span>${I.fans.length}</span><span class="k">LED zones</span><span>${I.zones.length} (${I.zones.reduce((a, z) => a + z.count, 0)} LEDs)</span></div>
@@ -1531,6 +1585,98 @@ function renderSettings() {
   bindSlider('s-poll', v => (v / 1000).toFixed(1) + ' s', v => { S.cfg.pollMs = v; commit(); });
   $('#s-open').onclick = () => send({ type: 'openConfig' });
   bindHa();
+  bindUpdates();
+  bindOpenRgb();
+}
+
+/* Update check + OpenRGB bridge cards */
+function UPD() { return (S.cfg.updates ??= { check: true }); }
+function ORGB() { return (S.cfg.openRgb ??= { enabled: false, host: '127.0.0.1', port: 6742, exclude: [] }); }
+function bindUpdates() {
+  $('#upd-check').onclick = e => { UPD().check = !UPD().check; e.currentTarget.classList.toggle('on', UPD().check); commit(); liveUpdate(); };
+  $('#upd-open').onclick = () => send({ type: 'openUrl', url: S.state?.update?.url ?? S.init.releasesUrl });
+  liveUpdate();
+}
+function updateText() {
+  const u = S.state?.update, cur = u?.current ?? S.init.version;
+  if (UPD().check === false) return ['off', `Glint ${cur} · update check is off`];
+  if (u?.available) return ['warn', `Update available: v${u.latest} (you have ${cur})`];
+  if (u?.latest) return ['ok', `Glint ${cur} is the latest version`];
+  return ['off', u?.checkedAt ? `Glint ${cur} · couldn't check (${u.note ?? 'offline'})` : `Glint ${cur} · not checked yet`];
+}
+function liveUpdate() {
+  const el = $('#upd-status'); if (!el) return;
+  const [cls, txt] = updateText();
+  $('.pdot', el).className = 'pdot ' + cls;
+  $('span:nth-child(2)', el).textContent = txt;
+  $('#upd-open').style.display = S.state?.update?.available && UPD().check !== false ? '' : 'none';
+}
+function bindOpenRgb() {
+  const o = ORGB();
+  $('#orgb-enabled').onclick = e => { o.enabled = !o.enabled; e.currentTarget.classList.toggle('on', o.enabled); commit(); liveOpenRgb(); };
+  $('#orgb-host').addEventListener('change', e => { o.host = e.target.value.trim() || '127.0.0.1'; e.target.value = o.host; commit(); });
+  $('#orgb-port').addEventListener('change', e => { o.port = clamp(Math.round(+e.target.value) || 6742, 1, 65535); e.target.value = o.port; commit(); });
+  $('#orgb-exclude').addEventListener('change', e => { o.exclude = e.target.value.split(',').map(x => x.trim()).filter(Boolean); commit(); });
+  $('#orgb-restart').onclick = () => { send({ type: 'config', config: S.cfg }); setTimeout(() => send({ type: 'restart' }), 300); };
+  liveOpenRgb();
+}
+function liveOpenRgb() {
+  const el = $('#orgb-status'); if (!el) return;
+  const o = ORGB(), st = S.state?.openRgb;
+  let cls = 'off', txt = 'Off';
+  if (o.enabled && !st) { cls = 'warn'; txt = 'Enabled · restart Glint to connect'; }
+  else if (!o.enabled && st) { cls = 'warn'; txt = 'Switched off · restart Glint to disconnect'; }
+  else if (st?.connected) { cls = st.error ? 'warn' : 'ok'; txt = `Connected to ${st.server} · ${st.devices.length} device${st.devices.length === 1 ? '' : 's'}${st.skipped.length ? ` · ${st.skipped.length} skipped (Glint drives them)` : ''}${st.error ? ` · ${st.error}` : ''}`; }
+  else if (st) { cls = 'bad'; txt = `Not reachable at ${st.server}: ${st.error ?? 'no answer'}`; }
+  $('.pdot', el).className = 'pdot ' + cls;
+  $('span:last-child', el).textContent = txt;
+}
+
+/* ------------------------------------------------------------------ setup check */
+const SETUP_ORDER = { fail: 0, warn: 1, ok: 2 };
+function setupBadge() {
+  const el = $('#setup-badge'); if (!el) return;
+  const R = S.setup;
+  el.className = 'nav-badge' + (R?.fail ? ' bad' : R?.warn ? ' warn dot' : '');
+  el.textContent = R?.fail ? R.fail : R?.warn ? '•' : '';
+  el.title = R ? `${R.fail} problem(s), ${R.warn} warning(s)` : '';
+}
+function setupBanner() {
+  const el = $('#setup-banner'); if (!el) return;
+  const bad = S.setup?.importantFail ? S.setup.items.find(i => i.important && i.status === 'fail') : null;
+  const more = bad ? S.setup.items.filter(i => i.important && i.status === 'fail').length - 1 : 0;
+  el.innerHTML = bad ? `<div class="banner bad" id="setup-alert">${IC.bolt.replace('<svg', '<svg width="18" height="18"')}<span>${esc(bad.title)}${more > 0 ? ` (and ${more} more)` : ''}</span><span class="spacer"></span><button class="btn small" data-go="setup">Open Setup check →</button></div>` : '';
+}
+function renderSetup() {
+  const R = S.setup;
+  const items = R ? [...R.items].sort((a, b) => SETUP_ORDER[a.status] - SETUP_ORDER[b.status]) : [];
+  const when = R ? new Date(R.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';
+  const groups = [['fail', 'Needs fixing'], ['warn', 'Worth a look'], ['ok', 'All good']];
+  $('#page-setup').innerHTML = `
+    <div class="card card-pad setup-head">
+      <div style="flex:1;min-width:240px"><div class="card-title">${!R ? 'Checking…' : R.fail ? `${R.fail} thing${R.fail === 1 ? '' : 's'} to fix` : R.warn ? 'Mostly set up' : 'Everything is set up'}</div>
+        <div class="card-sub">${R ? `Checked at ${esc(when)}${S.setupChecking ? ' · checking again…' : ''}` : 'Looking at drivers, permissions and other apps…'}</div></div>
+      ${R ? `<div class="counts"><span><b style="color:var(--bad)">${R.fail}</b>problem${R.fail === 1 ? '' : 's'}</span><span><b style="color:var(--warn)">${R.warn}</b>warning${R.warn === 1 ? '' : 's'}</span><span><b style="color:var(--good)">${R.ok}</b>ok</span></div>` : ''}
+      <button class="btn" id="setup-recheck"${S.setupChecking ? ' disabled' : ''}>Re-check</button>
+    </div>
+    <div class="card setup-list" id="setup-list">${R ? groups.map(([st, title]) => {
+      const g = items.filter(i => i.status === st); if (!g.length) return '';
+      return `<div class="setup-group">${title}</div>` + g.map(i => `
+      <div class="setup-row ${i.status}" data-item="${esc(i.id)}">
+        <span class="pdot ${i.status === 'fail' ? 'bad' : i.status}"></span>
+        <div><div class="st">${esc(i.title)}</div><div class="sd">${esc(i.detail)}</div></div>
+        <div>${i.fix ? `<button class="btn small ${i.status === 'fail' ? 'primary' : ''}" data-fix="${esc(i.id)}">${esc(i.fixLabel)}</button>` : ''}</div>
+      </div>`).join('');
+    }).join('') : '<div class="empty">Checking…</div>'}</div>
+    <div class="muted" style="font-size:12px;margin-top:12px">Glint only runs these checks when you open this page or press Re-check. The same report is available to scripts and AI agents as <span class="mono">setup.check</span>.</div>`;
+  $('#setup-recheck').onclick = () => { S.setupChecking = true; send({ type: 'setupCheck' }); renderSetup(); };
+  $('#setup-list').onclick = e => {
+    const b = e.target.closest('[data-fix]'); if (!b) return;
+    const it = S.setup.items.find(i => i.id === b.dataset.fix); if (!it) return;
+    if (it.fix === 'page') { if (it.fixArg === 'plugins') PF.f = 'problems'; go(it.fixArg); return; }
+    if (it.fix === 'restartAdmin' && !confirm('Restart Glint as administrator? Windows will ask for permission.')) return;
+    send({ type: 'setupFix', fix: it.fix, arg: it.fixArg });
+  };
 }
 
 /* Game overlay page */
@@ -1831,6 +1977,8 @@ function liveSettings() {
   $('#p-fps').textContent = st.perf.fps + ' fps';
   $('#p-devs').innerHTML = Object.entries(st.perf.devices).map(([k, v]) => `<tr><td>${esc(hubName(k))}</td><td class="num">${v} fps</td></tr>`).join('');
   liveHa();
+  liveUpdate();
+  liveOpenRgb();
   ovPreview();
 }
 

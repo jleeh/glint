@@ -107,6 +107,35 @@ public sealed class LightingEngine : IDisposable
     }
     readonly Stopwatch _clock = Stopwatch.StartNew();
 
+    // ---- ARGB LED-count test pattern (Devices page): one zone, time-limited, like Identify
+    volatile TestPatternState? _test;
+    sealed record TestPatternState(string ZoneId, int Count, double Until);
+    public const double TestPatternSeconds = 60;
+    /// <summary>Colour blocks every 8 LEDs (one fan's worth); never white or red, which mark the ends.</summary>
+    public static readonly Rgb[] TestPatternBlocks = { new(0, 255, 0), new(0, 80, 255), new(255, 200, 0), new(200, 0, 255), new(0, 255, 255), new(255, 100, 0) };
+    public const int TestPatternBlock = 8;
+
+    /// <summary>Paint a zone's LED-count test pattern for <paramref name="count"/> LEDs (the count the user typed):
+    /// LED 1 white, LED <paramref name="count"/> red, blocks of 8 in between, anything past the count dark. When the count
+    /// matches the real fans/strip, the red LED is the very last one that lights.</summary>
+    public static void PaintTestPattern(Span<Rgb> zone, int count)
+    {
+        for (int i = 0; i < zone.Length; i++)
+            zone[i] = i >= count ? Rgb.Black : i == 0 ? new Rgb(255, 255, 255) : i == count - 1 ? new Rgb(255, 0, 0) : TestPatternBlocks[i / TestPatternBlock % TestPatternBlocks.Length];
+    }
+
+    /// <summary>Show the test pattern on one zone for up to <paramref name="seconds"/> (count = what the user typed; LEDs
+    /// beyond the zone's current length need a restart to exist). Returns false for an unknown zone.</summary>
+    public bool TestPattern(string zoneId, int count, double seconds = TestPatternSeconds)
+    {
+        if (!_zones.Any(z => z.zoneId == zoneId)) return false;
+        _test = new TestPatternState(zoneId, Math.Max(0, count), _clock.Elapsed.TotalSeconds + Math.Clamp(seconds, 0, TestPatternSeconds));
+        return true;
+    }
+    public void StopTestPattern() => _test = null;
+    /// <summary>The zone showing the test pattern right now (null when off or expired).</summary>
+    public string? TestPatternZone => _test is { } t && t.Until > _clock.Elapsed.TotalSeconds ? t.ZoneId : null;
+
     // ---- effect field preview (what the global effect paints across the whole canvas, like SignalRGB's canvas)
     public const int FieldW = 64, FieldH = 40;
     Effect? _fieldFx;
@@ -191,6 +220,12 @@ public sealed class LightingEngine : IDisposable
                 animatedOverride = true;
             }
             else animatedOverride = false;
+            if (_test is { } tp)
+            {
+                if (tp.Until <= _clock.Elapsed.TotalSeconds) _test = null;   // auto-off
+                else foreach (var (zoneId, _, start, count, _, _) in _zones)
+                    if (zoneId == tp.ZoneId) PaintTestPattern(_frame.AsSpan(start, count), tp.Count);
+            }
 
             long ms = sw.ElapsedMilliseconds;
             foreach (var (dev, start, count) in _devSlices)

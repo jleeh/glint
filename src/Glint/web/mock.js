@@ -150,8 +150,35 @@
 
   const INIT = {
     type: 'init', config, fans, zones, devices, hubs, deviceNames, placements, aspect: 1.6, plugins,
-    log: ['Demo rig (mock.js): no hardware is accessed'], effects: [], elevated: true, version: '1.0.0', haHasPassword: false,
+    log: ['Demo rig (mock.js): no hardware is accessed'], effects: [], elevated: true, version: '0.2.0', haHasPassword: false,
+    releasesUrl: 'https://github.com/jleeh/glint/releases/latest',
   };
+  config.updates = { check: true };
+  config.openRgb = { enabled: false, host: '127.0.0.1', port: 6742, exclude: [] };
+
+  /* ------------------------------------------------------------ setup check (a fictional, mostly healthy PC) */
+  const UPDATE = { current: '0.2.0', latest: '0.3.0', url: 'https://github.com/jleeh/glint/releases/tag/v0.3.0', available: true, checkedAt: new Date().toISOString(), note: null };
+  const setupReport = () => {
+    const cfg = window.__lastConfig ?? INIT.config;
+    const it = (id, title, status, detail, fixLabel, fix, fixArg, important = false) => ({ id, title, status, detail, ...(fix ? { fixLabel, fix, fixArg } : {}), important });
+    const items = [
+      it('elevated', 'Running as administrator', 'ok', 'Glint can read CPU temperatures, control motherboard fan headers and reach RAM lighting.'),
+      it('pawnio', 'PawnIO working', 'ok', 'Sensors and the SMBus (RAM lighting) are available.'),
+      it('webview2', 'WebView2 runtime 142.0.3595.53', 'ok', 'The dashboard runtime is installed.'),
+      it('cpuTemp', 'CPU temperature readable (52.4 °C)', 'ok', 'Fan rules that follow the CPU work.'),
+      it('conflict:signalrgb', 'SignalRGB starts with Windows', 'warn', 'SignalRGB also controls RGB devices. Two apps writing to the same device makes colours flicker and fan speeds jump. Quit it and remove it from startup (or switch off its lighting/fan control). Startup entry: "SignalRGB".', 'Open startup apps', 'startupApps'),
+      it('plugins:approval', '1 plugin waiting for your approval', 'warn', 'Patriot Viper RGB DRAM: SMBus plugins only run after you approve them on the Plugins page.', 'Review on Plugins page', 'page', 'plugins'),
+      it('plugins:failed', '1 plugin failed to load', 'fail', "my-effect.js: SyntaxError: Unexpected token '}' (line 14)", 'Open Plugins page', 'page', 'plugins'),
+      it('devices', 'No devices declined', 'ok', 'Every device a plugin claimed identified itself as expected.'),
+      it('startupTask', 'Starts with Windows', 'ok', 'The "Glint" logon task is registered (runs Glint as admin without a UAC prompt).'),
+      cfg.updates?.check === false ? it('version', 'Glint 0.2.0', 'ok', 'Update check is off (Settings).')
+        : it('version', 'Update available: v0.3.0', 'warn', "You have Glint 0.2.0. Download the new version from the release page; Glint never installs updates by itself.", 'Open release page', 'openUrl', UPDATE.url),
+      ...(window.__setupExtra ?? []),
+    ];
+    const n = st => items.filter(i => i.status === st).length;
+    return { time: new Date().toISOString(), ok: n('ok'), warn: n('warn'), fail: n('fail'), importantFail: items.some(i => i.important && i.status === 'fail'), items };
+  };
+  let testPattern = null; // { zone, count }
 
   /* ------------------------------------------------------------ live state */
   const BASE = {
@@ -187,7 +214,9 @@
     const ha = (window.__lastConfig ?? INIT.config).homeAssistant ?? {};
     const haStatus = { enabled: !!ha.enabled, connected: !!(ha.enabled && ha.host), broker: ha.host ? `${ha.tls ? 'mqtts' : 'mqtt'}://${ha.host}:${ha.port}` : '',
       lastError: ha.enabled && !ha.host ? 'no broker host set' : '', entities: ha.enabled && ha.host ? 27 : 0, reconnects: 0 };
+    const cfgNow = window.__lastConfig ?? INIT.config;
     return { type: 'state', sensors, rpm, duty, explain: {}, profile: INIT.config.activeProfile, error: '', ha: haStatus,
+      update: cfgNow.updates?.check === false ? { ...UPDATE, latest: null, available: false, checkedAt: null } : UPDATE, openRgb: null, testPattern: testPattern?.zone ?? null,
       overrides: Object.fromEntries(Object.entries((window.__lastConfig ?? INIT.config).profiles).map(([k, rs]) => [k, rs.map(r => r.override ?? null)])),
       perf: { cpuSeconds: cpu, privateMB: 58, fps: 30, devices: { cc: 30, lnp: 18.9, mystic: 21.7, ram: 10.1, razer25a: 30, rival1720: 30 }, cores: 32 } };
   };
@@ -309,6 +338,12 @@
         const c = shade(e, pts[i][0], pts[i][1], t, z, i), j = (z.start + i) * 3;
         b[j] = c[0] * k; b[j + 1] = c[1] * k; b[j + 2] = c[2] * k;
       }
+      if (testPattern?.zone === z.id) // same pattern as LightingEngine.PaintTestPattern: white first, red last, a colour per 8 LEDs
+        for (let i = 0; i < z.count; i++) {
+          const BL = [[0, 255, 0], [0, 80, 255], [255, 200, 0], [200, 0, 255], [0, 255, 255], [255, 100, 0]];
+          const c = i >= testPattern.count ? [0, 0, 0] : i === 0 ? [255, 255, 255] : i === testPattern.count - 1 ? [255, 0, 0] : BL[Math.floor(i / 8) % BL.length], j = (z.start + i) * 3;
+          b[j] = c[0]; b[j + 1] = c[1]; b[j + 2] = c[2];
+        }
     }
     const fw = 64, fh = 40, f = new Uint8Array(fw * fh * 3);
     for (let y = 0; y < fh; y++) for (let x = 0; x < fw; x++) {
@@ -330,6 +365,8 @@
       if (m.type === 'config' && m.config.homeAssistant?.password != null) INIT.haHasPassword = m.config.homeAssistant.password !== '';
       if (m.type === 'config') window.__lastConfig = m.config;
       (window.__msgs ??= []).push(m);
+      if (m.type === 'ready' || m.type === 'setupCheck') setTimeout(() => emit({ type: 'setup', report: setupReport() }), m.type === 'ready' ? 40 : 120);
+      if (m.type === 'testPattern') testPattern = m.on ? { zone: m.zone, count: m.count } : (testPattern?.zone === m.zone ? null : testPattern);
       if (m.type === 'autoLayout') { const cfg = window.__lastConfig ?? INIT.config; cfg.lighting.layout = JSON.parse(JSON.stringify(AUTO)); setTimeout(() => emit({ type: 'layout', placements: AUTO, config: cfg }), 20); }
     },
   };

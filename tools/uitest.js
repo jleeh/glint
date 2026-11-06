@@ -23,7 +23,7 @@ const fs = require('fs');
   await wait(700);
 
   // --- every page renders
-  for (const pg of ['overview', 'cooling', 'sensors', 'lighting', 'devices', 'overlay', 'settings']) {
+  for (const pg of ['overview', 'cooling', 'sensors', 'lighting', 'devices', 'overlay', 'setup', 'settings']) {
     await nav(pg);
     const n = await p.$eval(`#page-${pg}`, el => el.children.length);
     check(`page ${pg} renders`, n > 0, `${n} children`);
@@ -211,6 +211,35 @@ const fs = require('fs');
     check('devices: keyboard and mouse get their own icons', await p.evaluate(() => { const h = document.getElementById('page-devices').innerHTML, norm = x => { const t = document.createElement('div'); t.innerHTML = x; return t.innerHTML; }; return h.includes(norm(IC.keyboard)) && h.includes(norm(IC.mouse)); }));
     check('devices: user-set LED counts editable on MSI ARGB headers', !!(await p.$('[data-leds="mystic:jrainbow1"]')));
   }
+  // --- devices: ARGB LED-count test pattern
+  {
+    const tpMsgs = () => p.evaluate(() => window.__msgs.filter(m => m.type === 'testPattern'));
+    check('test pattern toggle on every user-set LED count (and only there)', !!(await p.$('[data-tp="lnp:ch1"]')) && !!(await p.$('[data-tp="mystic:jrainbow1"]')) && !(await p.$('[data-tp="cc:fan1"]')) && !(await p.$('[data-tp="razer25a:keys"]')));
+    await p.click('[data-tp="mystic:jrainbow1"]'); await wait(100);
+    let tm = (await tpMsgs()).at(-1);
+    check('test pattern on: sends zone + the configured count', tm?.on === true && tm.zone === 'mystic:jrainbow1' && tm.count === 30 && await p.$eval('[data-tp="mystic:jrainbow1"]', e => e.classList.contains('on')), JSON.stringify(tm));
+    // the host paints it: LED 1 white, LED <count> red, a new colour every 8 LEDs, nothing past the count
+    await p.evaluate(() => window.mockBridge.postMessage({ type: 'preview', on: true })); await wait(200);
+    await p.$eval('[data-leds="mystic:jrainbow1"]', e => { e.value = 20; e.dispatchEvent(new Event('input', { bubbles: true })); }); await wait(150);
+    tm = (await tpMsgs()).at(-1);
+    check('test pattern: typing a new count updates it live', tm?.on === true && tm.count === 20 && tm.zone === 'mystic:jrainbow1', JSON.stringify(tm));
+    await wait(250);
+    const px = await p.evaluate(() => { const z = S.init.zones.find(x => x.id === 'mystic:jrainbow1'), at = i => [...S.rgb.slice((z.start + i) * 3, (z.start + i) * 3 + 3)]; return { first: at(0), b1: at(1), b2: at(8), last: at(19), past: at(20), end: at(29) }; });
+    check('test pattern frame: white first, red at the count, blocks of 8, dark past the count', String(px.first) === '255,255,255' && String(px.last) === '255,0,0' && String(px.past) === '0,0,0' && String(px.end) === '0,0,0' && String(px.b1) !== String(px.b2), JSON.stringify(px));
+    await p.evaluate(() => window.mockBridge.postMessage({ type: 'preview', on: false }));
+    await p.$eval('[data-leds="mystic:jrainbow1"]', e => { e.value = 40; e.dispatchEvent(new Event('input', { bubbles: true })); }); await wait(150);
+    check('test pattern: a count above the current length says a restart is needed', await p.$eval('[data-tp-note="mystic:jrainbow1"]', e => !e.hidden && e.textContent.includes('30')));
+    await p.$eval('[data-leds="mystic:jrainbow1"]', e => { e.value = 30; e.dispatchEvent(new Event('input', { bubbles: true })); }); await wait(150);
+    await p.click('[data-tp="lnp:ch1"]'); await wait(100);
+    tm = (await tpMsgs()).slice(-2);
+    check('test pattern: one zone at a time', tm[1]?.zone === 'lnp:ch1' && tm[1].on && (await p.$$('#page-devices [data-tp].on')).length === 1, JSON.stringify(tm));
+    await nav('overview');
+    tm = (await tpMsgs()).at(-1);
+    check('test pattern: leaving the Devices page switches it off', tm?.on === false && tm.zone === 'lnp:ch1', JSON.stringify(tm));
+    await nav('devices');
+    check('test pattern: off after coming back', (await p.$$('#page-devices [data-tp].on')).length === 0);
+    check('test pattern: page times out after 60 s like the host', await p.evaluate(() => typeof TP_SECONDS === 'number' && TP_SECONDS === 60));
+  }
   await p.click('[data-fanname="cc:fan1"]', { count: 3 }); await p.keyboard.type('Front top'); c = await cfg();
   check('rename fan', c.fanNames['cc:fan1'] === 'Front top', c.fanNames['cc:fan1']);
   await nav('overview');
@@ -256,6 +285,60 @@ const fs = require('fs');
   await nav('settings');
   await p.$eval('#s-fail', e => { e.value = 80; e.dispatchEvent(new Event('input')); }); c = await cfg();
   check('fail-safe slider', c.failsafeDuty === 80, c.failsafeDuty);
+  // updates card
+  check('settings: update status shows the new version', (await p.$eval('#upd-status', e => e.textContent)).includes('v0.3.0') && await p.$eval('#upd-open', e => e.style.display !== 'none'));
+  await p.click('#upd-open'); await wait(100);
+  check('settings: "Open release page" sends only the release URL', await p.evaluate(() => window.__msgs.some(m => m.type === 'openUrl' && m.url.startsWith('https://github.com/jleeh/glint/releases'))));
+  await p.click('#upd-check'); c = await cfg();
+  check('settings: update check toggle saves updates.check', c.updates?.check === false, JSON.stringify(c.updates));
+  await wait(1100);
+  check('settings: update check off hides the release button', await p.$eval('#upd-open', e => e.style.display === 'none') && (await p.$eval('#upd-status', e => e.textContent)).includes('off'));
+  await p.click('#upd-check'); c = await cfg();
+  check('settings: update check back on', c.updates?.check === true);
+  // OpenRGB bridge card
+  await p.click('#orgb-enabled'); c = await cfg();
+  check('settings: OpenRGB bridge toggle saves openRgb.enabled', c.openRgb?.enabled === true && c.openRgb.host === '127.0.0.1' && c.openRgb.port === 6742, JSON.stringify(c.openRgb));
+  check('settings: OpenRGB status says a restart is needed', (await p.$eval('#orgb-status', e => e.textContent)).includes('restart'));
+  await p.$eval('#orgb-port', e => { e.value = '99999'; e.dispatchEvent(new Event('change')); }); c = await cfg();
+  check('settings: OpenRGB port clamped to 65535', c.openRgb.port === 65535, c.openRgb.port);
+  await p.$eval('#orgb-exclude', e => { e.value = 'Razer,  Corsair Vengeance , '; e.dispatchEvent(new Event('change')); }); c = await cfg();
+  check('settings: OpenRGB exclude list split and trimmed', JSON.stringify(c.openRgb.exclude) === '["Razer","Corsair Vengeance"]', JSON.stringify(c.openRgb.exclude));
+  await p.$eval('#orgb-port', e => { e.value = '6742'; e.dispatchEvent(new Event('change')); });
+  await p.click('#orgb-enabled'); c = await cfg();
+  check('settings: OpenRGB bridge off again', c.openRgb.enabled === false);
+
+  // --- setup check page
+  {
+    const before = await p.evaluate(() => window.__msgs.filter(m => m.type === 'setupCheck').length);
+    await nav('setup'); await wait(300);
+    const after = await p.evaluate(() => window.__msgs.filter(m => m.type === 'setupCheck').length);
+    check('setup: opening the page asks the host to check (on demand, not a timer)', after === before + 1, `${before} -> ${after}`);
+    const rows = await p.$$eval('#setup-list .setup-row', els => els.map(e => [e.dataset.item, e.className.split(' ')[1]]));
+    check('setup: every check listed with a status', rows.length >= 8 && rows.every(r => ['ok', 'warn', 'fail'].includes(r[1])), JSON.stringify(rows));
+    check('setup: problems first, then warnings, then ok', rows.map(r => ({ fail: 0, warn: 1, ok: 2 })[r[1]]).every((v, i, a) => i === 0 || a[i - 1] <= v));
+    check('setup: plain-language detail on each row', await p.$$eval('#setup-list .sd', els => els.every(e => e.textContent.length > 20)));
+    check('setup: sidebar badge shows the problem count in red', await p.$eval('#setup-badge', e => e.textContent === '1' && e.classList.contains('bad')));
+    await p.click('[data-fix="plugins:failed"]'); await wait(250);
+    check('setup: "Open Plugins page" fix goes to the plugins Problems filter', await p.evaluate(() => S.page === 'plugins' && PF.f === 'problems'));
+    await p.click('[data-pf="all"]');
+    await nav('setup'); await wait(300);
+    await p.click('[data-fix="conflict:signalrgb"]'); await wait(100);
+    check('setup: startup-apps fix sends setupFix', await p.evaluate(() => window.__msgs.some(m => m.type === 'setupFix' && m.fix === 'startupApps')));
+    await p.click('[data-fix="version"]'); await wait(100);
+    check('setup: update row opens the release page', await p.evaluate(() => window.__msgs.some(m => m.type === 'setupFix' && m.fix === 'openUrl' && m.arg.includes('/releases/'))));
+    const n0 = await p.evaluate(() => window.__msgs.filter(m => m.type === 'setupCheck').length);
+    await p.click('#setup-recheck'); await wait(300);
+    check('setup: Re-check asks again', await p.evaluate(n => window.__msgs.filter(m => m.type === 'setupCheck').length === n + 1, n0));
+    await nav('overview');
+    check('overview: no setup banner without an important failure', !(await p.$('#setup-alert')));
+    await p.evaluate(() => { window.__setupExtra = [{ id: 'cpuTemp2', title: 'CPU temperature not readable', status: 'fail', detail: 'Rules that use the CPU temperature run at the fail-safe speed.', important: true }]; window.mockBridge.postMessage({ type: 'setupCheck' }); });
+    await wait(400);
+    check('overview: one-line banner when something important fails', await p.$eval('#setup-alert', e => e.textContent.includes('CPU temperature not readable')));
+    check('setup: badge counts the new problem', await p.$eval('#setup-badge', e => e.textContent === '2'));
+    await p.click('#setup-alert [data-go="setup"]'); await wait(300);
+    check('overview banner links to the Setup check page', await p.evaluate(() => S.page === 'setup'));
+    await p.evaluate(() => { window.__setupExtra = []; window.mockBridge.postMessage({ type: 'setupCheck' }); }); await wait(300);
+  }
 
 
   // --- sensors page
@@ -467,7 +550,7 @@ const fs = require('fs');
   for (const width of [1000, 1150, 1320, 1600]) {
     await p.setViewport({ width, height: 860 }); await wait(200);
     const bad = [];
-    for (const pg of ['overview', 'cooling', 'sensors', 'lighting', 'devices', 'plugins', 'overlay', 'settings']) {
+    for (const pg of ['overview', 'cooling', 'sensors', 'lighting', 'devices', 'plugins', 'overlay', 'setup', 'settings']) {
       await nav(pg);
       if (pg === 'cooling') { await p.click('[data-ri="1"]'); await wait(200); }
       const o = await p.evaluate(() => { const c = document.getElementById('content'); return c.scrollWidth - c.clientWidth; });

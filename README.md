@@ -20,7 +20,8 @@
 
 ## Why Glint
 
-- **Free, forever.** GPL-3.0, no accounts, no cloud, no telemetry, no paid tier.
+- **Free, forever.** GPL-3.0, no accounts, no cloud, no telemetry, no paid tier. (The only network request is an
+  optional update check you can switch off.)
 - **Light.** One small tray process. No Electron, no always-on browser: the dashboard only exists while it's
   open. Effects are rendered once per frame and devices are only written when their colours change.
 - **Fans that think about the whole PC.** Every fan curve can take several sensors at once: CPU, GPU, liquid,
@@ -31,7 +32,10 @@
   and even **write and test a plugin for your device**.
 - **Extensible by anyone.** Devices and effects are single-file JavaScript plugins in a sandbox, with built-in
   tests against simulated hardware so you can add a device without risking it.
-- **Plays well with others.** Home Assistant (MQTT discovery), a HWMonitor-style sensor view, and a game overlay.
+- **Plays well with others.** Home Assistant (MQTT discovery), a HWMonitor-style sensor view, a game overlay, and an
+  optional **OpenRGB bridge** for devices Glint doesn't support yet.
+- **Tells you what's wrong.** A **Setup check** page finds missing drivers, missing admin rights and other RGB apps
+  fighting over your hardware, and offers the fix.
 
 ## Features
 
@@ -43,6 +47,8 @@
 | **Sensors**: every sensor with min/max, HWMonitor-style | **Plugins**: search, enable, approve, write your own |
 | ![Per-device lighting](docs/screenshots/lighting-scoped.png) | ![Game overlay settings](docs/screenshots/settings-overlay.png) |
 | **Per-device effects** on the layout canvas | **Game overlay**: pick any sensor, position, hotkey |
+| ![Setup check](docs/screenshots/setup-check.png) | ![Devices](docs/screenshots/devices.png) |
+| **Setup check**: drivers, admin rights, conflicting apps, with fixes | **Devices**: names, LED counts and a test pattern |
 
 ## Install
 
@@ -57,6 +63,14 @@ boot), adds a Start menu entry and starts Glint. Optional steps in the wizard:
 - **WebView2 runtime** (only if missing): downloads Microsoft's Evergreen runtime for the dashboard.
 - **Disable SignalRGB at startup** (unchecked): stops it and removes it from startup (it doesn't uninstall it).
 
+**Glint isn't code-signed yet**, so Windows SmartScreen may say *"Windows protected your PC"* the first time you run
+the setup. Click **More info → Run anyway**. To check that your download is the one GitHub Actions built, compare
+its SHA-256 hash with `SHA256SUMS.txt` on the same release page:
+
+```powershell
+Get-FileHash .\Glint-Setup-x.y.z.exe -Algorithm SHA256   # the Hash must match the line in SHA256SUMS.txt
+```
+
 Uninstall from Windows Settings > Apps; setup asks whether to also delete your settings in `%APPDATA%\Glint` (kept by default).
 Silent install: `Glint-Setup-x.y.z.exe /VERYSILENT /SUPPRESSMSGBOXES /TASKS="pawnio,desktopicon"`.
 
@@ -66,7 +80,32 @@ Silent install: `Glint-Setup-x.y.z.exe /VERYSILENT /SUPPRESSMSGBOXES /TASKS="paw
 
 **From source:** see [CONTRIBUTING.md](CONTRIBUTING.md#building) (`dotnet build`, or `install.ps1` from a checkout).
 
-Switching from another RGB app? Close it first: two programs driving the same device fight each other.
+Switching from another RGB app? Close it first: two programs driving the same device fight each other. The
+**Setup check** page lists any that are running or set to start with Windows.
+
+## ✅ Setup check
+
+The **Setup check** page (sidebar, next to Settings) answers "is my PC set up right for Glint?" in one list. Each
+item is ok / warning / problem, says in plain words what it means, and has a fix button where there is one:
+
+- Glint running as administrator (needed for CPU temperatures, motherboard fans and RAM lighting) → *Restart as administrator*.
+- PawnIO installed and working → *Get PawnIO*; WebView2 runtime version → *Get WebView2*; CPU temperature readable.
+- Apps that drive the same hardware, running or set to start with Windows: SignalRGB, Corsair iCUE, ASUS Armoury
+  Crate / LightingService, MSI Center / Mystic Light, NZXT CAM, Lian Li L-Connect, Razer Synapse, Logitech G HUB,
+  OpenRGB (unless the OpenRGB bridge uses it) and FanControl → *Open startup apps*.
+- Plugins waiting for approval or failing to load → *Plugins page*; devices whose plugin declined them.
+- The startup task, Glint's version and whether an update is available, and the OpenRGB bridge.
+
+It only runs when you open the page (or press **Re-check**); nothing polls in the background. The sidebar shows a red
+count when something needs fixing, and the Overview shows a one-line banner for the important ones. Scripts and AI
+agents get the same report from `Glint.exe ctl setup.check` / `glint_setup_check`.
+
+## 🔄 Updates
+
+Glint can tell you when a new version is out: one request to GitHub's `releases/latest` API for this repository
+about 20 s after start and then once a day. Nothing else is sent, nothing is downloaded or installed. When there is
+a newer release you'll see *Update available* on the Setup check page, in Settings and in the tray menu (which opens
+the release page). Offline, or no release published: it stays quiet. Switch it off in Settings (`updates.check`).
 
 ## Supported hardware
 
@@ -193,6 +232,26 @@ captured only while one is active), plus effect plugins.
 - **Per-device / per-zone effects:** click a device or fan to give it its own effect (Esc or click again to go back
   to all lights).
 - **Presets** for all lights or the selected device, and from the tray menu.
+- **LED counts:** ARGB headers and LED-strip channels can't report how many LEDs are connected. Set the count on the
+  Devices page and switch on **Test pattern**: the first LED turns white, the last one red, and the colour changes
+  every 8 LEDs (one fan's worth). The count is right when the red LED is the last one lit. The pattern follows what
+  you type immediately and switches itself off after 60 s or when you leave the page; Glint then needs a quick
+  restart for the device to use the new count.
+
+## 🌈 OpenRGB bridge
+
+For devices Glint has no plugin for yet, Glint can drive them through [OpenRGB](https://openrgb.org)'s SDK server
+(off by default). In OpenRGB open the **SDK Server** tab and start the server, then in Glint's Settings switch on
+**OpenRGB bridge** and restart Glint. Its devices then appear in Glint like any other (ids `orgb-…`): they take part
+in effects, the layout canvas and per-device overrides, at up to 30 fps.
+
+- Glint connects once at start-up to `127.0.0.1:6742` (configurable), negotiates the protocol version and puts each
+  device in OpenRGB's custom (direct) mode.
+- Devices Glint already drives itself are skipped (matched by USB VID/PID from OpenRGB's device location, else by
+  name), so two drivers never fight over one device. Add more to **Leave these devices alone** in Settings.
+- It's built into Glint, not a plugin: plugins have no network access by design.
+- Config: `openRgb: { enabled, host, port, exclude }`. The Setup check page shows whether the bridge connected and
+  which devices it took or skipped.
 
 ## 🎮 Game overlay
 

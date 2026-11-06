@@ -9,6 +9,8 @@ public sealed class GlintService : IDisposable
     public FanEngine Engine { get; } = new();
     public GlintConfig Config { get; private set; }
     public HomeAssistantBridge HomeAssistant { get; }
+    /// <summary>Optional update check; idle until the tray app calls Start (tests never do).</summary>
+    public UpdateChecker Updates { get; }
 
     public IReadOnlyDictionary<string, double> Sensors { get; private set; } = new Dictionary<string, double>();
     public IReadOnlyDictionary<string, int> Rpm { get; private set; } = new Dictionary<string, int>();
@@ -38,6 +40,7 @@ public sealed class GlintService : IDisposable
         Lighting.Start();
         HomeAssistant = new HomeAssistantBridge(this);
         HomeAssistant.Configure(cfg.HomeAssistant);
+        Updates = new UpdateChecker(() => Config);
         _thread = new Thread(Loop) { IsBackground = true, Name = "Glint fans", Priority = ThreadPriority.AboveNormal };
         _thread.Start();
         try
@@ -73,6 +76,7 @@ public sealed class GlintService : IDisposable
         if (save && !NoSave) { _selfWrite = DateTime.UtcNow; cfg.Save(); }
         HomeAssistant.Configure(cfg.HomeAssistant); // reconnects only if that section changed
         HomeAssistant.ConfigApplied();
+        Updates.OnConfig(cfg);
         try { ConfigApplied?.Invoke(cfg); } catch { }
     }
 
@@ -155,6 +159,7 @@ public sealed class GlintService : IDisposable
         _thread.Join(3000);
         _watch?.Dispose();
         Lighting.Dispose();
+        Updates.Dispose();
         Rig.Dispose();
     }
 }

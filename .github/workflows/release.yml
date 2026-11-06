@@ -47,9 +47,21 @@ jobs:
         run: |
           Copy-Item install.ps1, selftest.ps1, LICENSE, NOTICE.md, README.md out/publish/
           Compress-Archive out/publish/* "out/Glint-${{ env.VERSION }}-portable-win-x64.zip"
+      - name: Checksums (SHA256SUMS.txt)
+        shell: pwsh
+        run: |
+          # Glint isn't code-signed yet: publish SHA-256 hashes so downloads can be verified (Get-FileHash)
+          $files = "out/Glint-Setup-$env:VERSION.exe", "out/Glint-$env:VERSION-portable-win-x64.zip"
+          $lines = foreach ($f in $files) {
+            if (-not (Test-Path $f)) { throw "missing $f" }
+            "{0}  {1}" -f (Get-FileHash $f -Algorithm SHA256).Hash.ToLowerInvariant(), (Split-Path $f -Leaf)
+          }
+          [IO.File]::WriteAllText("$PWD/out/SHA256SUMS.txt", ($lines -join "`n") + "`n")
+          Get-Content out/SHA256SUMS.txt
       - uses: softprops/action-gh-release@v2
         with:
           files: |
             out/Glint-Setup-${{ env.VERSION }}.exe
             out/Glint-${{ env.VERSION }}-portable-win-x64.zip
+            out/SHA256SUMS.txt
           generate_release_notes: true

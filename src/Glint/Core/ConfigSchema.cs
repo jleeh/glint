@@ -26,6 +26,7 @@ public static class Limits
     public const int OverlayOffsetMin = -200, OverlayOffsetMax = 4000, OverlayItemsMax = 24, OverlayLabelMax = 32;
     public static readonly string[] OverlayPositions = { "top-left", "top-right", "bottom-left", "bottom-right" };
     public static readonly string[] OverlayLayouts = { "compact", "detailed" };
+    public const int HostMax = 253;
 }
 
 /// <summary>What the validator knows about the live system (all optional).</summary>
@@ -169,6 +170,18 @@ public static class ConfigValidator
                     E.Add($"homeAssistant.{n} \"{v}\" must be a non-empty MQTT topic without spaces, wildcards (+ #) or leading/trailing '/'");
         }
         if (c.Sensors == null) E.Add("sensors options are missing (use { storage, memory, psu, controllers })");
+        if (c.Updates == null) E.Add("updates is missing (use { check: true })");
+
+        // ---- OpenRGB bridge
+        if (c.OpenRgb == null) E.Add("openRgb is missing (use {} for the defaults)");
+        else
+        {
+            Range("openRgb.port", c.OpenRgb.Port, 1, 65535);
+            if (string.IsNullOrWhiteSpace(c.OpenRgb.Host) || c.OpenRgb.Host.Length > Limits.HostMax || c.OpenRgb.Host.Any(ch => char.IsWhiteSpace(ch) || ch is '/' or '\\' or '@'))
+                E.Add($"openRgb.host \"{c.OpenRgb.Host}\" must be a host name or IP address (e.g. 127.0.0.1)");
+            if (c.OpenRgb.Exclude == null) E.Add("openRgb.exclude is missing (use [] for none)");
+            else if (c.OpenRgb.Exclude.Any(string.IsNullOrWhiteSpace)) E.Add("openRgb.exclude has an empty entry");
+        }
 
         // ---- overlay
         if (c.Overlay == null) E.Add("overlay is missing (use {} for the defaults)");
@@ -408,6 +421,17 @@ public static class ConfigValidator
                 ["memory"] = F("boolean", "DIMM temperatures, friendly id 'ram'.", true, false),
                 ["psu"] = F("boolean", "PSU sensors (psu:*).", true, false),
                 ["controllers"] = F("boolean", "Fan / cooler controllers seen by LibreHardwareMonitor.", true, false),
+            }),
+            ["updates"] = F("object", "Update check. Glint never downloads or installs anything by itself.", fields: new JsonObject
+            {
+                ["check"] = F("boolean", "Ask GitHub for the latest release (one request to the releases/latest API at startup and every 24 h; no other network, no telemetry). Shown on the Setup check page, Settings and the tray menu.", true, false),
+            }),
+            ["openRgb"] = F("object", "OpenRGB bridge (off by default; takes effect after app.restart). When enabled and an OpenRGB SDK server is reachable at startup, its devices become Glint lighting devices ('orgb-...'). Devices Glint already drives natively are skipped so two drivers never fight. Check with setup.check.", fields: new JsonObject
+            {
+                ["enabled"] = F("boolean", "Connect to the OpenRGB SDK server at startup.", false, true),
+                ["host"] = F("string", "SDK server host (OpenRGB > SDK Server tab).", "127.0.0.1", "127.0.0.1"),
+                ["port"] = F("integer", "SDK server port.", 6742, 6742, 1, 65535),
+                ["exclude"] = F("array of string", "OpenRGB devices to leave alone: a device name (or part of one) or a Glint id ('orgb-1a2b3c').", example: new[] { "Razer" }),
             }),
             ["homeAssistant"] = F("object", "MQTT bridge to Home Assistant (off by default). Check with ha.status.", fields: new JsonObject
             {

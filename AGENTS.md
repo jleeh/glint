@@ -14,8 +14,8 @@ sandboxed JavaScript plugins.
 | Path | What lives there |
 |---|---|
 | `src/Glint/Program.cs` | Entry point and every command (`selftest`, `controltest`, `webtest`, `plugincheck`, `plugintest`, `ctl`, `mcp`, benches). |
-| `src/Glint/Core/` | `GlintService` (owns everything), `Rig` (device discovery + LibreHardwareMonitor sensors + sensor catalog), `FanEngine`, `LightingEngine` + `Effects` + `Layout`, `Config` + `ConfigSchema` (schema + `ConfigValidator`), `ControlServer` (named-pipe API) + `Cli` (ctl + MCP), `HomeAssistant` + `Mqtt`, `SelfTest`. |
-| `src/Glint/Devices/` | Device interfaces (`ILightDevice`, `IFanController`), the driver registry, SMBus access via PawnIO. |
+| `src/Glint/Core/` | `GlintService` (owns everything), `Rig` (device discovery + LibreHardwareMonitor sensors + sensor catalog), `FanEngine`, `LightingEngine` + `Effects` + `Layout`, `Config` + `ConfigSchema` (schema + `ConfigValidator`), `ControlServer` (named-pipe API) + `Cli` (ctl + MCP), `HomeAssistant` + `Mqtt`, `SetupCheck` (on-demand setup report), `UpdateCheck` (optional GitHub releases check, the repo URL lives here), `SelfTest` (+ `SelfTestV02`). |
+| `src/Glint/Devices/` | Device interfaces (`ILightDevice`, `IFanController`), the driver registry, SMBus access via PawnIO, the OpenRGB SDK bridge (`OpenRgbBridge`; tests use an in-process fake server on 127.0.0.1 only). |
 | `src/Glint/Plugins/` | Plugin host: Jint for device plugins, one shared V8 runtime for effect plugins, trust store, `PluginCheck` (simulated-device tests). `devices/` and `effects/` hold the bundled plugins. |
 | `src/Glint/Overlay/` | Game overlay: ETW present-event FPS (no injection), frame statistics, layered click-through window. |
 | `src/Glint/UI/` | Tray (`TrayApp`) and the WebView2 host (`WebDashboard`). |

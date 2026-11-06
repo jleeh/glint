@@ -7,6 +7,8 @@
     <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>Glint</AssemblyName>
+    <!-- release builds override this with the tag (release.yml -p:Version=...) -->
+    <Version>0.2.0</Version>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <!-- Low footprint: workstation non-concurrent GC, no globalization data -->
     <ServerGarbageCollection>false</ServerGarbageCollection>

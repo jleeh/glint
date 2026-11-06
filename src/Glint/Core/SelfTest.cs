@@ -457,6 +457,9 @@ public static class SelfTest
           $"{string.Join(", ", hidNames)} | {string.Join(", ", Devices.DriverRegistry.SmbusDrivers.Select(d => d.Name))}");
         C("no plugin failed to load", Plugins.PluginHost.Status.All(x => x.Ok || x.NeedsApproval), string.Join(" | ", Plugins.PluginHost.Status.Where(x => !x.Ok).Select(x => $"{x.File}: {x.Message}")));
 
+        // ---------------- v0.2: LED-count test pattern, setup check, update check, OpenRGB bridge (fake SDK server on 127.0.0.1)
+        SelfTestV02.Run(C);
+
         // ---------------- Home Assistant over MQTT (in-process fake broker on 127.0.0.1)
         try { HomeAssistantChecks(C); }
         catch (Exception e) { C("HA: checks ran", false, e.ToString()); }

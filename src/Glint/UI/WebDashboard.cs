@@ -42,7 +42,7 @@ public sealed class WebDashboard : Form
         };
         _preview.Tick += (_, _) => Push(PreviewMessage());
         Plugins.PluginHost.EffectsChanged += OnPluginsChanged;
-        FormClosed += (_, _) => { Plugins.PluginHost.EffectsChanged -= OnPluginsChanged; _state.Dispose(); _preview.Dispose(); _web.Dispose(); };
+        FormClosed += (_, _) => { _svc.Lighting.StopTestPattern(); Plugins.PluginHost.EffectsChanged -= OnPluginsChanged; _state.Dispose(); _preview.Dispose(); _web.Dispose(); };
         _ = InitAsync();
     }
 
@@ -87,7 +87,33 @@ public sealed class WebDashboard : Form
                 Push(InitMessage());
                 Push(StateMessage());
                 _state.Start();
+                RunSetupCheck(); // once per dashboard open, for the sidebar badge and the Overview banner
                 break;
+            case "setupCheck":
+                RunSetupCheck();
+                break;
+            case "setupFix":
+                {
+                    var arg = (string?)m!["arg"];
+                    switch ((string?)m["fix"])
+                    {
+                        case "openUrl": Program.OpenUrl(arg ?? ""); break;
+                        case "startupApps": Program.OpenStartupApps(); break;
+                        case "restartAdmin": Program.RestartElevated(); break;
+                        case "restart": Program.Restart(); break;
+                    }
+                    break;
+                }
+            case "openUrl":
+                Program.OpenUrl((string?)m!["url"] ?? "");
+                break;
+            case "testPattern":
+                {
+                    var zone = (string?)m!["zone"] ?? "";
+                    if ((bool?)m["on"] == true) _svc.Lighting.TestPattern(zone, (int?)m["count"] ?? 0);
+                    else if (zone == "" || _svc.Lighting.TestPatternZone == zone) _svc.Lighting.StopTestPattern();
+                    break;
+                }
             case "config":
                 try
                 {
@@ -198,6 +224,21 @@ public sealed class WebDashboard : Form
         }
     }
 
+    int _setupRunning;
+    /// <summary>Setup checks read the process list, registry and Task Scheduler: off the UI thread, one at a time.</summary>
+    void RunSetupCheck()
+    {
+        if (Interlocked.Exchange(ref _setupRunning, 1) == 1) return;
+        Task.Run(() =>
+        {
+            object msg;
+            try { msg = new { type = "setup", report = SetupCheck.Run(_svc) }; }
+            catch (Exception e) { msg = new { type = "toast", kind = "error", text = "Setup check failed: " + e.Message }; }
+            finally { _setupRunning = 0; }
+            try { if (!IsDisposed) BeginInvoke(() => Push(msg)); } catch { }
+        });
+    }
+
     object InitMessage() => new
     {
         type = "init",
@@ -220,7 +261,8 @@ public sealed class WebDashboard : Form
         deviceNames = _svc.Rig.Lights.ToDictionary(l => l.Id, l => l.Name),
         elevated = _svc.Rig.Elevated,
         plugins = PluginsInfo(),
-        version = typeof(WebDashboard).Assembly.GetName().Version?.ToString(3),
+        version = UpdateChecker.CurrentVersion,
+        releasesUrl = UpdateChecker.ReleasesUrl,
     };
 
     /// <summary>The config as the page sees it: without the stored (encrypted) MQTT password.</summary>
@@ -261,6 +303,9 @@ public sealed class WebDashboard : Form
             profile = _svc.Config.ActiveProfile,
             error = _svc.LastError,
             ha = _svc.HomeAssistant.Status(),
+            update = _svc.Updates.Info,
+            openRgb = _svc.Rig.OpenRgb?.Status,
+            testPattern = _svc.Lighting.TestPatternZone,
             // manual fan overrides change outside the page (Home Assistant / API): the page syncs them from here
             overrides = _svc.Config.Profiles.ToDictionary(p => p.Key, p => p.Value.Select(r => r.Override)),
             perf = new
