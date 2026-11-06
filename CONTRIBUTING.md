@@ -5,6 +5,9 @@ useful to more people.
 
 ## Adding a device
 
+Using an AI? Point it at [docs/AI-GUIDE.md](docs/AI-GUIDE.md) (connected to a running Glint over MCP) or
+[AGENTS.md](AGENTS.md) (working in this repo).
+
 1. Read [`src/Glint/plugin-templates/PLUGINS.md`](src/Glint/plugin-templates/PLUGINS.md). It's written so you can
    paste it into an AI chat along with your device's VID/PID and a link to an open-source driver for it.
 2. Start from `device-template.js`, or copy the closest bundled plugin in `src/Glint/Plugins/devices/`.

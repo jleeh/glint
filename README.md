@@ -133,6 +133,8 @@ Point any MCP client at Glint (Claude Desktop, Claude Code, Cursor, ...):
 { "mcpServers": { "glint": { "command": "C:\\Program Files\\Glint\\Glint.exe", "args": ["mcp"] } } }
 ```
 
+**[docs/AI-GUIDE.md](docs/AI-GUIDE.md)** walks an AI through adding a device, writing an effect, tuning fans and building an overlay, with the safety rules. Coding agents working on Glint itself: see [AGENTS.md](AGENTS.md).
+
 The same methods are available from a terminal: `Glint.exe ctl help`, e.g. `Glint.exe ctl lighting.preset name=Comet`.
 Glint has a local control API (a named pipe only the current user can open). `Glint.exe ctl <method> [key=value ...]`
 calls it from a terminal, and `Glint.exe mcp` serves every method as an MCP tool (`glint_<method>`) for AI agents.

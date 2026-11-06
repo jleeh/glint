@@ -8,12 +8,15 @@
 !/NOTICE.md
 !/README.md
 !/CONTRIBUTING.md
+!/AGENTS.md
+!/CLAUDE.md
 !/install.ps1
 !/selftest.ps1
 !/docs/
 /docs/*
 !/docs/screenshots/
 !/docs/brand/
+!/docs/AI-GUIDE.md
 !/src/
 !/installer/
 !/tools/
