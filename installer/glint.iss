@@ -56,7 +56,6 @@ Name: "{autoprograms}\Glint"; Filename: "{sys}\schtasks.exe"; Parameters: "/run 
 Name: "{autodesktop}\Glint"; Filename: "{sys}\schtasks.exe"; Parameters: "/run /tn ""Glint"""; IconFilename: "{app}\Glint.exe"; Flags: runminimized; Tasks: desktopicon
 
 [Run]
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{tmp}\helper.ps1"" -Action Tasks -Dir ""{app}"""; StatusMsg: "Registering startup tasks..."; Flags: runhidden waituntilterminated
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{tmp}\helper.ps1"" -Action SignalRgb"; StatusMsg: "Disabling SignalRGB at startup..."; Flags: runhidden waituntilterminated; Tasks: disablesignalrgb
 Filename: "{sys}\schtasks.exe"; Parameters: "/run /tn ""Glint"""; Description: "Start Glint now"; Flags: runhidden nowait postinstall
 
@@ -104,10 +103,25 @@ begin
     MsgBox('Installing ' + Action + ' did not complete (code ' + IntToStr(rc) + '). Setup will continue without it.', mbInformation, MB_OK);
 end;
 
+// The logon task is what starts Glint (elevated, no UAC prompt each boot), so a failure here must be visible.
+procedure RegisterTasks();
+var
+  rc: Integer;
+begin
+  WizardForm.StatusLabel.Caption := 'Registering startup tasks...';
+  if Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+          '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{tmp}\helper.ps1') + '" -Action Tasks -Dir "' + ExpandConstant('{app}') + '"',
+          '', SW_HIDE, ewWaitUntilTerminated, rc) and (rc = 0) then
+    Exit;
+  MsgBox('Glint was installed, but its startup task could not be registered (code ' + IntToStr(rc) + '). ' +
+         'Details are in %TEMP%\glint-setup-helper.log. You can run install.ps1 from the install folder to retry.', mbError, MB_OK);
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
   begin
+    RegisterTasks();
     if WizardIsTaskSelected('webview2') then
       RunHelper('WebView2', 'Downloading and installing the WebView2 runtime...');
     if WizardIsTaskSelected('pawnio') then

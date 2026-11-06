@@ -6,7 +6,9 @@
 # Exit code 0 = ok, 2 = could not download (offline), 1 = other failure.
 param([Parameter(Mandatory)][string]$Action, [string]$Dir)
 $ErrorActionPreference = 'Stop'
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+# everything this script does is logged next to the setup's own log (%TEMP%\glint-setup-helper.log)
+Start-Transcript -Path (Join-Path $env:TEMP 'glint-setup-helper.log') -Append -Force | Out-Null
+try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
 
 function Get-File($url, $out) {
     try { Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing -TimeoutSec 120 } catch { Write-Host "download failed: $_"; exit 2 }
@@ -56,4 +58,4 @@ switch ($Action) {
     }
     default { Write-Host "unknown action $Action"; exit 1 }
 }
-} catch { Write-Host "error: $_"; exit 1 }
+} catch { Write-Host "error: $_"; Write-Host $_.ScriptStackTrace; exit 1 }

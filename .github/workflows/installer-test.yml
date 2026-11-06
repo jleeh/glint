@@ -33,6 +33,8 @@ jobs:
         run: |
           $p = Start-Process out\Glint-Setup-0.0.1.exe -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/NOCANCEL', '/LOG=install-log.txt', '/TASKS=desktopicon' -Wait -PassThru
           if (Test-Path install-log.txt) { Get-Content install-log.txt -Tail 40 }
+          $h = Join-Path $env:TEMP 'glint-setup-helper.log'
+          if (Test-Path $h) { '--- helper log ---'; Get-Content $h }
           if ($p.ExitCode -ne 0) { throw "setup exit code $($p.ExitCode)" }
       - name: Check install
         shell: pwsh
