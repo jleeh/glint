@@ -70,8 +70,26 @@ public static class OverlayTests
             for (int i = 0; i <= 120; i++) tr.OnPresent(42, T(i / 60.0 + 0.002) , PresentStream.Dxgi);
             var (_, ds) = tr.Read(T(2));
             C("overlay tracker: DXGI presents win over kernel events", ds == PresentStream.Dxgi, PresentStream.Name(ds));
+            // a pop-up / notification takes focus for a moment and draws nothing: the game's numbers stay
             tr.TargetPid = 43;
-            C("overlay tracker: switching process clears history", tr.Read(T(2)).stream == 0, "");
+            var (pop, ps) = tr.Read(T(2));
+            C("overlay tracker: a non-presenting window in front keeps showing the game (no blip)", ps != 0 && Math.Abs(pop.Fps - 60) < 0.5 && tr.ShownPid == 42, $"{pop.Fps:0.0} via pid {tr.ShownPid}");
+            // the new foreground app presents: it takes over
+            for (int i = 0; i <= 60; i++) tr.OnPresent(43, T(1 + i / 30.0), PresentStream.Dxgi);
+            var (nw, _) = tr.Read(T(3));
+            C("overlay tracker: a presenting foreground app takes over", Math.Abs(nw.Fps - 30) < 0.5 && tr.ShownPid == 43, $"{nw.Fps:0.0} via pid {tr.ShownPid}");
+            // back to the game: its history survived the switch
+            tr.TargetPid = 42;
+            for (int i = 0; i <= 60; i++) tr.OnPresent(42, T(3 + i / 60.0), PresentStream.Dxgi);
+            var (back, _) = tr.Read(T(4));
+            C("overlay tracker: switching back keeps the game's history (1% low over 10 s)", Math.Abs(back.Fps - 60) < 0.5 && back.Samples > 100 && tr.ShownPid == 42, $"{back.Fps:0.0}, {back.Samples} samples");
+            // nothing presents any more (desktop): after the stale window the overlay shows no FPS
+            tr.TargetPid = 99;
+            C("overlay tracker: nothing presenting for 2.5 s → no FPS", tr.Read(T(8)).stream == 0, "");
+            // processes that are never foreground are ignored
+            var t2 = new PresentTracker(F) { TargetPid = 5 };
+            t2.OnPresent(6, T(0.1), PresentStream.Dxgi); t2.OnPresent(6, T(0.2), PresentStream.Dxgi);
+            C("overlay tracker: background processes are not tracked", t2.Read(T(0.3)).stream == 0 && t2.Events == 0, $"{t2.Events}");
         }
         // ---------------- items: resolution + formatting
         {

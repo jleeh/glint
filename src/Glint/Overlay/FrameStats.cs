@@ -83,38 +83,53 @@ public static class PresentStream
 }
 
 /// <summary>
-/// Present events of one target process → frame stats. Each event kind is kept as its own stream and only one
-/// is reported: DXGI if the process presents through DXGI, otherwise the busiest DxgKrnl stream (picking one
-/// stream means a present that shows up as several kernel events is never counted twice).
+/// Present events → frame stats for the foreground process. Each event kind is kept as its own stream and only one
+/// is reported: DXGI if the process presents through DXGI, otherwise the busiest DxgKrnl stream (picking one stream
+/// means a present that shows up as several kernel events is never counted twice).
+/// History is kept for the last few foreground processes, so a moment of focus elsewhere (a notification, a launcher
+/// or chat pop-up, alt-tab) doesn't wipe the game's numbers: if the window in front isn't presenting, the most
+/// recent process that is (within the stale window) is shown instead.
 /// Called from the ETW thread (<see cref="OnPresent"/>) and the overlay timer (<see cref="Read"/>).
 /// </summary>
 public sealed class PresentTracker
 {
+    const int Keep = 4;
     readonly object _lock = new();
-    readonly Dictionary<int, FrameStats> _streams = new();
+    readonly Dictionary<int, Dictionary<int, FrameStats>> _byPid = new();
+    readonly List<int> _recent = new();            // most recent foreground first
+    volatile int[] _watch = Array.Empty<int>();     // read lock-free on the ETW thread
     readonly double _freq;
     volatile int _target;
-    public long Events;           // presents seen for the target (diagnostics)
+    public long Events;           // presents seen for watched processes (diagnostics)
+    /// <summary>The process whose numbers the last <see cref="Read"/> returned (0 = none).</summary>
+    public int ShownPid { get; private set; }
 
     public PresentTracker(double ticksPerSecond) => _freq = ticksPerSecond;
 
-    /// <summary>Process whose presents are counted. Changing it clears the history.</summary>
+    /// <summary>The foreground process. Older targets keep their history (up to a few processes).</summary>
     public int TargetPid
     {
         get => _target;
         set
         {
-            if (value == _target) return;
-            lock (_lock) { _target = value; _streams.Clear(); Events = 0; }
+            if (value == _target || value == 0) return;
+            lock (_lock)
+            {
+                _target = value;
+                _recent.Remove(value); _recent.Insert(0, value);
+                while (_recent.Count > Keep) { _byPid.Remove(_recent[^1]); _recent.RemoveAt(_recent.Count - 1); }
+                _watch = _recent.ToArray();
+            }
         }
     }
 
     public void OnPresent(int pid, long ts, int stream)
     {
-        if (pid != _target || pid == 0) return;
+        if (pid == 0 || Array.IndexOf(_watch, pid) < 0) return;
         lock (_lock)
         {
-            if (!_streams.TryGetValue(stream, out var s)) _streams[stream] = s = new FrameStats(_freq);
+            if (!_byPid.TryGetValue(pid, out var streams)) _byPid[pid] = streams = new();
+            if (!streams.TryGetValue(stream, out var s)) streams[stream] = s = new FrameStats(_freq);
             s.Add(ts);
             Events++;
         }
@@ -124,17 +139,29 @@ public sealed class PresentTracker
     {
         lock (_lock)
         {
-            long recent = now - (long)(2.5 * _freq);
-            if (_streams.TryGetValue(PresentStream.Dxgi, out var d) && d.Count > 1 && d.Last >= recent)
-                return (d.Compute(now), PresentStream.Dxgi);
-            int best = 0, bestN = 1; FrameStats? bs = null;
-            foreach (var (k, s) in _streams)
+            foreach (var pid in _recent)   // foreground first, then the processes that were in front before it
             {
-                if (k == PresentStream.Dxgi) continue;
-                int n = s.CountSince(recent);
-                if (n > bestN) { best = k; bestN = n; bs = s; }
+                var r = ReadPid(pid, now);
+                if (r.stream != 0 && r.stats.Fps > 0) { ShownPid = pid; return r; }
             }
-            return bs == null ? (default, 0) : (bs.Compute(now), best);
+            ShownPid = 0;
+            return (default, 0);
         }
+    }
+
+    (FrameStats.Result stats, int stream) ReadPid(int pid, long now)
+    {
+        if (!_byPid.TryGetValue(pid, out var streams)) return (default, 0);
+        long recent = now - (long)(2.5 * _freq);
+        if (streams.TryGetValue(PresentStream.Dxgi, out var d) && d.Count > 1 && d.Last >= recent)
+            return (d.Compute(now), PresentStream.Dxgi);
+        int best = 0, bestN = 1; FrameStats? bs = null;
+        foreach (var (k, s) in streams)
+        {
+            if (k == PresentStream.Dxgi) continue;
+            int n = s.CountSince(recent);
+            if (n > bestN) { best = k; bestN = n; bs = s; }
+        }
+        return bs == null ? (default, 0) : (bs.Compute(now), best);
     }
 }

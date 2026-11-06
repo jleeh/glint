@@ -176,9 +176,9 @@ public sealed class EtwPresentSource : IPresentSource
         Marshal.WriteInt32(p, 0, size);           // Wnode.BufferSize
         Marshal.WriteInt32(p, 40, 1);             // Wnode.ClientContext = QPC timestamps
         Marshal.WriteInt32(p, 44, 0x00020000);    // Wnode.Flags = WNODE_FLAG_TRACED_GUID
-        Marshal.WriteInt32(p, 48, 16);            // BufferSize KB
-        Marshal.WriteInt32(p, 52, 2);             // MinimumBuffers
-        Marshal.WriteInt32(p, 56, 8);             // MaximumBuffers
+        Marshal.WriteInt32(p, 48, 64);            // BufferSize KB (DxgKrnl is busy: DWM and every app present too)
+        Marshal.WriteInt32(p, 52, 4);             // MinimumBuffers
+        Marshal.WriteInt32(p, 56, 32);            // MaximumBuffers (≤ 2 MB, only while the overlay is visible; small buffers drop events)
         Marshal.WriteInt32(p, 64, 0x100);         // LogFileMode = EVENT_TRACE_REAL_TIME_MODE
         Marshal.WriteInt32(p, 68, 1);             // FlushTimer = 1 s (deliver promptly at low event rates)
         Marshal.WriteInt32(p, 116, 120);          // LoggerNameOffset
