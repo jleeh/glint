@@ -90,7 +90,8 @@ public sealed class Rig : IDisposable
                 Index();
                 if (Software.Count > 0)
                 {
-                    // A crash or a kill must not leave a fan (above all a GPU fan) parked on a fixed software duty.
+                    // A crash or a normal exit must not leave a fan (above all a GPU fan) parked on a fixed software duty.
+                    // (A hard kill / FailFast runs no handler; the driver keeps the last duty until reboot.)
                     AppDomain.CurrentDomain.ProcessExit += ReleaseSoftwareFans;
                     AppDomain.CurrentDomain.UnhandledException += ReleaseSoftwareFans;
                 }
@@ -162,6 +163,8 @@ public sealed class Rig : IDisposable
                 if (fanCapable && s.SensorType == SensorType.Control && s.Control != null)
                 {
                     string id = FanKey(s, gpus);
+                    // A device plugin already owns this id (prefixes are reserved, but be sure): never share one id.
+                    if (Fans.Any(f => f.Id == id) && !Software.Contains(id)) { Log.Add($"fan id {id} is taken by a device; LHM fan listed as lhm-{id}"); id = "lhm-" + id; }
                     if (Software.Add(id, s.Control)) Fans.Add(new FanOutput(id, s.Name, (s.Hardware.Parent ?? s.Hardware).Name));
                 }
                 if (fanCapable && s.SensorType == SensorType.Fan) _lhmFanRpm[FanKey(s, gpus)] = s;
@@ -504,7 +507,7 @@ public sealed class Rig : IDisposable
 
     /// <summary>Apply duties. Each controller gets one batched call (re-sent every 5 s as keep-alive). <paramref name="duty"/>
     /// must name every LHM fan Glint should keep driving: the rest are handed back to their firmware / driver.</summary>
-    public void ApplyDuty(IReadOnlyDictionary<string, int> duty)
+    public void ApplyDuty(IReadOnlyDictionary<string, int> duty, int failsafeDuty = int.MaxValue)
     {
         bool full = (DateTime.UtcNow - _lastFull).TotalSeconds > 5;
         if (full) _lastFull = DateTime.UtcNow;
@@ -518,7 +521,7 @@ public sealed class Rig : IDisposable
             catch (Exception e) { Log.Add($"{c.Id} set duty failed: {e.Message}"); continue; }
             foreach (var (k, v) in mine) _sent[k] = v;
         }
-        Software.Apply(duty, full); // LHM fans not in `duty` go back to automatic control
+        Software.Apply(duty, full, failsafeDuty); // LHM fans not in `duty` go back to automatic control
     }
 
     public void Dispose()

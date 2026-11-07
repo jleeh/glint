@@ -110,7 +110,7 @@ public static class SelfTest
             var f = new FakeControl();
             sf.Add("gpu:Fan 1", f);
             var d40 = new Dictionary<string, int> { ["gpu:Fan 1"] = 40 };
-            void Tick(double t, float? reported, Dictionary<string, int> duty, bool full = false) { now = t; f.Reported = reported; sf.Apply(duty, full); }
+            void Tick(double t, float? reported, Dictionary<string, int> duty, bool full = false) { now = t; f.Reported = reported; sf.Apply(duty, full, 100); }
             Tick(0, null, d40, true); Tick(6, 40, d40); Tick(7, 41, d40, true);
             C("fan conflict: read-back matching what Glint sent is fine", !sf.Contested.ContainsKey("gpu:Fan 1") && sf.Touched("gpu:Fan 1"), string.Join(" | ", log));
             Tick(8, 25, d40); bool afterOne = sf.Contested.ContainsKey("gpu:Fan 1");
@@ -119,11 +119,17 @@ public static class SelfTest
             int sets = f.Sets;
             Tick(11, 25, d40, true);
             var why = sf.Contested.GetValueOrDefault("gpu:Fan 1") ?? "";
-            C("fan conflict: another program holding the fan lower → Glint stops driving it (no write, no keep-alive)",
-                why.Contains("25%") && why.Contains("40%") && f.Sets == sets && !sf.Touched("gpu:Fan 1"), $"{why} | writes after {f.Sets - sets}");
-            Tick(12, 25, d40, true); sf.ReleaseAll();
-            C("fan conflict: contested fan isn't reset on exit (the other program keeps it)", f.Mode == "software" && f.Sets == sets, $"mode {f.Mode}, writes {f.Sets - sets}");
-            Tick(13, 25, new Dictionary<string, int>()); Tick(14, 25, d40);
+            C("fan conflict: another program holding the fan lower → handed back to automatic (never parked), no more writes or keep-alive",
+                why.Contains("25%") && why.Contains("40%") && f.Mode == "default" && f.Sets == sets && !sf.Touched("gpu:Fan 1"), $"{why} | mode {f.Mode}, writes after {f.Sets - sets}");
+            Tick(12, 25, d40, true);
+            int quiet = f.Sets - sets;
+            Tick(12.5, 25, new Dictionary<string, int> { ["gpu:Fan 1"] = 100 });
+            bool fsOn = f.Mode == "software" && f.Value == 100;
+            Tick(13, 25, d40);
+            C("fan conflict: the fail-safe still wins on a contested fan, then it goes back to automatic", quiet == 0 && fsOn && f.Mode == "default" && sf.Contested.ContainsKey("gpu:Fan 1"),
+                $"writes while contested {quiet}, fail-safe {fsOn}, after {f.Mode}");
+            sets = f.Sets;
+            Tick(13.5, 25, new Dictionary<string, int>()); Tick(14, 25, d40);
             C("fan conflict: out of every rule clears it; back in a rule, Glint takes it again", !sf.Contested.ContainsKey("gpu:Fan 1") && f.Sets == sets + 1 && f.Value == 40,
                 $"contested {sf.Contested.ContainsKey("gpu:Fan 1")}, writes {f.Sets - sets}, value {f.Value}");
 
@@ -146,6 +152,23 @@ public static class SelfTest
             for (int t = 111; t < 115; t++) { now = t; g.Reported = 30 + (t - 110) * 15; sf2.Apply(d100, false); }
             now = 116; g.Reported = 100; sf2.Apply(d100, false);
             C("fan conflict: read-back lagging a duty jump (settle time) is not a conflict", sf2.Contested.Count == 0 && sf2.Touched("gpu:Fan 1"), string.Join(",", sf2.Contested.Values));
+            // contested → retried after RetrySec
+            g.Reported = 20; now = 122; sf2.Apply(d100, false); now = 123; sf2.Apply(d100, false);
+            bool contested2 = sf2.Contested.Count == 1; int gs = g.Sets;
+            now = 123 + SoftwareFans.RetrySec - 1; sf2.Apply(new Dictionary<string, int> { ["gpu:Fan 1"] = 70 }, false); bool stillOff = g.Sets == gs;
+            now = 123 + SoftwareFans.RetrySec; sf2.Apply(new Dictionary<string, int> { ["gpu:Fan 1"] = 70 }, false);
+            C("fan conflict: a contested fan is tried again after the retry time", contested2 && stillOff && sf2.Contested.Count == 0 && g.Value == 70 && g.Mode == "software",
+                $"contested {contested2}, quiet before retry {stillOff}, after: {g.Mode} {g.Value}");
+            // exit: release, and a fan-loop tick racing the exit can't take the fan again; a failed release stays held
+            g.FailDefault = 1;
+            sf2.ReleaseAll(); bool keptOnFail = sf2.Touched("gpu:Fan 1");
+            sf2.ReleaseAll(); gs = g.Sets;
+            sf2.Apply(new Dictionary<string, int> { ["gpu:Fan 1"] = 80 }, true);
+            C("exit: a failed release stays held and is retried; after release no tick can take the fan again", keptOnFail && g.Mode == "default" && !sf2.Touched("gpu:Fan 1") && g.Sets == gs,
+                $"kept on failure {keptOnFail}, mode {g.Mode}, writes after exit {g.Sets - gs}");
+            var dc = new DriverContext { Config = GlintConfig.Defaults(), Log = _ => { } };
+            C("device ids never take LHM fan prefixes (mb, psu, gpu, gpu2...)", dc.Unique("gpu") == "gpudev" && dc.Unique("gpu2") == "gpu2dev" && dc.Unique("mb") == "mbdev" && dc.Unique("gpuhub") == "gpuhub",
+                $"{dc.Unique("psu")}");
 
             // global fan-control switch: releasable hubs + every LHM fan go back to their own control, the rest keep their curve
             {
@@ -998,7 +1021,8 @@ public static class SelfTest
         public float MinSoftwareValue => Min;
         public LibreHardwareMonitor.Hardware.ISensor Sensor => null!;
         public float SoftwareValue => Value ?? 0;
-        public void SetDefault() { Mode = "default"; }
+        public int FailDefault;   // the next N SetDefault calls throw
+        public void SetDefault() { if (FailDefault > 0) { FailDefault--; throw new InvalidOperationException("driver busy"); } Mode = "default"; }
         public void SetSoftware(float value) { if (Throw) throw new InvalidOperationException("device gone"); Value = value; Mode = "software"; Sets++; }
     }
 

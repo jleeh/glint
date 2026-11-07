@@ -226,7 +226,11 @@ public sealed class JintPluginDevice : ILightDevice, IFanController
         if (_released || !Initialized || !_exp.Get("releaseFans").IsObject()) return false;
         lock (_lock)
         {
-            try { _e.Invoke(_exp.Get("releaseFans"), _exp, new object[] { _dev }); return true; }
+            try
+            {
+                var r = _e.Invoke(_exp.Get("releaseFans"), _exp, new object[] { _dev });
+                return !(r.IsBoolean() && !r.AsBoolean()); // returning false = "can't right now": Glint keeps driving the fans
+            }
             catch (Exception e) { _log($"[{Name}] releaseFans: {JintHost.Clean(e)}"); return false; }
         }
     }

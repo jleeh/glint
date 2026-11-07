@@ -95,7 +95,7 @@ public sealed class GlintService : IDisposable
         }
     }
 
-    bool Native(string fanId) => Rig.Controllers.Any(c => fanId.StartsWith(c.Id + ":"));
+    bool Native(string fanId) => !Rig.Software.Contains(fanId) && Rig.Controllers.Any(c => fanId.StartsWith(c.Id + ":", StringComparison.Ordinal));
 
     void Loop()
     {
@@ -121,7 +121,7 @@ public sealed class GlintService : IDisposable
                     }
                 Rig.SetFanControl(Config.FanControl);
                 if (!Config.FanControl) FanControlOff(duty, Engine.LastExplain, Rig.Fans, Rig.HandedBack);
-                Rig.ApplyDuty(duty);
+                Rig.ApplyDuty(duty, Config.FailsafeDuty);
                 foreach (var (id, why) in Rig.Software.Contested)
                     if (duty.ContainsKey(id)) Engine.LastExplain[id] = "not driven: " + why;
                 Duty = duty;
@@ -132,7 +132,15 @@ public sealed class GlintService : IDisposable
             {
                 LastError = e.Message;
                 // Fail-safe: every hub fan, and every LHM fan (board header, GPU) Glint was driving.
-                try { Rig.ApplyDuty(Rig.Fans.Where(f => Native(f.Id) || Rig.Software.Touched(f.Id)).ToDictionary(f => f.Id, _ => Config.FailsafeDuty)); } catch { }
+                // Indexer, not ToDictionary: a duplicate id must never abort the fail-safe.
+                try
+                {
+                    var fs = new Dictionary<string, int>();
+                    foreach (var f in Rig.Fans)
+                        if (Native(f.Id) || Rig.Software.Touched(f.Id) || Rig.Software.IsContested(f.Id)) fs[f.Id] = Config.FailsafeDuty;
+                    Rig.ApplyDuty(fs, Config.FailsafeDuty);
+                }
+                catch (Exception fe) { LastError += " · fail-safe: " + fe.Message; }
             }
             CpuMeter.Add("sensors + fans", CpuMeter.ThreadMs() - cpu0);
             Updated?.Invoke();

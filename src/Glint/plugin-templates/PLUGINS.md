@@ -122,6 +122,7 @@ module.exports = {
   // Optional: hand ONLY the fans back to the device (user switched fan control off), leaving lighting with Glint.
   // Leave it out if the device can't do that without also taking the lighting; Glint then keeps driving its fans.
   // When fan control is switched on again, the next setDuty() must take the fans back.
+  // Return false (or throw) if it couldn't release them this time; Glint then keeps driving them.
   releaseFans(dev) {},
 };
 ```

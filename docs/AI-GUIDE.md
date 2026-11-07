@@ -96,9 +96,9 @@ device before writing, and can never touch the SPD EEPROM (0x50–0x57).
    them they stay on the GPU driver's own curve; put them in a rule (usually input `gpu` or `gpu.hotspot`) to drive
    them, remove them to hand control back. Some cards have a minimum duty (often 30%); lower requests are raised to it.
 7. If another program (MSI Afterburner's fan curve, FanControl, a vendor tool) changes a fan Glint drives through
-   LibreHardwareMonitor (board header, cooler, GPU fan), Glint notices from the level the hardware reports, stops driving
-   that fan and leaves it to the other program. `fans.list` explains it and `setup.check` reports it; take the fan out of
-   its rule and back in (or restart Glint) once the other program's fan control is off. Hub fans (Corsair...) report no
+   LibreHardwareMonitor (board header, cooler, GPU fan), Glint notices from the level the hardware reports, hands that
+   fan back to automatic control and stops driving it (a fail-safe duty is still written). `fans.list` explains it and
+   `setup.check` reports it; Glint tries again every 10 minutes, or take the fan out of its rule and back in. Hub fans (Corsair...) report no
    duty, so for those `setup.check` flags the conflicting app instead.
 8. Turn all fan control off: `config.patch path=fanControl value=false` (tray: Fan profile → Fan control off). Board,
    cooler and GPU fans go back to their BIOS / driver curves; hubs go back to their firmware only if their plugin can
