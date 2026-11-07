@@ -148,7 +148,7 @@ public sealed class ControlServer : IDisposable
         ("lighting.autoLayout", "WARNING: overwrites the user's hand-tuned layout with an automatic arrangement based on what each device is. Only with the user's consent; requires confirm=true. The current layout is backed up first (lighting.layoutBackups / lighting.restoreLayout).", "{ confirm: true }"),
         ("lighting.layoutBackups", "Saved layout backups (newest first): name, time, number of zones. Made automatically before lighting.autoLayout / lighting.restoreLayout; the last 10 are kept.", ""),
         ("lighting.restoreLayout", "Restore a layout backup (name from lighting.layoutBackups, or 'latest'). The layout being replaced is backed up too.", "{ name?: string | 'latest' }"),
-        ("fans.list", "Fan control overview: every profile's rules (fans with friendly names and live duty/rpm, inputs, combine, min/max, ramps, fixed, override), the curves, the fail-safe duty, and every sensor id usable as an input (with live values).", ""),
+        ("fans.list", "Fan control overview: the global fanControl switch (config.patch path=fanControl value=false hands fans back to BIOS / driver / firmware), every profile's rules (fans with friendly names and live duty/rpm, inputs, combine, min/max, ramps, fixed, override), the curves, the fail-safe duty, and every sensor id usable as an input (with live values).", ""),
         ("fans.setRule", "Create or update a fan rule by name (profile defaults to the active one). Partial updates merge: only the fields you give change; 'inputs' and 'fans' replace the whole list. Give rule.name to rename. Validated; invalid → {ok:false, errors} and nothing saved.", "{ name, rule: { fans?, inputs?: [{ sensor, curve | points, weight?, hysteresis?, smoothingSec? }], combine?, minDuty?, maxDuty?, rampUpPerSec?, rampDownPerSec?, fixed?, override?, name? }, profile? }"),
         ("fans.removeRule", "Delete a fan rule by name (profile defaults to the active one).", "{ name, profile? }"),
         ("fans.override", "Manually set a rule's fans to a duty %, or percent=null for automatic (curve) again. Same as the Home Assistant fan entity: clamped to the rule's min/max; the fail-safe (lost sensor or curve at fail-safe duty) still wins. Profile defaults to the active one.", "{ name, percent: number | null, profile? }"),
@@ -167,7 +167,7 @@ public sealed class ControlServer : IDisposable
         ("overlay.set", "Change overlay settings (partial: only the fields given change; 'items' replaces the list). Item sources: fps, frametime, low1, time, glint.cpu, fan:<id>, duty:<id>, or a sensor id. Validated; invalid → {ok:false, errors} and nothing saved.", "{ enabled?, hotkey?, position?: 'top-left'|'top-right'|'bottom-left'|'bottom-right', offsetX?, offsetY?, scale?, opacity?, backgroundOpacity?, accent?: '#rrggbb'|null, layout?: 'compact'|'detailed', onlyWhenGame?, items? }"),
         ("overlay.toggle", "Show / hide the in-game overlay (enabled given → set it, else flip).", "{ enabled?: boolean }"),
         ("overlay.stats", "Live overlay readings: fps, frameTimeMs, low1 (1% low), the target (foreground) process, which present events are used, and whether the ETW session is running.", ""),
-        ("setup.check", "Setup check: is this PC set up right for Glint? Admin rights, PawnIO driver, WebView2, CPU temperature, conflicting RGB/fan apps (running or starting with Windows), plugins needing approval or failing, devices that declined, the startup task, version + update, OpenRGB bridge. Each item: status ok/warn/fail, plain-language detail, and the fix. Start here when something doesn't work.", ""),
+        ("setup.check", "Setup check: is this PC set up right for Glint? Admin rights, PawnIO driver, WebView2, CPU temperature, conflicting RGB/fan apps (running or starting with Windows), GPU fan tools while Glint drives GPU fans, fans another program has taken over, plugins needing approval or failing, devices that declined, the startup task, version + update, OpenRGB bridge. Each item: status ok/warn/fail, plain-language detail, and the fix. Start here when something doesn't work.", ""),
         ("update.status", "Updates: this version, the latest release, whether it can be installed from here (canInstall / cannotInstall), autoInstall, and the install progress (install.state idle|downloading|verifying|installing|failed, install.message).", ""),
         ("update.install", "Install the newer release: downloads the setup from Glint's GitHub releases, checks it against SHA256SUMS.txt and GitHub's build attestation for the release workflow, then runs it silently (Glint closes and restarts). Only with the user's consent; requires confirm=true. Poll update.status for progress.", "{ confirm: true }"),
         ("log", "Recent device / plugin log lines.", "{ lines?: number }"),
@@ -566,6 +566,7 @@ public sealed class ControlServer : IDisposable
         return new
         {
             activeProfile = cfg.ActiveProfile,
+            fanControl = cfg.FanControl,
             failsafeDuty = cfg.FailsafeDuty,
             profiles = cfg.Profiles.ToDictionary(pr => pr.Key, pr => pr.Value.Select(r => new
             {

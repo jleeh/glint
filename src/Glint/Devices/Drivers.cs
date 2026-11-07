@@ -21,6 +21,10 @@ public interface IFanController : IDisposable
     void SetDuty(IReadOnlyDictionary<string, int> duty);
     /// <summary>Hand control back to firmware / BIOS (called on exit).</summary>
     void Release() { }
+    /// <summary>Hand only the fans back to the device's own control, leaving lighting with Glint (global fan-control switch
+    /// off). false = the device can't (e.g. its hardware mode takes the lighting too): Glint keeps driving its fans.
+    /// After a true, the next <see cref="SetDuty"/> takes the fans again.</summary>
+    bool ReleaseFans() => false;
 }
 
 /// <summary>Context handed to every driver during discovery.</summary>

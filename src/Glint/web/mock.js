@@ -68,7 +68,7 @@
     rule({ name: 'Case fans', fans: CASE, inputs: [inp('gpu', `gpu-${mode}`), inp('cpu', `cpu-${mode}`, 4)] }),
   ];
   const config = {
-    pollMs: 1000, failsafeDuty: 100, curves, activeProfile: 'Balanced',
+    pollMs: 1000, failsafeDuty: 100, fanControl: true, curves, activeProfile: 'Balanced',
     profiles: { Balanced: profile('balanced'), Quiet: profile('quiet'), 'Full speed': [rule({ name: 'Everything', fans: ['cc:pump', ...RAD, ...CASE], inputs: [], fixed: 100 })] },
     fanNames: { 'cc:fan1': 'Radiator 1', 'cc:fan2': 'Radiator 2', 'cc:fan3': 'Radiator 3', 'mb:Fan #1': 'CPU fan', 'mb:Fan #2': 'Front intake 1', 'mb:Fan #3': 'Front intake 2', 'mb:Fan #4': 'Rear exhaust' },
     lighting: {

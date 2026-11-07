@@ -36,6 +36,19 @@ const fs = require('fs');
   await p.click('#profile-seg button:nth-child(1)');
   let c = await cfg();
   check('profile switch sends activeProfile', c?.activeProfile === (await p.$eval('#profile-seg button:nth-child(1)', e => e.dataset.p)), c?.activeProfile);
+  // global fan-control switch: overview toggle off → config + notice on overview and cooling; cooling button turns it back on
+  check('fan control toggle starts on, no notice', !!(await p.$('[data-fancontrol].on')) && !(await p.$('[data-fanoff]')));
+  await p.click('[data-fancontrol]');
+  c = await cfg();
+  await wait(100);
+  check('fan control toggle off → fanControl:false sent, notice shown', c?.fanControl === false && !!(await p.$('[data-fanoff]')) && !(await p.$('[data-fancontrol].on')), String(c?.fanControl));
+  await nav('cooling');
+  check('cooling page shows the fan-control-off notice', !!(await p.$('#page-cooling [data-fanoff]')));
+  await p.click('#page-cooling [data-fancontrol-on]');
+  c = await cfg();
+  await wait(100);
+  check('cooling "turn fan control on" → fanControl:true, notice gone', c?.fanControl === true && !(await p.$('#page-cooling [data-fanoff]')), String(c?.fanControl));
+  await nav('overview');
 
   // --- cooling
   await nav('cooling');

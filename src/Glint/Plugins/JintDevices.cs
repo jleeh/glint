@@ -220,6 +220,17 @@ public sealed class JintPluginDevice : ILightDevice, IFanController
         lock (_lock) _e.Invoke(_exp.Get("setDuty"), _exp, new object[] { _dev, _e.Evaluate("(" + JsonSerializer.Serialize(duty) + ")") });
     }
 
+    /// <summary>Optional plugin export releaseFans(dev): fans back to the device's own control, lighting untouched.</summary>
+    public bool ReleaseFans()
+    {
+        if (_released || !Initialized || !_exp.Get("releaseFans").IsObject()) return false;
+        lock (_lock)
+        {
+            try { _e.Invoke(_exp.Get("releaseFans"), _exp, new object[] { _dev }); return true; }
+            catch (Exception e) { _log($"[{Name}] releaseFans: {JintHost.Clean(e)}"); return false; }
+        }
+    }
+
     bool _released, _disposed;
     public void Release()
     {

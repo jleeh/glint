@@ -301,7 +301,8 @@ function renderOverview() {
     <div class="grid temps-small">
       ${others.map(k => `<div class="card temp-small" data-small="${esc(k)}"><div class="v num">–</div><div class="k" title="${esc(k)}">${esc(sensorLabel(k))}</div></div>`).join('') || '<div class="muted">No other sensors</div>'}
     </div>
-    <div class="section-title">Cooling · ${esc(S.cfg.activeProfile)}<span class="line"></span><button class="btn ghost small" data-go="cooling">Edit curves →</button></div>
+    <div class="section-title">Cooling · ${esc(S.cfg.activeProfile)}<span class="line"></span><span class="row" style="gap:8px;margin-right:10px"><span class="muted" style="font-size:12px">Fan control</span><div class="toggle ${S.cfg.fanControl !== false ? 'on' : ''}" data-fancontrol title="Off: fans go back to the BIOS, GPU driver and device firmware"></div></span><button class="btn ghost small" data-go="cooling">Edit curves →</button></div>
+    ${S.cfg.fanControl === false ? fanOffNote() : ''}
     <div class="grid rules-grid">
       ${rules.map((r, i) => `
       <div class="card rule-card" data-rule="${i}">
@@ -332,6 +333,7 @@ function renderOverview() {
     const g = e.target.closest('[data-go]'); if (g) return go(g.dataset.go);
     const pr = e.target.closest('[data-preset]'); if (pr) return applyPreset(pr.dataset.preset, 'all');
     if (e.target.closest('[data-lights]')) { S.cfg.lighting.enabled = !S.cfg.lighting.enabled; commit(true); }
+    if (e.target.closest('[data-fancontrol]')) { S.cfg.fanControl = S.cfg.fanControl === false; commit(true); toast(S.cfg.fanControl ? 'Fan control on' : 'Fan control off: fans are back on their own control'); }
     const rc = e.target.closest('[data-rule]'); if (rc) { S.profile = S.cfg.activeProfile; S.rule = +rc.dataset.rule; S.curve = null; go('cooling'); }
   };
 }
@@ -420,6 +422,14 @@ const TEMPLATES = {
   'Flat 50%': [[30, 50], [90, 50]],
 };
 
+// Shown while the global fan-control switch is off (overview + cooling page).
+function fanOffNote(withButton) {
+  return `<div class="card card-pad" data-fanoff style="margin-bottom:14px;border-left:3px solid var(--warn)">
+    <div class="row between"><div><div class="card-title">Fan control is off</div>
+    <div class="card-sub">Motherboard, cooler and GPU fans are on their BIOS / driver curves. Hubs that can't hand their fans back without their lighting stay on Glint's curves.</div></div>
+    ${withButton ? '<button class="btn small" data-fancontrol-on>Turn fan control on</button>' : ''}</div></div>`;
+}
+
 function renderCooling() {
   const profiles = Object.keys(S.cfg.profiles);
   if (!profiles.includes(S.profile)) S.profile = S.cfg.activeProfile;
@@ -433,6 +443,7 @@ function renderCooling() {
   const curveNames = Object.keys(S.cfg.curves);
 
   $('#page-cooling').innerHTML = `
+  ${S.cfg.fanControl === false ? fanOffNote(true) : ''}
   <div class="cool-layout">
     <div>
       <div class="field" style="margin-bottom:14px">
@@ -557,6 +568,7 @@ function bindSlider(id, fmt, onInput) {
 
 function bindCooling(r, rules) {
   const pg = $('#page-cooling');
+  pg.querySelector('[data-fancontrol-on]')?.addEventListener('click', () => { S.cfg.fanControl = true; commit(true); toast('Fan control on'); });
   $('#c-profile').onchange = e => { S.profile = e.target.value; S.rule = 0; S.curve = null; renderCooling(); };
   $('#c-activate')?.addEventListener('click', () => { S.cfg.activeProfile = S.profile; renderProfiles(); commit(true); });
   $('#c-dup').onclick = () => {

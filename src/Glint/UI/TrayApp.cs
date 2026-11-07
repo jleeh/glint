@@ -103,6 +103,10 @@ public sealed class TrayApp : ApplicationContext
             it.Click += (_, _) => { cfg.ActiveProfile = p; _svc.Apply(cfg); };
             prof.DropDownItems.Add(it);
         }
+        var fanOff = new ToolStripMenuItem("Fan control off") { Checked = !cfg.FanControl, ToolTipText = "Hand fans back to the BIOS, GPU driver and device firmware" };
+        fanOff.Click += (_, _) => { cfg.FanControl = !cfg.FanControl; _svc.Apply(cfg); };
+        prof.DropDownItems.Add(new ToolStripSeparator());
+        prof.DropDownItems.Add(fanOff);
         m.Items.Add(prof);
 
         var light = new ToolStripMenuItem("Lighting");

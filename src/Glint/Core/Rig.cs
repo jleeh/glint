@@ -466,6 +466,41 @@ public sealed class Rig : IDisposable
     }
     readonly Dictionary<string, int> _sent = new();
     DateTime _lastFull;
+    readonly HashSet<string> _handedBack = new();
+    bool _fansOff;
+    public bool FansOff => _fansOff;
+
+    /// <summary>
+    /// Global fan-control switch (fan loop thread). Off: every hub whose plugin can release its fans alone does so and
+    /// gets no more duties; LHM fans (board headers, coolers, GPU fans) are released by leaving them out of the duty
+    /// map (<see cref="SoftwareFans.Apply"/>). On again: everything is re-sent at once.
+    /// </summary>
+    public void SetFanControl(bool on)
+    {
+        if (on != _fansOff) return; // unchanged
+        _fansOff = !on;
+        if (_fansOff)
+        {
+            Log.Add("fan control off");
+            foreach (var c in Controllers)
+            {
+                bool ok = false;
+                try { ok = c.ReleaseFans(); }
+                catch (Exception e) { Log.Add($"{c.Id} release fans failed: {e.Message}"); }
+                if (ok) { _handedBack.Add(c.Id); Log.Add($"{c.Id}: fans handed back to the device"); }
+                else Log.Add($"{c.Id}: can't hand its fans back without its lighting; Glint keeps driving them");
+            }
+        }
+        else
+        {
+            _handedBack.Clear(); _sent.Clear(); _lastFull = DateTime.MinValue;
+            Log.Add("fan control on");
+        }
+    }
+
+    /// <summary>True when the switch is off and this fan is on its own control (not driven by Glint).</summary>
+    public bool HandedBack(string fanId) =>
+        _fansOff && (Software.Contains(fanId) || _handedBack.Any(id => fanId.StartsWith(id + ":", StringComparison.Ordinal)));
 
     /// <summary>Apply duties. Each controller gets one batched call (re-sent every 5 s as keep-alive). <paramref name="duty"/>
     /// must name every LHM fan Glint should keep driving: the rest are handed back to their firmware / driver.</summary>
@@ -475,6 +510,7 @@ public sealed class Rig : IDisposable
         if (full) _lastFull = DateTime.UtcNow;
         foreach (var c in Controllers)
         {
+            if (_handedBack.Contains(c.Id)) continue; // fan control off and this hub runs its own fans
             var mine = duty.Where(k => k.Key.StartsWith(c.Id + ":")).ToList();
             if (mine.Count == 0) continue;
             if (!full && mine.All(k => _sent.TryGetValue(k.Key, out var v) && v == k.Value)) continue;
