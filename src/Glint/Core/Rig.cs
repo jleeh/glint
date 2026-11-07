@@ -40,11 +40,17 @@ public sealed class Rig : IDisposable
     public double HubReadMs, LhmReadMs;
 
     readonly SensorOptions _sensorCfg;
+    /// <summary>Id of the built-in "Graphics card fans" entry on the Plugins page (switched off via DisabledPlugins, on restart).</summary>
+    public const string GpuFansBuiltin = "builtin-gpu-fans";
+    /// <summary>Graphics-card fan control switched on (read at startup), and the cards whose fans Glint found.</summary>
+    public bool GpuFansOn { get; }
+    public List<string> GpuFanCards { get; } = new();
 
     /// <param name="nativeDevices">false = LibreHardwareMonitor only (no HID / SMBus): read-only sensor benchmarks.</param>
     public Rig(GlintConfig cfg, bool useLhm = true, bool hardware = true, bool nativeDevices = true)
     {
         Software = new SoftwareFans(Log.Add);
+        GpuFansOn = !cfg.DisabledPlugins.Contains(GpuFansBuiltin, StringComparer.OrdinalIgnoreCase);
         _sensorCfg = new SensorOptions { Storage = cfg.Sensors.Storage, Memory = cfg.Sensors.Memory, Psu = cfg.Sensors.Psu, Controllers = cfg.Sensors.Controllers };
         if (!hardware) { Log.Add("no-hardware mode (test)"); return; }
         Elevated = new System.Security.Principal.WindowsPrincipal(System.Security.Principal.WindowsIdentity.GetCurrent())
@@ -151,7 +157,9 @@ public sealed class Rig : IDisposable
     {
         if (_lhm == null) return;
         int temps = 0;
-        var gpus = GpuPrefixes(_lhm.Hardware);
+        // Built-in "Graphics card fans" switched off: GPU fans are neither listed nor ever written (temperatures still are).
+        var gpus = GpuFansOn ? GpuPrefixes(_lhm.Hardware) : new();
+        if (!GpuFansOn) Log.Add("graphics-card fans: switched off (Plugins page)");
         foreach (var hw in _lhm.Hardware)
         {
             hw.Update();
@@ -165,7 +173,11 @@ public sealed class Rig : IDisposable
                     string id = FanKey(s, gpus);
                     // A device plugin already owns this id (prefixes are reserved, but be sure): never share one id.
                     if (Fans.Any(f => f.Id == id) && !Software.Contains(id)) { Log.Add($"fan id {id} is taken by a device; LHM fan listed as lhm-{id}"); id = "lhm-" + id; }
-                    if (Software.Add(id, s.Control)) Fans.Add(new FanOutput(id, s.Name, (s.Hardware.Parent ?? s.Hardware).Name));
+                    if (Software.Add(id, s.Control))
+                    {
+                        Fans.Add(new FanOutput(id, s.Name, (s.Hardware.Parent ?? s.Hardware).Name));
+                        if (gpus.ContainsKey(hw) && !GpuFanCards.Contains(hw.Name)) GpuFanCards.Add(hw.Name);
+                    }
                 }
                 if (fanCapable && s.SensorType == SensorType.Fan) _lhmFanRpm[FanKey(s, gpus)] = s;
                 if (hw.HardwareType == HardwareType.Cpu && s.SensorType == SensorType.Temperature && s.Value is > 0) LhmRing0 = true;

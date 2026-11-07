@@ -89,6 +89,20 @@ const fs = require('fs');
   // fan assignment moves a fan between rules
   const mbFan = await p.$eval('.fan-chip[data-fan^="mb:"]', e => e.dataset.fan);
   await p.click(`.fan-chip[data-fan="${mbFan}"]`); c = await cfg();
+  {
+    const gpu = await p.$$eval('.group-label', els => els.filter(e => e.textContent.startsWith('Graphics card · ')).map(e => [...e.nextElementSibling.querySelectorAll('.fan-chip')].map(c => c.textContent)));
+    check('cooling: GPU fans listed under the card\'s name as "GPU fan N", on driver control while unassigned',
+      gpu.length === 1 && gpu[0].length === 2 && gpu[0].every((t, i) => t.startsWith(`GPU fan ${i + 1}`) && t.includes('Driver control')), JSON.stringify(gpu));
+  }
+  {
+    await nav('devices');
+    const card = await p.$eval('[data-gpucard="gpu"]', e => e.textContent).catch(() => '');
+    check('devices: graphics card listed with its model, fan names and driver/rule status', card.includes('Graphics card') && card.includes('Demo Graphics 9000') && card.includes('2 fans') && (await p.$$('[data-gpucard="gpu"] [data-fanname]')).length === 2, card.slice(0, 160));
+    await nav('plugins');
+    const row = await p.$$eval('.plug-row', rs => rs.filter(r => r.textContent.includes('Graphics card fans')).map(r => ({ t: r.textContent, open: !!r.querySelector('[data-open]'), del: !!r.querySelector('[data-rm]'), en: !!r.querySelector('[data-en="builtin-gpu-fans"]') })));
+    check('plugins: built-in "Graphics card fans" entry, switchable, no edit/delete', row.length === 1 && row[0].t.includes('Built in') && !row[0].t.includes('USB device') && row[0].en && !row[0].open && !row[0].del, JSON.stringify(row));
+    await nav('cooling');
+  }
   check('assign motherboard header to rule', c.profiles[prof][idx].fans.includes(mbFan), mbFan);
   const other = c.profiles[prof].findIndex((r, i) => i !== idx && r.fans.length);
   const stolen = c.profiles[prof][other].fans[0];
@@ -214,7 +228,7 @@ const fs = require('fs');
   await p.click('[data-leds="lnp:ch1"]', { count: 3 }); await p.keyboard.type('34'); c = await cfg();
   check('edit LED count', c.lighting.ledCounts['lnp:ch1'] === 34, c.lighting.ledCounts['lnp:ch1']);
   check('restart banner shown', await p.$eval('#restart-banner', e => !e.classList.contains('hidden')));
-  check('devices page summarises plugins', (await p.$eval('#page-devices', e => e.textContent)).includes('42 installed'));
+  check('devices page summarises plugins', (await p.$eval('#page-devices', e => e.textContent)).includes('43 installed')); // 42 plugin files + the built-in graphics-card fans
   {
     const txt = await p.$eval('#page-devices', e => e.innerText);
     check('devices: no empty "Firmware" label when the host sends none', !/Firmware\s*·/.test(txt));
@@ -261,7 +275,7 @@ const fs = require('fs');
   // --- plugins manager
   await nav('plugins');
   const rows0 = (await p.$$('.plug-row')).length;
-  check('plugins page lists every plugin', rows0 === 42, rows0);
+  check('plugins page lists every plugin', rows0 === 43, rows0); // incl. the built-in graphics-card fans
   await p.type('#pl-q', 'razer'); await wait(150);
   check('search filters the list', (await p.$$('.plug-row')).length === 1, (await p.$$('.plug-row')).length);
   await p.$eval('#pl-q', e => { e.value = ''; e.dispatchEvent(new Event('input')); });

@@ -45,6 +45,13 @@ const HUB_NAMES = {
 function hubName(id, short) {
   const n = own(HUB_NAMES, id);
   if (n) return Array.isArray(n) ? n[short ? 0 : 1] : n;
+  // graphics cards: "gpu", "gpu2"... (LHM fan outputs); the long name carries the card's model
+  const gm = /^gpu(\d*)$/.exec(id);
+  if (gm) {
+    const label = 'Graphics card' + (gm[1] ? ' ' + gm[1] : '');
+    const model = S.init?.fans?.find(f => f.id.startsWith(id + ':'))?.device;
+    return short || !model ? label : `${label} · ${model}`;
+  }
   return S.init?.deviceNames?.[id] ?? S.init?.hubs?.find(h => h.id === id)?.name ?? id;
 }
 function fanLabel(id) {
@@ -55,6 +62,7 @@ function fanLabel(id) {
   if (dev === 'st' && n) return `Radiator ${n}`;
   if (dev === 'xt' && n) return `Case ${n}`;
   if (dev === 'mb') return 'Header ' + f.replace('Fan #', '');
+  if (/^gpu\d*$/.test(dev)) return 'GPU ' + (f ?? '').replace(/^Fan/i, 'fan');
   if (n) return `Fan ${n}`;
   return id;
 }
@@ -531,7 +539,7 @@ function renderCooling() {
         ${Object.entries(groups).map(([g, ids]) => `
           <div class="group-label">${esc(hubName(g))}</div>
           <div class="fan-pick">
-            ${ids.map(f => `<div class="fan-chip ${r.fans.includes(f) ? 'on' : ''}" data-fan="${esc(f)}"><span class="box"></span><span>${esc(fanLabel(f))}${owner[f] ? `<span class="other">in ${esc(owner[f])}</span>` : ''}${g === 'mb' && !r.fans.includes(f) && !owner[f] ? '<span class="other">BIOS control</span>' : ''}</span></div>`).join('')}
+            ${ids.map(f => `<div class="fan-chip ${r.fans.includes(f) ? 'on' : ''}" data-fan="${esc(f)}"><span class="box"></span><span>${esc(fanLabel(f))}${owner[f] ? `<span class="other">in ${esc(owner[f])}</span>` : ''}${g === 'mb' && !r.fans.includes(f) && !owner[f] ? '<span class="other">BIOS control</span>' : ''}${/^gpu\d*$/.test(g) && !r.fans.includes(f) && !owner[f] ? '<span class="other">Driver control</span>' : ''}</span></div>`).join('')}
           </div>`).join('')}
       </div>
 
@@ -1239,6 +1247,18 @@ function renderDevices() {
       ${d.zones.some(editable) ? '<div class="muted" style="font-size:12px;margin-top:10px">These ports can\'t report their length. Set the real LED count; use 0 for an empty header. Switch on <b>Test pattern</b>: the first LED turns white, the last one red, and the colour changes every 8 LEDs (one fan). The count is right when the red LED is the last one lit.</div>' : ''}
     </div>`);
   }
+  // graphics cards (built in via LibreHardwareMonitor): one card per GPU with fans Glint can drive
+  for (const g of [...new Set(I.fans.filter(f => /^gpu\d*:/.test(f.id)).map(f => f.id.split(':')[0]))]) {
+    const fans = I.fans.filter(f => f.id.startsWith(g + ':'));
+    const rule = (S.cfg.profiles[S.cfg.activeProfile] ?? []).find(r => fans.some(f => r.fans.includes(f.id)));
+    cards.push(`
+    <div class="card card-pad dev-card" data-gpucard="${esc(g)}">
+      <div class="dev-head"><div class="dev-ico">${IC.gpu}</div><div style="flex:1"><div class="card-title">${esc(hubName(g, true))}</div><div class="card-sub">${esc(fans[0].device)} · ${fans.length} fan${fans.length === 1 ? '' : 's'} · ${rule ? `driven by “${esc(rule.name)}”` : 'on the GPU driver\'s own curve (not in a rule)'}</div></div><span class="status-dot" title="Built in"></span></div>
+      <div class="group-label">Fan names</div>
+      <div class="kv">${fans.map(f => `<span class="k">${esc(f.id.split(':')[1])} <span class="muted num" data-rpm="${esc(f.id)}"></span></span><input type="text" data-fanname="${esc(f.id)}" value="${esc(S.cfg.fanNames[f.id] ?? '')}" placeholder="${esc(fanLabel(f.id))}">`).join('')}</div>
+      <div class="muted" style="font-size:12px;margin-top:10px">Built in (switch off under Plugins → Graphics card fans). Fans not in a rule stay on the driver; if another app such as MSI Afterburner takes a fan over, Glint hands it back and says so on the Setup page.</div>
+    </div>`);
+  }
   const mb = I.fans.filter(f => f.id.startsWith('mb:'));
   if (mb.length) cards.push(`
     <div class="card card-pad dev-card">
@@ -1369,11 +1389,11 @@ function renderPlugins() {
         const state = !x.enabled ? 'off' : x.needsApproval ? 'warn' : x.ok ? 'ok' : 'bad';
         return `<div class="plug-row ${x.enabled ? '' : 'disabled'}">
           <span class="pdot ${state}"></span>
-          <div class="pmain"><div class="pname">${esc(x.name)} <span class="ptag" style="color:${kc};border-color:${kc}55">${kn}</span>${x.source === 'user' ? '<span class="ptag">Yours</span>' : ''}</div>
+          <div class="pmain"><div class="pname">${esc(x.name)} ${x.source === 'built-in' ? '<span class="ptag">Built in</span>' : `<span class="ptag" style="color:${kc};border-color:${kc}55">${kn}</span>`}${x.source === 'user' ? '<span class="ptag">Yours</span>' : ''}</div>
             <div class="pmsg ${state}" title="${esc(x.message)}">${esc(x.file)}${x.message ? ' · ' + esc(x.message) : ''}</div></div>
           <div class="pact">
             ${x.needsApproval ? `<button class="btn small primary" data-approve="${esc(x.file)}">Approve</button>` : ''}
-            <button class="icon-btn" data-open="${esc(x.file)}" title="Open in editor"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></button>
+            ${x.source === 'built-in' ? '<span style="width:30px"></span>' : `<button class="icon-btn" data-open="${esc(x.file)}" title="Open in editor"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></button>`}
             ${x.source === 'user' ? `<button class="icon-btn danger" data-rm="${esc(x.file)}" title="Delete">${IC.trash}</button>` : '<span style="width:30px"></span>'}
             <div class="toggle ${x.enabled ? 'on' : ''}" data-en="${esc(x.file)}" title="${x.enabled ? 'Switch off' : 'Switch on'}"></div>
           </div></div>`;

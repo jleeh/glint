@@ -222,7 +222,7 @@ public sealed class ControlServer : IDisposable
                         };
                     }).OrderBy(x => x.vendorId).ThenBy(x => x.productId).ToList();
                 }
-            case "plugins.list": return PluginList();
+            case "plugins.list": return PluginList(_svc);
             case "plugins.docs": return File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "plugin-templates", "PLUGINS.md"));
             case "plugins.template":
                 return File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "plugin-templates", (string?)p["kind"] == "device" ? "device-template.js" : "effect-template.js"));
@@ -265,7 +265,7 @@ public sealed class ControlServer : IDisposable
                     PluginHost.ReloadNow();
                     return new { file, enabled = on, note = "Device plugins change on app.restart." };
                 }
-            case "plugins.reload": PluginHost.ReloadNow(); return PluginList();
+            case "plugins.reload": PluginHost.ReloadNow(); return PluginList(_svc);
             case "lighting.presets": return _svc.Config.Lighting.Presets.Keys;
             case "lighting.preset":
                 {
@@ -592,10 +592,10 @@ public sealed class ControlServer : IDisposable
         return f;
     }
 
-    public static object PluginList()
+    public static object PluginList(GlintService? svc = null)
     {
         var status = PluginHost.StatusSnapshot().GroupBy(s => s.File, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.Last(), StringComparer.OrdinalIgnoreCase);
-        return PluginHost.AllFiles.Select(f =>
+        var list = PluginHost.AllFiles.Select(f =>
         {
             var name = Path.GetFileName(f);
             status.TryGetValue(name, out var st);
@@ -605,7 +605,27 @@ public sealed class ControlServer : IDisposable
                 kind = st?.Kind ?? "?", name = st?.Name ?? Path.GetFileNameWithoutExtension(f),
                 enabled = st?.Message != "disabled", ok = st?.Ok ?? false, message = st?.Message ?? "", needsApproval = st?.NeedsApproval ?? false,
             };
-        }).OrderBy(x => x.kind).ThenBy(x => x.name).ToList();
+        }).OrderBy(x => x.kind).ThenBy(x => x.name).Cast<object>().ToList();
+        if (svc != null) list.Insert(0, BuiltinGpuFans(svc));
+        return list;
+    }
+
+    /// <summary>Graphics-card fans are built in (LibreHardwareMonitor talks to the GPU driver, which a sandboxed plugin can't);
+    /// listed with the plugins so they can be found and switched off like one. Changes take effect on restart.</summary>
+    static object BuiltinGpuFans(GlintService svc)
+    {
+        bool want = !svc.Config.DisabledPlugins.Contains(Rig.GpuFansBuiltin, StringComparer.OrdinalIgnoreCase);
+        var rig = svc.Rig;
+        int fans = rig.Fans.Count(f => f.Id.StartsWith("gpu", StringComparison.Ordinal) && rig.Software.Contains(f.Id));
+        string msg = want != rig.GpuFansOn ? (want ? "switched on: restart Glint" : "switched off: restart Glint")
+            : !want ? "disabled"
+            : fans > 0 ? $"built in · {fans} fan{(fans == 1 ? "" : "s")} on {string.Join(", ", rig.GpuFanCards)}"
+            : "built in · no controllable graphics-card fans found";
+        return new
+        {
+            file = Rig.GpuFansBuiltin, path = "", source = "built-in", kind = "device", name = "Graphics card fans",
+            enabled = want, ok = !want || fans > 0, message = msg, needsApproval = false,
+        };
     }
 
     public void Dispose() => _cts.Cancel();

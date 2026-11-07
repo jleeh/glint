@@ -144,6 +144,7 @@
     { name: 'Lava lamp', description: 'Warm blobs drifting slowly', preview: ['#ff3000', '#ffa000', '#600010'], params: { colors: { type: 'colors', label: 'Colours', default: ['#ff3000', '#ffa000', '#ff0060'] }, background: { type: 'color', label: 'Background', default: '#200004' }, speed: { type: 'number', label: 'Speed', min: 0.05, max: 1.5, step: 0.05, default: 0.25 }, blobs: { type: 'number', label: 'Blob size', min: 0.1, max: 1, step: 0.05, default: 0.45 } } },
     ...USER_FX.filter(x => x[4]).map(([, name, description, preview]) => ({ name, description, preview, params: {} })),
   ];
+  list.unshift({ file: 'builtin-gpu-fans', path: '', source: 'built-in', kind: 'device', name: 'Graphics card fans', enabled: true, ok: true, message: 'built in · 2 fans on Demo Graphics 9000', needsApproval: false });
   const plugins = {
     dir: '%APPDATA%\\Glint\\plugins', exe: 'C:\\Program Files\\Glint\\Glint.exe', list, effects,
     status: list.filter(x => !x.ok).map(x => ({ file: x.file, kind: x.kind, name: x.name, ok: false, message: x.message })),

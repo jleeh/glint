@@ -206,6 +206,15 @@ public static class SelfTest
                     $"errors: {string.Join("; ", ConfigValidator.Validate(fc))}");
             }
 
+            // built-in "Graphics card fans" entry: on by default, switched off through DisabledPlugins (like a plugin)
+            {
+                var off = GlintConfig.Defaults(); off.DisabledPlugins.Add(Rig.GpuFansBuiltin);
+                bool onByDefault = new Rig(GlintConfig.Defaults(), useLhm: false, hardware: false).GpuFansOn;
+                bool offWhenDisabled = !new Rig(off, useLhm: false, hardware: false).GpuFansOn;
+                C("graphics-card fans: built in, on by default, off when switched off on the Plugins page", onByDefault && offWhenDisabled && Rig.GpuFansBuiltin == Path.GetFileName(Rig.GpuFansBuiltin),
+                    $"default {onByDefault}, disabled→off {offWhenDisabled}");
+            }
+
             // setup report: GPU tools only warn when Glint drives GPU fans; a contested fan is a failure with the reason
             var env = new ProcEnv { Procs = new[] { "MSIAfterburner" } };
             SetupItem? Item(SetupCheck.SetupInput i, string id) => SetupCheck.Run(i, env).Items.FirstOrDefault(x => x.Id == id);
