@@ -143,7 +143,7 @@ drivers and pass their simulated-device tests. Reports from owners are very welc
 | RAM | ✅ Corsair Vengeance / Dominator RGB (DDR4/DDR5) · G.Skill Trident Z and other ENE-based kits · Kingston Fury Beast / Renegade · Crucial Ballistix |
 | Keyboards | ✅ Logitech G213 · Logitech G813/G815/G915 · Razer Chroma · SteelSeries Apex · HyperX Alloy Origins |
 | Mice | Logitech G-series (HID++) · ⚠️ Logitech G402 (experimental) · Razer · SteelSeries Rival · HyperX Pulsefire · Corsair |
-| Sensors & fan headers | CPU, GPU, motherboard Super I/O fan headers, drives, RAM, PSU, controllers via [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) |
+| Sensors & fan headers | CPU, GPU, motherboard Super I/O fan headers, graphics-card fans (NVIDIA / AMD; handed back to the driver when no rule drives them), drives, RAM, PSU, controllers via [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) |
 
 Don't see yours? [Add it](#add-your-own-hardware) or [open a device request](../../issues/new?template=device-support.md).
 

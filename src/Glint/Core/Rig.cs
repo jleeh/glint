@@ -16,7 +16,7 @@ public sealed record FanOutput(string Id, string Name, string Device);
 /// <summary>
 /// All hardware in one place. Native drivers come from <see cref="DriverRegistry"/> (HID + SMBus);
 /// LibreHardwareMonitor adds CPU/GPU/board/storage/RAM/PSU/cooling-controller sensors and every
-/// fan header it can drive (motherboard Super I/O, NZXT Kraken pumps, Aquacomputer, ...).
+/// fan it can drive (motherboard Super I/O headers, NZXT Kraken pumps, Aquacomputer, graphics-card fans, ...).
 /// </summary>
 public sealed class Rig : IDisposable
 {
@@ -26,10 +26,10 @@ public sealed class Rig : IDisposable
     public readonly LogBuffer Log = new();
     readonly Computer? _lhm;
     Smbus? _smbus;
-    readonly Dictionary<string, ISensor> _lhmControls = new();
+    /// <summary>LHM-driven fan outputs (board headers, coolers, graphics-card fans).</summary>
+    public readonly SoftwareFans Software;
     readonly Dictionary<string, ISensor> _lhmFanRpm = new();
     readonly Dictionary<string, ISensor> _lhmTemps = new();
-    readonly HashSet<string> _lhmTouched = new();
     public bool Elevated { get; }
     public bool LhmRing0 { get; private set; }
     /// <summary>SMBus (RAM RGB) state: null = working, else why not (no admin, no PawnIO, unsupported chipset...).</summary>
@@ -44,6 +44,7 @@ public sealed class Rig : IDisposable
     /// <param name="nativeDevices">false = LibreHardwareMonitor only (no HID / SMBus): read-only sensor benchmarks.</param>
     public Rig(GlintConfig cfg, bool useLhm = true, bool hardware = true, bool nativeDevices = true)
     {
+        Software = new SoftwareFans(Log.Add);
         _sensorCfg = new SensorOptions { Storage = cfg.Sensors.Storage, Memory = cfg.Sensors.Memory, Psu = cfg.Sensors.Psu, Controllers = cfg.Sensors.Controllers };
         if (!hardware) { Log.Add("no-hardware mode (test)"); return; }
         Elevated = new System.Security.Principal.WindowsPrincipal(System.Security.Principal.WindowsIdentity.GetCurrent())
@@ -87,9 +88,47 @@ public sealed class Rig : IDisposable
                 };
                 _lhm.Open();
                 Index();
+                if (Software.Count > 0)
+                {
+                    // A crash or a kill must not leave a fan (above all a GPU fan) parked on a fixed software duty.
+                    AppDomain.CurrentDomain.ProcessExit += ReleaseSoftwareFans;
+                    AppDomain.CurrentDomain.UnhandledException += ReleaseSoftwareFans;
+                }
             }
             catch (Exception e) { Log.Add($"LibreHardwareMonitor failed: {e.Message}"); _lhm = null; }
         }
+    }
+
+    void ReleaseSoftwareFans(object? _, EventArgs __) { try { Software.ReleaseAll(); } catch { } }
+
+    /// <summary>Discrete graphics cards (the integrated Radeon is skipped, as for the "gpu" temperature alias).</summary>
+    static bool DiscreteGpu(IHardware root) =>
+        root.HardwareType is HardwareType.GpuNvidia or HardwareType.GpuAmd or HardwareType.GpuIntel && !root.Name.Contains("Radeon(TM) Graphics");
+
+    /// <summary>Fan-id prefix per discrete GPU: "gpu" for the first, then "gpu2", "gpu3"... in LHM's order.</summary>
+    static Dictionary<IHardware, string> GpuPrefixes(IEnumerable<IHardware> hardware)
+    {
+        var d = new Dictionary<IHardware, string>();
+        foreach (var h in hardware) if (DiscreteGpu(h)) d[h] = d.Count == 0 ? "gpu" : $"gpu{d.Count + 1}";
+        return d;
+    }
+
+    /// <summary>"GPU Fan 1" → "Fan 1" (the prefix already says GPU).</summary>
+    public static string GpuFanName(string sensorName)
+    {
+        var n = sensorName.Trim();
+        return n.StartsWith("GPU ", StringComparison.OrdinalIgnoreCase) && n.Length > 4 ? n[4..].Trim() : n;
+    }
+
+    static bool FanCapable(IHardware root, Dictionary<IHardware, string> gpus) =>
+        root.HardwareType is HardwareType.Motherboard or HardwareType.Cooler or HardwareType.EmbeddedController || gpus.ContainsKey(root);
+
+    /// <summary>Fan id for an LHM fan / control sensor: "mb:Fan #2", "kraken-x63:Pump", "gpu:Fan 1". Control and RPM share it.</summary>
+    static string FanKey(ISensor s, Dictionary<IHardware, string> gpus)
+    {
+        var root = s.Hardware.Parent ?? s.Hardware;
+        string name = s.Name.Replace("Fan Control", "Fan").Trim();
+        return gpus.TryGetValue(root, out var p) ? p + ":" + GpuFanName(name) : Prefix(s.Hardware) + ":" + name;
     }
 
     static string Slug(string s) => new string(s.ToLowerInvariant().Select(c => char.IsLetterOrDigit(c) ? c : '-').ToArray()).Trim('-').Replace("--", "-");
@@ -111,6 +150,7 @@ public sealed class Rig : IDisposable
     {
         if (_lhm == null) return;
         int temps = 0;
+        var gpus = GpuPrefixes(_lhm.Hardware);
         foreach (var hw in _lhm.Hardware)
         {
             hw.Update();
@@ -118,19 +158,18 @@ public sealed class Rig : IDisposable
             foreach (var s in hw.Sensors.Concat(hw.SubHardware.SelectMany(x => x.Sensors)))
             {
                 if (s.SensorType == SensorType.Temperature) { _lhmTemps[s.Identifier.ToString()] = s; temps++; }
-                bool fanCapable = hw.HardwareType is HardwareType.Motherboard or HardwareType.Cooler or HardwareType.EmbeddedController;
+                bool fanCapable = FanCapable(hw, gpus);
                 if (fanCapable && s.SensorType == SensorType.Control && s.Control != null)
                 {
-                    string pre = Prefix(s.Hardware);
-                    string id = pre + ":" + s.Name.Replace("Fan Control", "Fan").Trim();
-                    if (_lhmControls.TryAdd(id, s)) Fans.Add(new FanOutput(id, s.Name, (s.Hardware.Parent ?? s.Hardware).Name));
+                    string id = FanKey(s, gpus);
+                    if (Software.Add(id, s.Control)) Fans.Add(new FanOutput(id, s.Name, (s.Hardware.Parent ?? s.Hardware).Name));
                 }
-                if (fanCapable && s.SensorType == SensorType.Fan) _lhmFanRpm[Prefix(s.Hardware) + ":" + s.Name.Trim()] = s;
+                if (fanCapable && s.SensorType == SensorType.Fan) _lhmFanRpm[FanKey(s, gpus)] = s;
                 if (hw.HardwareType == HardwareType.Cpu && s.SensorType == SensorType.Temperature && s.Value is > 0) LhmRing0 = true;
             }
         }
         var kinds = _lhm.Hardware.GroupBy(h => h.HardwareType).Select(g => $"{g.Count()} {g.Key}");
-        Log.Add($"LHM: {string.Join(", ", kinds)}; {temps} temps, {_lhmControls.Count} controllable fan headers, ring0={(LhmRing0 ? "yes" : "no (needs admin + PawnIO)")}");
+        Log.Add($"LHM: {string.Join(", ", kinds)}; {temps} temps, {Software.Count} controllable fans ({Fans.Count(f => f.Id.StartsWith("gpu"))} on graphics cards), ring0={(LhmRing0 ? "yes" : "no (needs admin + PawnIO)")}");
     }
 
     /// <summary>Snapshot of every temperature, with friendly aliases.</summary>
@@ -353,13 +392,11 @@ public sealed class Rig : IDisposable
     static double? Clean(double? v) => v is double x && double.IsFinite(x) ? Math.Round(x, Math.Abs(x) < 10 ? 3 : 1) : null;
 
     /// <summary>Friendly / fan-curve ids a raw sensor feeds (mirrors the aliasing in <see cref="ReadSensors"/>).</summary>
-    static List<string>? Aliases(ISensor s)
+    static List<string>? Aliases(ISensor s, Dictionary<IHardware, string> gpus)
     {
         var root = s.Hardware.Parent ?? s.Hardware;
-        if (s.SensorType == SensorType.Fan && root.HardwareType is HardwareType.Motherboard or HardwareType.Cooler or HardwareType.EmbeddedController)
-            return new() { Prefix(s.Hardware) + ":" + s.Name.Trim() };
-        if (s.SensorType == SensorType.Control && s.Control != null && root.HardwareType is HardwareType.Motherboard or HardwareType.Cooler or HardwareType.EmbeddedController)
-            return new() { Prefix(s.Hardware) + ":" + s.Name.Replace("Fan Control", "Fan").Trim() };
+        if (s.SensorType == SensorType.Fan && FanCapable(root, gpus)) return new() { FanKey(s, gpus) };
+        if (s.SensorType == SensorType.Control && s.Control != null && FanCapable(root, gpus)) return new() { FanKey(s, gpus) };
         if (s.SensorType != SensorType.Temperature) return null;
         if (root.HardwareType is HardwareType.Storage or HardwareType.Memory && LimitName(s.Name)) return null;
         var a = new List<string> { s.Identifier.ToString() };
@@ -385,6 +422,8 @@ public sealed class Rig : IDisposable
     static SensorCatalogData BuildCatalog(IEnumerable<IHardware> hardware, List<CatalogHardware> native, Dictionary<string, (double min, double max)>? mm, bool reset)
     {
         if (reset) mm?.Clear();
+        var hwList = hardware.ToList();
+        var gpus = GpuPrefixes(hwList);
         CatalogHardware Hw(IHardware h) => new(h.Identifier.ToString(), h.Name, h.HardwareType.ToString(),
             h.Sensors.OrderBy(x => x.SensorType).ThenBy(x => x.Index).Select(x =>
             {
@@ -397,10 +436,10 @@ public sealed class Rig : IDisposable
                     mm[id] = r; lo = r.Item1; hi = r.Item2;
                 }
                 else { lo = hi = null; if (mm.TryGetValue(id, out var o)) { lo = o.min; hi = o.max; } }
-                return new CatalogSensor(id, x.Name, x.SensorType.ToString(), Unit(x.SensorType), v, lo, hi, Aliases(x));
+                return new CatalogSensor(id, x.Name, x.SensorType.ToString(), Unit(x.SensorType), v, lo, hi, Aliases(x, gpus));
             }).ToList(),
             h.SubHardware.Select(Hw).ToList());
-        var list = hardware.Select(Hw).ToList();
+        var list = hwList.Select(Hw).ToList();
         if (mm != null)
             foreach (var g in native)
                 for (int i = 0; i < g.Sensors.Count; i++)
@@ -428,7 +467,8 @@ public sealed class Rig : IDisposable
     readonly Dictionary<string, int> _sent = new();
     DateTime _lastFull;
 
-    /// <summary>Apply duties. Each controller gets one batched call (re-sent every 5 s as keep-alive).</summary>
+    /// <summary>Apply duties. Each controller gets one batched call (re-sent every 5 s as keep-alive). <paramref name="duty"/>
+    /// must name every LHM fan Glint should keep driving: the rest are handed back to their firmware / driver.</summary>
     public void ApplyDuty(IReadOnlyDictionary<string, int> duty)
     {
         bool full = (DateTime.UtcNow - _lastFull).TotalSeconds > 5;
@@ -442,19 +482,14 @@ public sealed class Rig : IDisposable
             catch (Exception e) { Log.Add($"{c.Id} set duty failed: {e.Message}"); continue; }
             foreach (var (k, v) in mine) _sent[k] = v;
         }
-        foreach (var (k, v) in duty)
-        {
-            if (!_lhmControls.TryGetValue(k, out var s)) continue;
-            if (_sent.TryGetValue(k, out var old) && old == v && !full) continue;
-            s.Control.SetSoftware(v);
-            _lhmTouched.Add(k);
-            _sent[k] = v;
-        }
+        Software.Apply(duty, full); // LHM fans not in `duty` go back to automatic control
     }
 
     public void Dispose()
     {
-        foreach (var k in _lhmTouched) try { _lhmControls[k].Control.SetDefault(); } catch { }
+        AppDomain.CurrentDomain.ProcessExit -= ReleaseSoftwareFans;
+        AppDomain.CurrentDomain.UnhandledException -= ReleaseSoftwareFans;
+        Software.ReleaseAll();
         foreach (var c in Controllers) { try { c.Release(); } catch { } }
         foreach (var l in Lights) try { l.Dispose(); } catch { }
         OpenRgb?.Dispose();

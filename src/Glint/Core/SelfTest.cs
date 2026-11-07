@@ -75,6 +75,33 @@ public static class SelfTest
         C("multi-input weighted 3:1", D(Cfg(Combine.Weighted, ("cpu", 3), ("gpu", 1)), s) == 49, $"{D(Cfg(Combine.Weighted, ("cpu", 3), ("gpu", 1)), s)}"); // 48.75
         C("missing sensor → failsafe", D(Cfg(Combine.Max, ("cpu", 1), ("liquid", 1)), s) == 100, "");
 
+        // LHM-driven fans (board headers, GPU fans): clamp to the control's range, keep-alive, hand back when unassigned / on exit
+        {
+            var log = new List<string>();
+            var sf = new SoftwareFans(log.Add);
+            var g1 = new FakeControl { Min = 30 }; var g2 = new FakeControl(); var bad = new FakeControl { Throw = true };
+            sf.Add("gpu:Fan 1", g1); sf.Add("gpu:Fan 2", g2); sf.Add("mb:Fan #1", bad);
+            sf.Apply(new Dictionary<string, int> { ["gpu:Fan 1"] = 10, ["gpu:Fan 2"] = 55, ["mb:Fan #1"] = 40, ["cc:fan1"] = 50 }, full: true);
+            C("GPU fan duty clamped to the control's floor (10% → 30%), others sent as asked",
+                g1.Value == 30 && g2.Value == 55 && g1.Mode == "software" && g2.Mode == "software", $"fan1 {g1.Value} {g1.Mode}, fan2 {g2.Value} {g2.Mode}");
+            C("a failing control doesn't stop the others and isn't marked as held", !sf.Touched("mb:Fan #1") && sf.Touched("gpu:Fan 2") && log.Any(l => l.Contains("mb:Fan #1 set duty failed")),
+                string.Join(" | ", log));
+            int sets = g2.Sets;
+            sf.Apply(new Dictionary<string, int> { ["gpu:Fan 1"] = 10, ["gpu:Fan 2"] = 55 }, full: false);
+            int unchanged = g2.Sets - sets;
+            sf.Apply(new Dictionary<string, int> { ["gpu:Fan 1"] = 10, ["gpu:Fan 2"] = 55 }, full: true);
+            C("unchanged duty not re-sent until the keep-alive", unchanged == 0 && g2.Sets == sets + 1, $"re-sends without keep-alive {unchanged}, with {g2.Sets - sets}");
+            sf.Apply(new Dictionary<string, int> { ["gpu:Fan 2"] = 60 }, full: false);
+            C("fan dropped from every rule goes back to automatic (driver) control", g1.Mode == "default" && !sf.Touched("gpu:Fan 1") && g2.Mode == "software" && g2.Value == 60,
+                $"fan1 {g1.Mode}, fan2 {g2.Mode} {g2.Value}");
+            sf.Apply(new Dictionary<string, int> { ["gpu:Fan 1"] = 45, ["gpu:Fan 2"] = 60 }, full: false);
+            C("re-assigned fan is taken back even when its duty matches the last one sent", g1.Mode == "software" && g1.Value == 45, $"fan1 {g1.Mode} {g1.Value}");
+            sf.ReleaseAll();
+            C("exit / crash hands every held fan back", g1.Mode == "default" && g2.Mode == "default" && !sf.Touched("gpu:Fan 2"), $"fan1 {g1.Mode}, fan2 {g2.Mode}");
+            C("GPU fan names: \"GPU Fan 1\" → \"Fan 1\"", Rig.GpuFanName("GPU Fan 1") == "Fan 1" && Rig.GpuFanName("Fan") == "Fan" && Rig.GpuFanName("GPU") == "GPU",
+                $"{Rig.GpuFanName("GPU Fan 1")}, {Rig.GpuFanName("Fan")}, {Rig.GpuFanName("GPU")}");
+        }
+
         // manual override (Home Assistant fan entity): holds its duty, "auto" returns to the curve, fail-safe beats it
         {
             var c = Cfg(Combine.Max, ("cpu", 1));
@@ -840,6 +867,23 @@ public static class SelfTest
         }
 
         public void Dispose() { try { _c?.Dispose(); } catch { } _l.Stop(); }
+    }
+
+    sealed class FakeControl : LibreHardwareMonitor.Hardware.IControl
+    {
+        public float Min = 0, Max = 100;
+        public bool Throw;
+        public float? Value;
+        public string Mode = "untouched";
+        public int Sets;
+        public LibreHardwareMonitor.Hardware.ControlMode ControlMode => Mode == "software" ? LibreHardwareMonitor.Hardware.ControlMode.Software : LibreHardwareMonitor.Hardware.ControlMode.Default;
+        public LibreHardwareMonitor.Hardware.Identifier Identifier => new("fake", "control");
+        public float MaxSoftwareValue => Max;
+        public float MinSoftwareValue => Min;
+        public LibreHardwareMonitor.Hardware.ISensor Sensor => null!;
+        public float SoftwareValue => Value ?? 0;
+        public void SetDefault() { Mode = "default"; }
+        public void SetSoftware(float value) { if (Throw) throw new InvalidOperationException("device gone"); Value = value; Mode = "software"; Sets++; }
     }
 
     sealed class FakeHub : IFanController

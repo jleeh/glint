@@ -92,6 +92,9 @@ device before writing, and can never touch the SPD EEPROM (0x50–0x57).
 4. Hold fans at a speed for a while: `fans.override name="Radiator fans" percent=80`; back to automatic with
    `percent=null`.
 5. Experiment safely: `profiles.create name=Test from=Balanced`, edit the copy, `profile.set name=Test`.
+6. Graphics-card fans are outputs too: `gpu:Fan 1`, `gpu:Fan 2` (a second card is `gpu2:`). While no rule names
+   them they stay on the GPU driver's own curve; put them in a rule (usually input `gpu` or `gpu.hotspot`) to drive
+   them, remove them to hand control back. Some cards have a minimum duty (often 30%); lower requests are raised to it.
 
 ## Recipe: sensors and the game overlay
 

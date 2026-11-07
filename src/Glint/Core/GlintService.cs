@@ -116,7 +116,8 @@ public sealed class GlintService : IDisposable
             catch (Exception e)
             {
                 LastError = e.Message;
-                try { Rig.ApplyDuty(Rig.Fans.Where(f => Native(f.Id)).ToDictionary(f => f.Id, _ => Config.FailsafeDuty)); } catch { }
+                // Fail-safe: every hub fan, and every LHM fan (board header, GPU) Glint was driving.
+                try { Rig.ApplyDuty(Rig.Fans.Where(f => Native(f.Id) || Rig.Software.Touched(f.Id)).ToDictionary(f => f.Id, _ => Config.FailsafeDuty)); } catch { }
             }
             CpuMeter.Add("sensors + fans", CpuMeter.ThreadMs() - cpu0);
             Updated?.Invoke();
