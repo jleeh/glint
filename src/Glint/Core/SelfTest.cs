@@ -206,6 +206,23 @@ public static class SelfTest
                     $"errors: {string.Join("; ", ConfigValidator.Validate(fc))}");
             }
 
+            // AMD zero-RPM: a stopped fan at a low duty request is the card's fan-stop mode, not a conflict; above the limit it is
+            {
+                double zt = 0; var zlog = new List<string>();
+                var zf = new SoftwareFans(zlog.Add, c => ((FakeControl)c).Reported, () => zt);
+                var amd = new FakeControl(); var nv = new FakeControl();
+                zf.Add("gpu:Fan 1", amd, fanStop: true); zf.Add("gpu2:Fan 1", nv);
+                var low = new Dictionary<string, int> { ["gpu:Fan 1"] = 30, ["gpu2:Fan 1"] = 30 };
+                for (int t = 0; t < 30; t++) { zt = t; amd.Reported = t == 0 ? null : 0; nv.Reported = t == 0 ? null : 0; zf.Apply(low, t == 0); }
+                C("zero-RPM: a Radeon fan stopped at 30% is the card's fan-stop mode (noted once); the same on a card without it is a conflict",
+                    !zf.IsContested("gpu:Fan 1") && zlog.Count(l => l.Contains("zero-RPM")) == 1 && zf.IsContested("gpu2:Fan 1"),
+                    $"amd contested {zf.IsContested("gpu:Fan 1")}, notes {zlog.Count(l => l.Contains("zero-RPM"))}, other contested {zf.IsContested("gpu2:Fan 1")}");
+                var warm = new Dictionary<string, int> { ["gpu:Fan 1"] = 60 };
+                for (int t = 30; t < 40; t++) { zt = t; amd.Reported = 0; zf.Apply(warm, false); }
+                C("zero-RPM: a Radeon fan still stopped when Glint asks for 60% is a conflict (handed back to the driver)",
+                    zf.IsContested("gpu:Fan 1") && amd.Mode == "default", $"contested {zf.IsContested("gpu:Fan 1")}, mode {amd.Mode}");
+            }
+
             // built-in "Graphics card fans" entry: on by default, switched off through DisabledPlugins (like a plugin)
             {
                 var off = GlintConfig.Defaults(); off.DisabledPlugins.Add(Rig.GpuFansBuiltin);

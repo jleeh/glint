@@ -173,7 +173,8 @@ public sealed class Rig : IDisposable
                     string id = FanKey(s, gpus);
                     // A device plugin already owns this id (prefixes are reserved, but be sure): never share one id.
                     if (Fans.Any(f => f.Id == id) && !Software.Contains(id)) { Log.Add($"fan id {id} is taken by a device; LHM fan listed as lhm-{id}"); id = "lhm-" + id; }
-                    if (Software.Add(id, s.Control))
+                    // Radeon cards have a zero-RPM mode that stops the fans at low duty requests on purpose.
+                    if (Software.Add(id, s.Control, fanStop: gpus.ContainsKey(hw) && hw.HardwareType == HardwareType.GpuAmd))
                     {
                         Fans.Add(new FanOutput(id, s.Name, (s.Hardware.Parent ?? s.Hardware).Name));
                         if (gpus.ContainsKey(hw) && !GpuFanCards.Contains(hw.Name)) GpuFanCards.Add(hw.Name);

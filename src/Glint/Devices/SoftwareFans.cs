@@ -22,6 +22,9 @@ public sealed class SoftwareFans
     public const double SettleSec = 5;
     /// <summary>Seconds before Glint tries a contested fan again (re-detected within seconds if the other program is still at it).</summary>
     public const double RetrySec = 600;
+    /// <summary>Fan-stop ("zero RPM") cards stop their fans at low duty requests by design: a read-back of 0% while Glint
+    /// asks for this much or less is the card, not another program. Above it a stopped fan is still a conflict.</summary>
+    public const int FanStopMaxDuty = 40;
 
     sealed class Held
     {
@@ -29,10 +32,11 @@ public sealed class SoftwareFans
         public double ChangedAt;      // when Sent last changed
         public int Low;               // consecutive settled reads clearly below Sent
         public float? HighRef;        // first settled read clearly above Sent (a card minimum looks like this, and stays put)
-        public bool FloorNoted;
+        public bool FloorNoted, FanStopNoted;
     }
 
     readonly Dictionary<string, IControl> _controls = new();
+    readonly HashSet<string> _fanStop = new();                 // controls on cards with a fan-stop (zero RPM) mode
     readonly Dictionary<string, int> _sent = new();
     readonly Dictionary<string, Held> _held = new();
     readonly Dictionary<string, (string Why, double At)> _contested = new();
@@ -53,7 +57,16 @@ public sealed class SoftwareFans
         _clock = clock ?? (() => Environment.TickCount64 / 1000.0);
     }
 
-    public bool Add(string id, IControl control) { lock (_lock) return _controls.TryAdd(id, control); }
+    /// <param name="fanStop">The hardware may stop this fan at low duty on its own (AMD Radeon zero-RPM): see <see cref="FanStopMaxDuty"/>.</param>
+    public bool Add(string id, IControl control, bool fanStop = false)
+    {
+        lock (_lock)
+        {
+            if (!_controls.TryAdd(id, control)) return false;
+            if (fanStop) _fanStop.Add(id);
+            return true;
+        }
+    }
     public bool Contains(string id) { lock (_lock) return _controls.ContainsKey(id); }
     /// <summary>True while Glint holds this fan in software mode.</summary>
     public bool Touched(string id) { lock (_lock) return _held.ContainsKey(id); }
@@ -107,7 +120,7 @@ public sealed class SoftwareFans
                 try { c.SetSoftware(value); }
                 catch (Exception e) { _log($"{id} set duty failed: {e.Message}"); continue; }
                 if (h == null) { _held[id] = h = new Held { Sent = value, ChangedAt = now }; _log($"{id}: Glint control"); }
-                else if (h.Sent != value) { h.Sent = value; h.ChangedAt = now; h.Low = 0; h.HighRef = null; h.FloorNoted = false; }
+                else if (h.Sent != value) { h.Sent = value; h.ChangedAt = now; h.Low = 0; h.HighRef = null; h.FloorNoted = false; h.FanStopNoted = false; }
                 _sent[id] = v;
             }
             foreach (var id in _held.Keys.Where(id => !duty.ContainsKey(id)).ToList()) Release(id);
@@ -144,6 +157,14 @@ public sealed class SoftwareFans
     {
         if (now - h.ChangedAt < SettleSec) return null;
         if (_read(c) is not float a || !float.IsFinite(a)) return null; // no read-back: can't tell
+        if (a <= 1 && _fanStop.Contains(id) && h.Sent <= FanStopMaxDuty)
+        {
+            // The card's zero-RPM mode parks the fans at low temperatures; as soon as Glint asks for more than
+            // FanStopMaxDuty a stopped fan counts again (and the driver's own curve takes over if it stays stopped).
+            if (!h.FanStopNoted) { h.FanStopNoted = true; _log($"{id}: stopped by the card's zero-RPM mode at {h.Sent:0}% (normal)"); }
+            h.Low = 0; h.HighRef = null;
+            return null;
+        }
         if (a < h.Sent - Tolerance)
         {
             // Lower than asked: no card minimum explains that. Two reads in a row, so a single stale sample can't trigger it.
