@@ -84,7 +84,18 @@ public sealed class GlintService : IDisposable
         try { ConfigApplied?.Invoke(cfg); } catch { }
     }
 
-    bool Native(string fanId) => Rig.Controllers.Any(c => fanId.StartsWith(c.Id + ":"));
+    /// <summary>Global switch off: fans on their own control leave the duty map (LHM ones are then released); the rest
+    /// (hubs that can't release fans without their lighting) keep their curve and say why.</summary>
+    public static void FanControlOff(Dictionary<string, int> duty, Dictionary<string, string> explain, IEnumerable<FanOutput> fans, Func<string, bool> handedBack)
+    {
+        foreach (var f in fans)
+        {
+            if (handedBack(f.Id)) { duty.Remove(f.Id); explain[f.Id] = "fan control off: on its own control (BIOS, GPU driver or device firmware)"; }
+            else if (duty.ContainsKey(f.Id)) explain[f.Id] = "fan control off, but this hub can't hand its fans back without its lighting, so Glint keeps driving it: " + explain.GetValueOrDefault(f.Id, "");
+        }
+    }
+
+    bool Native(string fanId) => !Rig.Software.Contains(fanId) && Rig.Controllers.Any(c => fanId.StartsWith(c.Id + ":", StringComparison.Ordinal));
 
     void Loop()
     {
@@ -108,7 +119,11 @@ public sealed class GlintService : IDisposable
                         duty[f.Id] = UnassignedDuty;
                         Engine.LastExplain[f.Id] = $"{UnassignedDuty}% (not in any rule)";
                     }
-                Rig.ApplyDuty(duty);
+                Rig.SetFanControl(Config.FanControl);
+                if (!Config.FanControl) FanControlOff(duty, Engine.LastExplain, Rig.Fans, Rig.HandedBack);
+                Rig.ApplyDuty(duty, Config.FailsafeDuty);
+                foreach (var (id, why) in Rig.Software.Contested)
+                    if (duty.ContainsKey(id)) Engine.LastExplain[id] = "not driven: " + why;
                 Duty = duty;
                 Explain = new Dictionary<string, string>(Engine.LastExplain);
                 LastError = "";
@@ -116,7 +131,16 @@ public sealed class GlintService : IDisposable
             catch (Exception e)
             {
                 LastError = e.Message;
-                try { Rig.ApplyDuty(Rig.Fans.Where(f => Native(f.Id)).ToDictionary(f => f.Id, _ => Config.FailsafeDuty)); } catch { }
+                // Fail-safe: every hub fan, and every LHM fan (board header, GPU) Glint was driving.
+                // Indexer, not ToDictionary: a duplicate id must never abort the fail-safe.
+                try
+                {
+                    var fs = new Dictionary<string, int>();
+                    foreach (var f in Rig.Fans)
+                        if (Native(f.Id) || Rig.Software.Touched(f.Id) || Rig.Software.IsContested(f.Id)) fs[f.Id] = Config.FailsafeDuty;
+                    Rig.ApplyDuty(fs, Config.FailsafeDuty);
+                }
+                catch (Exception fe) { LastError += " · fail-safe: " + fe.Message; }
             }
             CpuMeter.Add("sensors + fans", CpuMeter.ThreadMs() - cpu0);
             Updated?.Invoke();

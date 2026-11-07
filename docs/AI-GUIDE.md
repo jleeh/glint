@@ -92,6 +92,19 @@ device before writing, and can never touch the SPD EEPROM (0x50–0x57).
 4. Hold fans at a speed for a while: `fans.override name="Radiator fans" percent=80`; back to automatic with
    `percent=null`.
 5. Experiment safely: `profiles.create name=Test from=Balanced`, edit the copy, `profile.set name=Test`.
+6. Graphics-card fans are outputs too: `gpu:Fan 1`, `gpu:Fan 2` (a second card is `gpu2:`). While no rule names
+   them they stay on the GPU driver's own curve; put them in a rule (usually input `gpu` or `gpu.hotspot`) to drive
+   them, remove them to hand control back. Some cards have a minimum duty (often 30%); lower requests are raised to it.
+   Tested on NVIDIA; AMD/Intel depend on LibreHardwareMonitor (README → Graphics card fans). A Radeon fan stopped at
+   ≤ 40% is its zero-RPM mode, not a conflict.
+7. If another program (MSI Afterburner's fan curve, FanControl, a vendor tool) changes a fan Glint drives through
+   LibreHardwareMonitor (board header, cooler, GPU fan), Glint notices from the level the hardware reports, hands that
+   fan back to automatic control and stops driving it (a fail-safe duty is still written). `fans.list` explains it and
+   `setup.check` reports it; Glint tries again every 10 minutes, or take the fan out of its rule and back in. Hub fans (Corsair...) report no
+   duty, so for those `setup.check` flags the conflicting app instead.
+8. Turn all fan control off: `config.patch path=fanControl value=false` (tray: Fan profile → Fan control off). Board,
+   cooler and GPU fans go back to their BIOS / driver curves; hubs go back to their firmware only if their plugin can
+   release fans without the lighting (`releaseFans`), otherwise they stay on Glint's curves.
 
 ## Recipe: sensors and the game overlay
 

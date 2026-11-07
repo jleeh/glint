@@ -143,9 +143,31 @@ drivers and pass their simulated-device tests. Reports from owners are very welc
 | RAM | ✅ Corsair Vengeance / Dominator RGB (DDR4/DDR5) · G.Skill Trident Z and other ENE-based kits · Kingston Fury Beast / Renegade · Crucial Ballistix |
 | Keyboards | ✅ Logitech G213 · Logitech G813/G815/G915 · Razer Chroma · SteelSeries Apex · HyperX Alloy Origins |
 | Mice | Logitech G-series (HID++) · ⚠️ Logitech G402 (experimental) · Razer · SteelSeries Rival · HyperX Pulsefire · Corsair |
-| Sensors & fan headers | CPU, GPU, motherboard Super I/O fan headers, drives, RAM, PSU, controllers via [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) |
+| Sensors & fan headers | CPU, GPU, motherboard Super I/O fan headers, graphics-card fans ([see below](#graphics-card-fans)), drives, RAM, PSU, controllers via [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) |
 
 Don't see yours? [Add it](#add-your-own-hardware) or [open a device request](../../issues/new?template=device-support.md).
+
+### Graphics card fans
+
+Built in (Plugins → *Graphics card fans*; switch it off there and Glint never touches the card's fans). Glint drives
+whatever fans [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) can control; they
+appear as `gpu:Fan 1`, `gpu:Fan 2` (`gpu2:` for a second card). Fans not in a rule stay on the driver's own curve.
+
+| Cards | Status |
+|---|---|
+| NVIDIA desktop (GeForce / RTX / workstation) | ✅ tested on a current-generation card: control, hand-back, conflict detection |
+| AMD Radeon desktop | Should work where LibreHardwareMonitor supports fan control (varies by generation). Zero-RPM (fan-stop) is handled: a stopped fan at ≤ 40% is the card, not a conflict. **Untested: please report** |
+| Intel Arc | Temperatures; fan control probably not available. **Please report** |
+| Laptops | Usually not: the embedded controller owns the fans |
+| Integrated graphics | No fans (temperatures still usable in curves) |
+
+If a card's fans can't be controlled they simply don't show up as fan outputs (the Plugins entry says so) and Glint
+never writes to them. **Have an untested card?** [Send a graphics card report](../../issues/new?template=gpu-report.md);
+the read-only sensor dump it asks for takes a minute.
+
+If another app (MSI Afterburner's fan curve, FanControl, a vendor tool) changes a fan Glint drives, Glint notices from
+the level the card reports, hands the fan back to the driver and says so on the Setup page. Turn the other app's fan
+control off (overclocking and on-screen display are fine) to let Glint drive it again.
 
 ## Resource use
 
@@ -239,7 +261,10 @@ with a curve. The inputs are combined by `Max` (the default: the hottest compone
 - **Sensor IDs:** `cpu`, `gpu`, `gpu.hotspot`, `liquid`, `cc:probe1`, `mb:<name>`, or any
   LibreHardwareMonitor identifier. Expressions such as `max(cpu,gpu)` and `avg(a,b)` also work.
 - **Fail-safe:** a missing or implausible sensor makes its input contribute `failsafeDuty` (100%).
-  If Glint exits or crashes, the Corsair hubs go back to their firmware curves.
+  If Glint exits or crashes, the Corsair hubs go back to their firmware curves and motherboard / GPU fans to their
+  BIOS / driver curves (a forced kill runs no clean-up: a GPU fan then keeps its last speed until reboot).
+- **Fan control off:** one switch (Overview, tray, `fanControl` in the config) hands every fan Glint can back to its
+  BIOS / driver / firmware. Hubs that can't release their fans without their lighting stay on Glint's curves.
 - **Profiles:** Balanced, Quiet and Full speed are built in. Switch them from the tray, or clone
   and edit them in the dashboard.
 

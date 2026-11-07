@@ -409,6 +409,7 @@ public static class ConfigValidator
         var fields = new JsonObject
         {
             ["pollMs"] = F("integer", "Sensor read / fan update period in ms.", 1000, 1000, Limits.PollMin, Limits.PollMax),
+            ["fanControl"] = F("boolean", "Global fan-control switch. false = Glint stops driving fans: motherboard headers, coolers and GPU fans go back to their BIOS / driver curves (and hubs whose plugin can release fans alone go back to their firmware); Glint keeps reading sensors. Hubs that can't hand fans back without also taking their lighting stay on Glint's curves. Glint's fail-safe doesn't apply to fans it has handed back.", true, false),
             ["failsafeDuty"] = F("integer", "Duty % used when a sensor a rule needs is missing or implausible, or when a curve reaches it. Beats manual overrides.", 100, 100, Limits.FailsafeMin, Limits.DutyMax),
             ["curves"] = F("object: name -> points", "Named fan curves, referenced by rule inputs. Edit with curves.set / curves.remove.", example: new Dictionary<string, object> { ["cpu-balanced"] = new[] { new[] { 40.0, 25 }, new[] { 85.0, 100 } } }, items: points),
             ["activeProfile"] = F("string", "Name of the profile in use. Must be a key of 'profiles'. Switch with profile.set.", "Balanced", "Quiet"),

@@ -10,6 +10,9 @@ public sealed class GlintConfig
     public int PollMs { get; set; } = 1000;
     /// <summary>Duty used when a curve's sensor is missing or stale.</summary>
     public int FailsafeDuty { get; set; } = 100;
+    /// <summary>Global fan-control switch. false = Glint hands every fan it can back to its own control (BIOS curve,
+    /// GPU driver, hub firmware) and only reads sensors; hubs that can't release fans without their lighting stay on Glint's curves.</summary>
+    public bool FanControl { get; set; } = true;
 
     /// <summary>Named curves: list of [temperature °C, duty %] points.</summary>
     public Dictionary<string, List<double[]>> Curves { get; set; } = new();

@@ -319,10 +319,10 @@ public sealed class WebDashboard : Form
         return n;
     }
 
-    static object PluginsInfo() => new
+    object PluginsInfo() => new
     {
         dir = Plugins.PluginHost.UserDir,
-        list = ControlServer.PluginList(),
+        list = ControlServer.PluginList(_svc),
         exe = Environment.ProcessPath,
         effects = Plugins.PluginHost.Effects.Select(e => new { e.Name, e.Description, @params = e.Params, e.Preview }),
         status = Plugins.PluginHost.Status,

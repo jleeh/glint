@@ -50,6 +50,7 @@
   const fans = [
     ...['pump', 'fan1', 'fan2', 'fan3'].map(f => ({ id: 'cc:' + f, name: 'cc:' + f, device: 'cc' })),
     ...[1, 2, 3, 4].map(n => ({ id: `mb:Fan #${n}`, name: `Fan #${n}`, device: 'Motherboard' })),
+    ...[1, 2].map(n => ({ id: `gpu:Fan ${n}`, name: `GPU Fan ${n}`, device: 'Demo Graphics 9000' })),
   ];
   const hubs = [{ id: 'cc', name: 'Corsair Commander Core', firmware: '', channels: [
     { id: 'pump', name: 'pump', isPump: true }, { id: 'fan1', name: 'fan1', isPump: false }, { id: 'fan2', name: 'fan2', isPump: false }, { id: 'fan3', name: 'fan3', isPump: false }] }];
@@ -67,7 +68,7 @@
     rule({ name: 'Case fans', fans: CASE, inputs: [inp('gpu', `gpu-${mode}`), inp('cpu', `cpu-${mode}`, 4)] }),
   ];
   const config = {
-    pollMs: 1000, failsafeDuty: 100, curves, activeProfile: 'Balanced',
+    pollMs: 1000, failsafeDuty: 100, fanControl: true, curves, activeProfile: 'Balanced',
     profiles: { Balanced: profile('balanced'), Quiet: profile('quiet'), 'Full speed': [rule({ name: 'Everything', fans: ['cc:pump', ...RAD, ...CASE], inputs: [], fixed: 100 })] },
     fanNames: { 'cc:fan1': 'Radiator 1', 'cc:fan2': 'Radiator 2', 'cc:fan3': 'Radiator 3', 'mb:Fan #1': 'CPU fan', 'mb:Fan #2': 'Front intake 1', 'mb:Fan #3': 'Front intake 2', 'mb:Fan #4': 'Rear exhaust' },
     lighting: {
@@ -143,6 +144,7 @@
     { name: 'Lava lamp', description: 'Warm blobs drifting slowly', preview: ['#ff3000', '#ffa000', '#600010'], params: { colors: { type: 'colors', label: 'Colours', default: ['#ff3000', '#ffa000', '#ff0060'] }, background: { type: 'color', label: 'Background', default: '#200004' }, speed: { type: 'number', label: 'Speed', min: 0.05, max: 1.5, step: 0.05, default: 0.25 }, blobs: { type: 'number', label: 'Blob size', min: 0.1, max: 1, step: 0.05, default: 0.45 } } },
     ...USER_FX.filter(x => x[4]).map(([, name, description, preview]) => ({ name, description, preview, params: {} })),
   ];
+  list.unshift({ file: 'builtin-gpu-fans', path: '', source: 'built-in', kind: 'device', name: 'Graphics card fans', enabled: true, ok: true, message: 'built in · 2 fans on Demo Graphics 9000', needsApproval: false });
   const plugins = {
     dir: '%APPDATA%\\Glint\\plugins', exe: 'C:\\Program Files\\Glint\\Glint.exe', list, effects,
     status: list.filter(x => !x.ok).map(x => ({ file: x.file, kind: x.kind, name: x.name, ok: false, message: x.message })),
@@ -195,7 +197,7 @@
   /* ------------------------------------------------------------ live state */
   const BASE = {
     sensors: { cpu: 52.4, gpu: 46.0, 'gpu.hotspot': 55.1, liquid: 31.4, 'cc:liquid': 31.4, storage: 41.0, ram: 38.5, 'mb:Temperature #1': 36.0, 'mb:Temperature #2': 44.0 },
-    rpm: { 'cc:pump': 2380, 'cc:fan1': 1040, 'cc:fan2': 1052, 'cc:fan3': 1031, 'mb:Fan #1': 1150, 'mb:Fan #2': 812, 'mb:Fan #3': 806, 'mb:Fan #4': 790 }
+    rpm: { 'cc:pump': 2380, 'cc:fan1': 1040, 'cc:fan2': 1052, 'cc:fan3': 1031, 'mb:Fan #1': 1150, 'mb:Fan #2': 812, 'mb:Fan #3': 806, 'mb:Fan #4': 790, 'gpu:Fan 1': 1310, 'gpu:Fan 2': 1305 }
   };
   const et = new EventTarget();
   let t0 = performance.now(), cpu = 0, previewOn = false;

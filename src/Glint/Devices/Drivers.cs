@@ -21,6 +21,10 @@ public interface IFanController : IDisposable
     void SetDuty(IReadOnlyDictionary<string, int> duty);
     /// <summary>Hand control back to firmware / BIOS (called on exit).</summary>
     void Release() { }
+    /// <summary>Hand only the fans back to the device's own control, leaving lighting with Glint (global fan-control switch
+    /// off). false = the device can't (e.g. its hardware mode takes the lighting too): Glint keeps driving its fans.
+    /// After a true, the next <see cref="SetDuty"/> takes the fans again.</summary>
+    bool ReleaseFans() => false;
 }
 
 /// <summary>Context handed to every driver during discovery.</summary>
@@ -36,9 +40,11 @@ public sealed class DriverContext
     readonly HashSet<string> _ids = new();
     public string Unique(string id)
     {
+        if (Reserved(id)) id += "dev"; // LHM fan ids use these prefixes (mb:Fan #1, gpu:Fan 1, gpu2:..., psu:...)
         if (_ids.Add(id)) return id;
         for (int i = 2; ; i++) if (_ids.Add(id + i)) return id + i;
     }
+    public static bool Reserved(string id) => id is "mb" or "psu" || System.Text.RegularExpressions.Regex.IsMatch(id, @"^gpu\d*$");
     /// <summary>Give an id back (the device declined in init), so the next matching interface gets the plain id.</summary>
     public void Release(string id) => _ids.Remove(id);
     /// <summary>Open with an id that is only kept if the open succeeds.</summary>

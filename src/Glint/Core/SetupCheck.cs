@@ -76,6 +76,16 @@ public static class SetupCheck
         ("FanControl", new[] { "FanControl" }, new[] { "fancontrol" }, "fan headers"),
     };
 
+    /// <summary>Graphics-card tools that can run a GPU fan curve. They only clash once a Glint rule drives a GPU fan
+    /// (plenty of people run them for overclocking or the on-screen display alone).</summary>
+    public static readonly (string Name, string[] Processes)[] GpuFanTools =
+    {
+        ("MSI Afterburner", new[] { "MSIAfterburner" }),
+        ("EVGA Precision X1", new[] { "PrecisionX_x64", "PrecisionX1" }),
+        ("ASUS GPU Tweak", new[] { "GPUTweakIII", "GPUTweakII", "GPUTweak" }),
+        ("Sapphire TriXX", new[] { "TriXX" }),
+    };
+
     public static SetupReport Run(GlintService svc, SetupEnv? env = null) => Run(new SetupInput(svc), env ?? new SetupEnv());
 
     /// <summary>Everything the checks need from a running Glint (tests build one by hand).</summary>
@@ -93,6 +103,9 @@ public static class SetupCheck
         public string? CannotInstall = "not checked";
         public UpdateStatus? Install;
         public Devices.OpenRgbStatus? Bridge;
+        /// <summary>GPU fans the active profile drives, and fans another program has taken over (id → why).</summary>
+        public List<string> GpuFansInRules = new();
+        public Dictionary<string, string> ContestedFans = new();
         public SetupInput() { }
         public SetupInput(GlintService s)
         {
@@ -102,6 +115,9 @@ public static class SetupCheck
             Update = s.Updates.Info; UpdatesOn = s.Config.Updates?.Check == true; AutoInstall = s.Config.Updates?.AutoInstall == true;
             CannotInstall = s.Updater.CannotInstall(); Install = s.Updater.Status;
             BridgeOn = s.Config.OpenRgb?.Enabled == true; Bridge = s.Rig.OpenRgb?.Status;
+            var gpuFans = s.Rig.Fans.Where(f => f.Id.StartsWith("gpu") && s.Rig.Software.Contains(f.Id)).Select(f => f.Id).ToHashSet();
+            GpuFansInRules = s.Config.Active.SelectMany(r => r.Fans).Where(gpuFans.Contains).Distinct().ToList();
+            ContestedFans = s.Rig.Software.Contested;
         }
     }
 
@@ -166,6 +182,20 @@ public static class SetupCheck
                 "Open startup apps", "startupApps", null, running));
         }
         if (found == 0) Add(new("conflicts", "No conflicting apps", "ok", "No other RGB or fan-control app is running or set to start with Windows."));
+
+        // ---- GPU fan tools (only a clash when Glint drives GPU fans) and fans another program took over
+        foreach (var (name, pn) in GpuFanTools)
+        {
+            if (!pn.Any(procs.Contains)) continue;
+            string id = "gpufan:" + name.ToLowerInvariant().Replace(' ', '-');
+            if (g.GpuFansInRules.Count == 0)
+                Add(new(id, $"{name} is running", "ok", $"Glint isn't driving any GPU fan, so {name} keeps its fan control. If you add GPU fans to a Glint rule, switch {name}'s custom fan curve off first."));
+            else
+                Add(new(id, $"{name} is running while Glint drives GPU fans", "warn",
+                    $"Glint drives {string.Join(", ", g.GpuFansInRules)}. If {name}'s custom fan curve is on, both write the same fan: switch it off in {name} (overclocking and the on-screen display are fine). Glint stops driving a fan when it sees another program change it."));
+        }
+        foreach (var (fan, why) in g.ContestedFans)
+            Add(new("fanconflict:" + fan, $"Another program is controlling {fan}", "fail", char.ToUpperInvariant(why[0]) + why[1..] + "."));
 
         // ---- plugins
         var approve = g.Plugins.Where(p => p.NeedsApproval).ToList();

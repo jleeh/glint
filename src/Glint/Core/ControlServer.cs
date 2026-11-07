@@ -148,7 +148,7 @@ public sealed class ControlServer : IDisposable
         ("lighting.autoLayout", "WARNING: overwrites the user's hand-tuned layout with an automatic arrangement based on what each device is. Only with the user's consent; requires confirm=true. The current layout is backed up first (lighting.layoutBackups / lighting.restoreLayout).", "{ confirm: true }"),
         ("lighting.layoutBackups", "Saved layout backups (newest first): name, time, number of zones. Made automatically before lighting.autoLayout / lighting.restoreLayout; the last 10 are kept.", ""),
         ("lighting.restoreLayout", "Restore a layout backup (name from lighting.layoutBackups, or 'latest'). The layout being replaced is backed up too.", "{ name?: string | 'latest' }"),
-        ("fans.list", "Fan control overview: every profile's rules (fans with friendly names and live duty/rpm, inputs, combine, min/max, ramps, fixed, override), the curves, the fail-safe duty, and every sensor id usable as an input (with live values).", ""),
+        ("fans.list", "Fan control overview: the global fanControl switch (config.patch path=fanControl value=false hands fans back to BIOS / driver / firmware), every profile's rules (fans with friendly names and live duty/rpm, inputs, combine, min/max, ramps, fixed, override), the curves, the fail-safe duty, and every sensor id usable as an input (with live values).", ""),
         ("fans.setRule", "Create or update a fan rule by name (profile defaults to the active one). Partial updates merge: only the fields you give change; 'inputs' and 'fans' replace the whole list. Give rule.name to rename. Validated; invalid → {ok:false, errors} and nothing saved.", "{ name, rule: { fans?, inputs?: [{ sensor, curve | points, weight?, hysteresis?, smoothingSec? }], combine?, minDuty?, maxDuty?, rampUpPerSec?, rampDownPerSec?, fixed?, override?, name? }, profile? }"),
         ("fans.removeRule", "Delete a fan rule by name (profile defaults to the active one).", "{ name, profile? }"),
         ("fans.override", "Manually set a rule's fans to a duty %, or percent=null for automatic (curve) again. Same as the Home Assistant fan entity: clamped to the rule's min/max; the fail-safe (lost sensor or curve at fail-safe duty) still wins. Profile defaults to the active one.", "{ name, percent: number | null, profile? }"),
@@ -167,7 +167,7 @@ public sealed class ControlServer : IDisposable
         ("overlay.set", "Change overlay settings (partial: only the fields given change; 'items' replaces the list). Item sources: fps, frametime, low1, time, glint.cpu, fan:<id>, duty:<id>, or a sensor id. Validated; invalid → {ok:false, errors} and nothing saved.", "{ enabled?, hotkey?, position?: 'top-left'|'top-right'|'bottom-left'|'bottom-right', offsetX?, offsetY?, scale?, opacity?, backgroundOpacity?, accent?: '#rrggbb'|null, layout?: 'compact'|'detailed', onlyWhenGame?, items? }"),
         ("overlay.toggle", "Show / hide the in-game overlay (enabled given → set it, else flip).", "{ enabled?: boolean }"),
         ("overlay.stats", "Live overlay readings: fps, frameTimeMs, low1 (1% low), the target (foreground) process, which present events are used, and whether the ETW session is running.", ""),
-        ("setup.check", "Setup check: is this PC set up right for Glint? Admin rights, PawnIO driver, WebView2, CPU temperature, conflicting RGB/fan apps (running or starting with Windows), plugins needing approval or failing, devices that declined, the startup task, version + update, OpenRGB bridge. Each item: status ok/warn/fail, plain-language detail, and the fix. Start here when something doesn't work.", ""),
+        ("setup.check", "Setup check: is this PC set up right for Glint? Admin rights, PawnIO driver, WebView2, CPU temperature, conflicting RGB/fan apps (running or starting with Windows), GPU fan tools while Glint drives GPU fans, fans another program has taken over, plugins needing approval or failing, devices that declined, the startup task, version + update, OpenRGB bridge. Each item: status ok/warn/fail, plain-language detail, and the fix. Start here when something doesn't work.", ""),
         ("update.status", "Updates: this version, the latest release, whether it can be installed from here (canInstall / cannotInstall), autoInstall, and the install progress (install.state idle|downloading|verifying|installing|failed, install.message).", ""),
         ("update.install", "Install the newer release: downloads the setup from Glint's GitHub releases, checks it against SHA256SUMS.txt and GitHub's build attestation for the release workflow, then runs it silently (Glint closes and restarts). Only with the user's consent; requires confirm=true. Poll update.status for progress.", "{ confirm: true }"),
         ("log", "Recent device / plugin log lines.", "{ lines?: number }"),
@@ -222,7 +222,7 @@ public sealed class ControlServer : IDisposable
                         };
                     }).OrderBy(x => x.vendorId).ThenBy(x => x.productId).ToList();
                 }
-            case "plugins.list": return PluginList();
+            case "plugins.list": return PluginList(_svc);
             case "plugins.docs": return File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "plugin-templates", "PLUGINS.md"));
             case "plugins.template":
                 return File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "plugin-templates", (string?)p["kind"] == "device" ? "device-template.js" : "effect-template.js"));
@@ -265,7 +265,7 @@ public sealed class ControlServer : IDisposable
                     PluginHost.ReloadNow();
                     return new { file, enabled = on, note = "Device plugins change on app.restart." };
                 }
-            case "plugins.reload": PluginHost.ReloadNow(); return PluginList();
+            case "plugins.reload": PluginHost.ReloadNow(); return PluginList(_svc);
             case "lighting.presets": return _svc.Config.Lighting.Presets.Keys;
             case "lighting.preset":
                 {
@@ -566,6 +566,7 @@ public sealed class ControlServer : IDisposable
         return new
         {
             activeProfile = cfg.ActiveProfile,
+            fanControl = cfg.FanControl,
             failsafeDuty = cfg.FailsafeDuty,
             profiles = cfg.Profiles.ToDictionary(pr => pr.Key, pr => pr.Value.Select(r => new
             {
@@ -591,10 +592,10 @@ public sealed class ControlServer : IDisposable
         return f;
     }
 
-    public static object PluginList()
+    public static object PluginList(GlintService? svc = null)
     {
         var status = PluginHost.StatusSnapshot().GroupBy(s => s.File, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.Last(), StringComparer.OrdinalIgnoreCase);
-        return PluginHost.AllFiles.Select(f =>
+        var list = PluginHost.AllFiles.Select(f =>
         {
             var name = Path.GetFileName(f);
             status.TryGetValue(name, out var st);
@@ -604,7 +605,27 @@ public sealed class ControlServer : IDisposable
                 kind = st?.Kind ?? "?", name = st?.Name ?? Path.GetFileNameWithoutExtension(f),
                 enabled = st?.Message != "disabled", ok = st?.Ok ?? false, message = st?.Message ?? "", needsApproval = st?.NeedsApproval ?? false,
             };
-        }).OrderBy(x => x.kind).ThenBy(x => x.name).ToList();
+        }).OrderBy(x => x.kind).ThenBy(x => x.name).Cast<object>().ToList();
+        if (svc != null) list.Insert(0, BuiltinGpuFans(svc));
+        return list;
+    }
+
+    /// <summary>Graphics-card fans are built in (LibreHardwareMonitor talks to the GPU driver, which a sandboxed plugin can't);
+    /// listed with the plugins so they can be found and switched off like one. Changes take effect on restart.</summary>
+    static object BuiltinGpuFans(GlintService svc)
+    {
+        bool want = !svc.Config.DisabledPlugins.Contains(Rig.GpuFansBuiltin, StringComparer.OrdinalIgnoreCase);
+        var rig = svc.Rig;
+        int fans = rig.Fans.Count(f => f.Id.StartsWith("gpu", StringComparison.Ordinal) && rig.Software.Contains(f.Id));
+        string msg = want != rig.GpuFansOn ? (want ? "switched on: restart Glint" : "switched off: restart Glint")
+            : !want ? "disabled"
+            : fans > 0 ? $"built in · {fans} fan{(fans == 1 ? "" : "s")} on {string.Join(", ", rig.GpuFanCards)}"
+            : "built in · no controllable graphics-card fans found";
+        return new
+        {
+            file = Rig.GpuFansBuiltin, path = "", source = "built-in", kind = "device", name = "Graphics card fans",
+            enabled = want, ok = !want || fans > 0, message = msg, needsApproval = false,
+        };
     }
 
     public void Dispose() => _cts.Cancel();
