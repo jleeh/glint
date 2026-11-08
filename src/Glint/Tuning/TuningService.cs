@@ -336,6 +336,24 @@ public sealed class TuningService : IDisposable
         return new { saved, profile };
     }
 
+    /// <summary>A Glint profile was renamed: its overclock follows it.</summary>
+    public void RenameProfile(string from, string to)
+    {
+        lock (_gate)
+        {
+            if (from == to || !State.Profiles.Remove(from, out var s)) return;
+            State.Profiles[to] = s; Save();
+        }
+    }
+
+    /// <summary>A Glint profile was deleted, or the user cleared its overclock: it runs at stock from now on.</summary>
+    public object ClearProfile(string profile)
+    {
+        bool had; lock (_gate) { had = State.Profiles.Remove(profile); if (had) Save(); }
+        if (had && profile == ActiveProfile() && AppliedNow != null) Stock();
+        return new { cleared = had, profile };
+    }
+
     /// <summary>Lower the saved result after a crash (called by crash watch) and apply it if an overclock is active.</summary>
     public void BackOff(int core, int memAb, string reason)
     {
