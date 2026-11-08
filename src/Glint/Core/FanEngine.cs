@@ -94,7 +94,8 @@ public sealed class FanEngine
                     _held[key] = held;
                     var pts = inp.Points ?? (inp.Curve != null && cfg.Curves.TryGetValue(inp.Curve, out var c) ? c : null);
                     double d = pts == null ? cfg.FailsafeDuty : Interpolate(pts, held);
-                    parts.Add((d, inp.Weight, $"{inp.Sensor}={raw:0.0}°→{d:0}%"));
+                    // show the value the duty came from: smoothing / hysteresis can hold it above the live reading
+                    parts.Add((d, inp.Weight, Math.Abs(held - raw) >= 0.05 ? $"{inp.Sensor}={raw:0.0}° (held {held:0.0}°)→{d:0}%" : $"{inp.Sensor}={raw:0.0}°→{d:0}%"));
                 }
                 target = rule.Combine switch
                 {

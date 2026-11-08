@@ -649,6 +649,10 @@ public static class SelfTest
             e.Compute(cfg, sens, 1);
             ex = e.LastExplain.GetValueOrDefault("f") ?? "";
             C("fans: a new input starts from its own reading", ex.Contains("probe=29.0°→20%") && ex.Contains("liquid=31.0°→24%"), ex);
+            sens["liquid"] = 25;                                         // falls by more than the hysteresis band: duty from the held value
+            rule.Inputs[1].Hysteresis = 3; e.Compute(cfg, sens, 1);
+            ex = e.LastExplain.GetValueOrDefault("f") ?? "";
+            C("fans: explain shows the held value the duty came from when it differs from the reading", ex.Contains("liquid=25.0° (held") && ex.Contains("→"), ex);
         }
         try { Glint.Tuning.GpuTuningTests.Run(C); Glint.Tuning.TuningTests.Run(C); Glint.Tuning.CrashWatchTests.Run(C); Glint.Tuning.CpuTuningTests.Run(C); }
         catch (Exception e) { C("tuning: suite ran", false, e.ToString()); }
