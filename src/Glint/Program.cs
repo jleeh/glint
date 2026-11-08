@@ -397,6 +397,21 @@ static class Program
         C("MCP tools/call returns data", mcp.FirstOrDefault(m => (int?)m["id"] == 4)?["result"]?["content"]?[0]?["text"]?.ToString().Contains("aurora.js") == true);
         FanApiChecks(svc, Call, C, mcp.FirstOrDefault(m => (int?)m["id"] == 2)?["result"]?["tools"]?.AsArray());
         GameOverlay.OverlayTests.ApiChecks(svc, Call, C, mcp.FirstOrDefault(m => (int?)m["id"] == 2)?["result"]?["tools"]?.AsArray());
+        // tuning: off by default over the pipe too, and the AI's restricted MCP server offers only tuning tools
+        var ts = Call("tuning.status", new { })?["result"];
+        C("tuning.status works with tuning off (no GPU opened)", ts?["enabled"]?.GetValue<bool>() == false && ts?["gpu"] == null, ts?.ToJsonString() ?? "null");
+        var tgt = Call("tuning.gpu.test", new { core = 50, memAb = 0, seconds = 10 })?.ToJsonString();
+        C("tuning.gpu.test refused while tuning is off", tgt?.Contains("error") == true && tgt.Contains("tuning is off"), tgt ?? "null");
+        var onlyIn = string.Join("\n", new[]
+        {
+            """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}""",
+            """{"jsonrpc":"2.0","id":2,"method":"tools/list"}""",
+            """{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"glint_config_set","arguments":{"config":{}}}}""",
+        }) + "\n";
+        var only = Run("mcp --only tuning", onlyIn).Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(l => JsonNode.Parse(l)!).ToList();
+        var onlyTools = only.FirstOrDefault(m => (int?)m["id"] == 2)?["result"]?["tools"]?.AsArray().Select(t => (string?)t!["name"] ?? "").ToList() ?? new();
+        C("MCP --only tuning lists only tuning tools (no ai.*)", onlyTools.Count >= 6 && onlyTools.All(t => t.StartsWith("glint_tuning_") && !t.Contains("_ai_start")), string.Join(",", onlyTools));
+        C("MCP --only tuning refuses other tools", only.Any(m => (int?)m["id"] == 3 && m["error"] != null));
         // setup.check: the same report as the dashboard's Setup check page
         var sc = Call("setup.check");
         var scItems = sc?["result"]?["items"]?.AsArray();
