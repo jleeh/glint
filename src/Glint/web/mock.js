@@ -80,6 +80,7 @@
     },
     sensorNames: { 'mb:Temperature #1': 'Motherboard', 'mb:Temperature #2': 'Chipset' },
     homeAssistant: { enabled: false, host: '', port: 1883, tls: false, discoveryPrefix: 'homeassistant', baseTopic: 'glint' },
+    tuning: { enabled: true, allowWorkstation: false, applyAtStartup: false, abortCoreC: 83, abortMemC: 96, crashWatch: true, autoBackoff: true, maxCrashes: 3, crashWindowDays: 7 },
     overlay: { enabled: true, hotkey: 'Ctrl+Shift+O', position: 'top-left', offsetX: 16, offsetY: 16, scale: 1, opacity: 1, backgroundOpacity: 0.72, accent: null, layout: 'detailed', onlyWhenGame: false,
       items: [{ source: 'fps' }, { source: 'frametime' }, { source: 'low1' }, { source: 'cpu' }, { source: 'gpu' }, { source: 'gpu.hotspot' }, { source: 'liquid' }] },
   };
@@ -370,6 +371,21 @@
     return { type: 'preview', rgb: enc(b), field: enc(f), fw, fh };
   };
 
+  // Tuning page (fictional demo card and run; tuning is enabled in the demo config so the page has something to show)
+  const TN = { saved: null, ai: { running: false, cli: 'windows', transcript: [], summary: null } };
+  function mockTuning(m) {
+    if (m.op === 'aiStart') TN.ai = { running: true, goal: m.args?.goal ?? 'gpu', cli: 'windows', transcript: ['Starting Claude Code (windows) to tune: gpu, up to 45 min', '→ tuning.status {}', 'Card allows up to +500 core. Starting at +100.', '→ tuning.gpu.test {"core":100,"memAb":0,"seconds":45}'], summary: null };
+    if (m.op === 'aiStop') TN.ai = { ...TN.ai, running: false, transcript: [...TN.ai.transcript, 'Stopped by the user'] };
+    const h = [
+      { time: new Date(Date.now() - 6e5).toISOString(), core: 200, memAb: 0, seconds: 45, light: false, ok: false, why: '3 wrong results out of 412', driver: '999.99' },
+      { time: new Date(Date.now() - 9e5).toISOString(), core: 150, memAb: 0, seconds: 45, light: false, ok: true, loadMhz: 2925, peakCoreC: 66, powerW: 312, driver: '999.99' },
+      { time: new Date(Date.now() - 12e5).toISOString(), core: 100, memAb: 500, seconds: 60, light: false, ok: true, loadMhz: 2880, peakCoreC: 64, gBps: 912, driver: '999.99' },
+    ];
+    return { type: 'tuning', status: { enabled: true, busy: TN.ai.running, phase: TN.ai.running ? 'gpu test' : 'idle', progress: TN.ai.running ? 'Testing core +100 / memory +0 for 45 s' : '',
+      gpu: { name: 'Demo GeForce RTX 4080', driver: '999.99', vbios: 'DEMO.00', vramGiB: 16, powerLimitW: { default: 320, max: 340 }, workstation: false, tunable: true, blocked: null, offsets: { core: 0, memAb: 0 }, eccCorrected: null },
+      limits: { maxCore: 500, maxMemAb: 3000, abortCoreC: 83, abortMemC: 96, maxTestSeconds: 300 }, memRatio: 0.5, saved: { core: 120, memAb: 750, when: new Date().toISOString() }, reverted: null, history: h },
+      ai: TN.ai, crashes: { watching: false, events: [], cpuCoresToLoosen: {} } };
+  }
   window.mockBridge = {
     addEventListener: (n, f) => et.addEventListener(n, f),
     postMessage: m => {
@@ -383,6 +399,7 @@
       (window.__msgs ??= []).push(m);
       if (m.type === 'ready' || m.type === 'setupCheck') setTimeout(() => emit({ type: 'setup', report: setupReport() }), m.type === 'ready' ? 40 : 120);
       if (m.type === 'installUpdate' || (m.type === 'setupFix' && m.fix === 'installUpdate')) runInstall();
+      if (m.type === 'tuning') setTimeout(() => emit(mockTuning(m)), 15);
       if (m.type === 'testPattern') testPattern = m.on ? { zone: m.zone, count: m.count } : (testPattern?.zone === m.zone ? null : testPattern);
       if (m.type === 'autoLayout') { const cfg = window.__lastConfig ?? INIT.config; cfg.lighting.layout = JSON.parse(JSON.stringify(AUTO)); setTimeout(() => emit({ type: 'layout', placements: AUTO, config: cfg }), 20); }
     },

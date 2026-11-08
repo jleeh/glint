@@ -286,6 +286,13 @@ public sealed class TuningService : IDisposable
         if (_gpu != null && !Busy) ApplyNow(Math.Max(0, core), Math.Max(0, memAb), "crash back-off");
     }
 
+    /// <summary>The user re-enables apply-at-startup after crash watch reverted the overclock.</summary>
+    public object ClearRevert()
+    {
+        lock (_gate) { State.RevertedReason = null; Save(); }
+        return new { cleared = true };
+    }
+
     public object Stock(string? reason = null)
     {
         if (Busy) { _stop = true; _job?.Join(15000); }

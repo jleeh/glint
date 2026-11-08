@@ -38,6 +38,8 @@ public sealed class WebDashboard : Form
         _state.Tick += (_, _) =>
         {
             Push(StateMessage());
+            // tuning status only while the Tuning page is open (it asks every few seconds; nothing is read otherwise)
+            if (Environment.TickCount64 < _tuningUntil) Push(TuningMessage());
             if (_svc.Rig.CatalogWanted && _svc.Rig.Catalog is { } cat && cat.Time != _lastCatalog) { _lastCatalog = cat.Time; Push(new { type = "sensors", catalog = cat }); }
         };
         _preview.Tick += (_, _) => Push(PreviewMessage());
@@ -114,6 +116,17 @@ public sealed class WebDashboard : Form
         try { _web.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(msg, GlintConfig.Json)); } catch { }
     }
 
+    long _tuningUntil;
+    object TuningMessage()
+    {
+        try
+        {
+            return new { type = "tuning", status = _svc.Tuning.Status(), ai = _svc.Ai.Status(),
+                         crashes = new { watching = _svc.Crashes.Running, events = _svc.Crashes.Records.TakeLast(20).Reverse(), cpuCoresToLoosen = _svc.Crashes.CoresToLoosen() } };
+        }
+        catch (Exception e) { return new { type = "tuning", error = e.Message }; }
+    }
+
     void OnMessage(string json)
     {
         JsonNode? m;
@@ -180,6 +193,31 @@ public sealed class WebDashboard : Form
                 if ((bool?)m!["reset"] == true) _svc.Rig.ResetCatalogMinMax();
                 if (_svc.Rig.Catalog is { } now) { _lastCatalog = now.Time; Push(new { type = "sensors", catalog = now }); }
                 break;
+            case "tuning":
+                {
+                    _tuningUntil = Environment.TickCount64 + 6000;
+                    var op = (string?)m!["op"] ?? "status";
+                    var a = m["args"] as JsonObject ?? new JsonObject();
+                    int I(string k) => a[k] is JsonValue v && v.TryGetValue<double>(out var d) && double.IsFinite(d) ? (int)Math.Round(d) : throw new ArgumentException(k + " must be a number");
+                    try
+                    {
+                        _ = op switch
+                        {
+                            "status" => null,
+                            "aiStart" => _svc.Config.Tuning?.Enabled == true ? _svc.Ai.Start((string?)a["goal"] ?? "gpu", (int?)(double?)a["budgetMinutes"] ?? 45) : throw new InvalidOperationException("turn tuning on first"),
+                            "aiStop" => _svc.Ai.Stop(),
+                            "stop" => _svc.Tuning.Stop(),
+                            "stock" => _svc.Tuning.Stock(),
+                            "applySaved" => _svc.Tuning.State.Saved is { } sv ? _svc.Tuning.Apply(sv.Core, sv.MemAb) : throw new InvalidOperationException("no saved result yet"),
+                            "test" => _svc.Tuning.StartGpuTest(I("core"), I("memAb"), (double?)a["seconds"] ?? 60, (bool?)a["light"] ?? false),
+                            "clearRevert" => _svc.Tuning.ClearRevert(),
+                            _ => throw new InvalidOperationException("unknown tuning action " + op),
+                        };
+                    }
+                    catch (Exception e) when (e is InvalidOperationException or ArgumentException) { Push(new { type = "toast", kind = "error", text = e.Message }); }
+                    Push(TuningMessage());
+                    break;
+                }
             case "sensorsReset":
                 _svc.Rig.ResetCatalogMinMax();
                 break;

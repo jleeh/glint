@@ -23,7 +23,7 @@ const fs = require('fs');
   await wait(700);
 
   // --- every page renders
-  for (const pg of ['overview', 'cooling', 'sensors', 'lighting', 'devices', 'overlay', 'setup', 'settings']) {
+  for (const pg of ['overview', 'cooling', 'sensors', 'lighting', 'devices', 'overlay', 'tuning', 'setup', 'settings']) {
     await nav(pg);
     const n = await p.$eval(`#page-${pg}`, el => el.children.length);
     check(`page ${pg} renders`, n > 0, `${n} children`);
@@ -746,6 +746,23 @@ const fs = require('fs');
     check('xss: no JavaScript errors with hostile data', xerr.length === 0, xerr.slice(0, 3).join(' | '));
     await xp.close();
   }
+  // --- tuning page (AI overclocking; on in the demo config, off by default in Glint)
+  await nav('tuning');
+  await wait(300);
+  check('tuning: page shows the AI card and the GPU', await p.$eval('#page-tuning', el => el.textContent.includes('Tune with AI') && el.textContent.includes('Demo GeForce RTX 4080')));
+  check('tuning: history table lists tests (pass and fail)', await p.$$eval('#tn-history tbody tr', r => r.length) === 3 && await p.$eval('#tn-history', el => el.textContent.includes('fail') && el.textContent.includes('pass')));
+  check('tuning: saved result shown', await p.$eval('#tn-gpu', el => el.textContent.includes('+120') && el.textContent.includes('+750')));
+  await p.click('#tn-ai-start'); await wait(400);
+  check('tuning: Tune with AI shows the live transcript', await p.$eval('#tn-log', el => el.textContent.includes('tuning.gpu.test') && el.textContent.includes('Starting Claude Code')));
+  check('tuning: start disabled while a run is going', await p.$eval('#tn-ai-start', el => el.disabled));
+  await p.click('#tn-ai-stop'); await wait(300);
+  await p.click('#tn-startup');
+  check('tuning: apply-at-startup toggle goes through the config', (await cfg())?.tuning?.applyAtStartup === true);
+  p.once('dialog', d => d.accept());
+  await p.click('#tn-enabled'); await wait(200);
+  const tc = await cfg();
+  check('tuning: turning it off goes through the config and hides the controls', tc?.tuning?.enabled === false && !(await p.$('#tn-log')));
+  check('tuning: off state explains nothing is touched', await p.$eval('#page-tuning', el => el.textContent.includes('never touches your clocks')));
   const report = { passed: checks.filter(x => x.pass).length, failed: checks.filter(x => !x.pass).length, checks, errors };
   fs.writeFileSync(out, JSON.stringify(report, null, 2));
   console.log(`passed ${report.passed} failed ${report.failed}`);

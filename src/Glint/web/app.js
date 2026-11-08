@@ -183,6 +183,9 @@ bridge?.addEventListener('message', e => {
   } else if (m.type === 'updater') {
     if (S.state) S.state.install = m.install;
     liveUpdate();
+  } else if (m.type === 'tuning') {
+    S.tuning = m;
+    if (S.page === 'tuning') liveTuning();
   } else if (m.type === 'toast') toast(m.text, m.kind);
 });
 
@@ -204,6 +207,7 @@ const PAGES = {
   devices: ['Devices', 'Detected hardware, names and LED counts'],
   plugins: ['Plugins', 'Add hardware support and effects with small JavaScript files'],
   overlay: ['Game overlay', 'FPS, temperatures and clocks on top of your games'],
+  tuning: ['Tuning', 'AI overclocking for your GPU and CPU, with crash watch · off until you turn it on'],
   setup: ['Setup check', 'Is this PC set up right for Glint? Each problem comes with a fix'],
   settings: ['Settings', 'Safety, performance and files'],
 };
@@ -232,7 +236,7 @@ function renderAll() {
 }
 function renderPage(p) {
   if (!S.cfg) return;
-  ({ overview: renderOverview, cooling: renderCooling, sensors: renderSensors, lighting: renderLighting, devices: renderDevices, plugins: renderPlugins, overlay: renderOverlay, setup: renderSetup, settings: renderSettings })[p]();
+  ({ overview: renderOverview, cooling: renderCooling, sensors: renderSensors, lighting: renderLighting, devices: renderDevices, plugins: renderPlugins, overlay: renderOverlay, tuning: renderTuning, setup: renderSetup, settings: renderSettings })[p]();
   live();
 }
 function renderProfiles() {
@@ -1757,6 +1761,104 @@ function renderSetup() {
     if (it.fix === 'installUpdate') { installUpdate(); return; }
     send({ type: 'setupFix', fix: it.fix, arg: it.fixArg });
   };
+}
+
+/* Tuning page: AI overclocking. Off by default; nothing is tested, applied or watched until the user turns it on. */
+const T_CFG = () => (S.cfg.tuning ??= { enabled: false, allowWorkstation: false, applyAtStartup: false, abortCoreC: 83, abortMemC: 96, crashWatch: true, autoBackoff: true, maxCrashes: 3, crashWindowDays: 7 });
+let tuningPoll = null;
+function tuningAsk(op = 'status', args) { send({ type: 'tuning', op, args }); }
+function renderTuning() {
+  const c = T_CFG();
+  clearInterval(tuningPoll);
+  tuningPoll = setInterval(() => { if (S.page === 'tuning') tuningAsk(); else clearInterval(tuningPoll); }, 3000);
+  tuningAsk();
+  $('#page-tuning').innerHTML = `
+    <div class="card card-pad tn-head">
+      <div style="flex:1;min-width:260px"><div class="card-title">AI overclocking</div>
+        <div class="card-sub">Claude (your own Claude Code login) finds the fastest stable GPU and CPU settings with Glint's stress tests. Glint enforces every limit itself:
+        clock offsets only, never voltage or power limits; tests stop at your temperature limits; the card goes back to stock after every test; crashes back the overclock off automatically.</div></div>
+      <div class="row" style="gap:10px"><span class="muted" style="font-size:12px">${c.enabled ? 'On' : 'Off'}</span><div class="toggle ${c.enabled ? 'on' : ''}" id="tn-enabled" title="Turn tuning on or off"></div></div>
+    </div>
+    ${!c.enabled ? `<div class="card card-pad muted" style="font-size:13px">Tuning is off. Nothing is tested, applied or watched, and Glint never touches your clocks. Turn it on above to start.
+      Overclocking runs hardware beyond its factory settings: crashes during tests are expected, and some manufacturers don't cover overclocking under warranty.</div>` : `
+    <div class="grid tn-grid">
+      <div class="card card-pad"><div class="card-title">Tune with AI</div><div class="card-sub" id="tn-ai-sub">Looking for Claude Code…</div>
+        <div class="row" style="gap:10px;margin-top:12px;flex-wrap:wrap">
+          <div class="seg" id="tn-goal">${[['gpu', 'GPU'], ['cpu', 'CPU'], ['all', 'Both']].map(([g, l]) => `<button data-g="${g}" class="${(S.tnGoal ?? 'gpu') === g ? 'on' : ''}">${l}</button>`).join('')}</div>
+          <select id="tn-budget" class="input">${[15, 30, 45, 90, 180].map(m => `<option value="${m}" ${(S.tnBudget ?? 45) === m ? 'selected' : ''}>${m} min</option>`).join('')}</select>
+          <button class="btn primary" id="tn-ai-start">Tune with AI</button><button class="btn" id="tn-ai-stop">Stop</button>
+        </div>
+        <div class="tn-log" id="tn-log"></div>
+      </div>
+      <div class="card card-pad"><div class="card-title" id="tn-gpu-name">GPU</div><div class="card-sub" id="tn-gpu-sub"></div>
+        <div id="tn-gpu"></div>
+        <div class="row" style="gap:8px;margin-top:12px;flex-wrap:wrap"><button class="btn" id="tn-apply">Apply saved result</button><button class="btn" id="tn-stock">Back to stock</button></div>
+        <div class="row tn-sw"><div class="toggle ${c.applyAtStartup ? 'on' : ''}" id="tn-startup"></div><label>Apply the saved result when Glint starts <span class="muted">(skipped after a crash or a driver update)</span></label></div>
+        <div class="row tn-sw" id="tn-ws-row"><div class="toggle ${c.allowWorkstation ? 'on' : ''}" id="tn-ws"></div><label>Allow tuning a workstation GPU <span class="muted">(RTX PRO, RTX A, Quadro: validated at stock clocks)</span></label></div>
+      </div>
+      <div class="card card-pad"><div class="card-title">Crash watch</div><div class="card-sub" id="tn-crash-sub"></div>
+        <div class="row tn-sw"><div class="toggle ${c.crashWatch ? 'on' : ''}" id="tn-cw"></div><label>Watch for driver resets, hardware errors and bluescreens while an overclock is applied</label></div>
+        <div class="row tn-sw"><div class="toggle ${c.autoBackoff ? 'on' : ''}" id="tn-bo"></div><label>Back off automatically (core −15 MHz, then memory −250)</label></div>
+        <div class="row" style="gap:8px;font-size:13px;margin-top:6px"><span class="muted">Back to stock after</span><input type="number" class="input tn-num" id="tn-max" min="1" max="20" value="${num(c.maxCrashes, 3)}"><span class="muted">crashes in</span><input type="number" class="input tn-num" id="tn-days" min="1" max="90" value="${num(c.crashWindowDays, 7)}"><span class="muted">days</span></div>
+        <div id="tn-crashes"></div>
+      </div>
+      <div class="card card-pad" style="grid-column:1/-1"><div class="card-title">Test history</div><div class="card-sub">Every stress test, newest first. A test that was running when the PC crashed is recorded as unstable.</div>
+        <div id="tn-history"></div></div>
+    </div>`}`;
+  $('#tn-enabled').onclick = () => {
+    if (!c.enabled && !confirm('Turn on overclocking?\n\nGlint will only change clocks when you (or the AI, when you start it) run tests or apply a result. Crashes during tests are expected.')) return;
+    c.enabled = !c.enabled; commit(true);
+  };
+  if (!c.enabled) return;
+  const flip = (id, key) => { $(id).onclick = () => { c[key] = !c[key]; commit(true); }; };
+  flip('#tn-startup', 'applyAtStartup'); flip('#tn-ws', 'allowWorkstation'); flip('#tn-cw', 'crashWatch'); flip('#tn-bo', 'autoBackoff');
+  $('#tn-max').onchange = e => { c.maxCrashes = clamp(Math.round(num(e.target.value, 3)), 1, 20); commit(); };
+  $('#tn-days').onchange = e => { c.crashWindowDays = clamp(Math.round(num(e.target.value, 7)), 1, 90); commit(); };
+  $('#tn-goal').onclick = e => { const b = e.target.closest('[data-g]'); if (!b) return; S.tnGoal = b.dataset.g; $$('#tn-goal button').forEach(x => x.classList.toggle('on', x === b)); };
+  $('#tn-budget').onchange = e => { S.tnBudget = num(e.target.value, 45); };
+  $('#tn-ai-start').onclick = () => tuningAsk('aiStart', { goal: S.tnGoal ?? 'gpu', budgetMinutes: S.tnBudget ?? 45 });
+  $('#tn-ai-stop').onclick = () => tuningAsk('aiStop');
+  $('#tn-apply').onclick = () => tuningAsk('applySaved');
+  $('#tn-stock').onclick = () => tuningAsk('stock');
+  liveTuning();
+}
+function liveTuning() {
+  const m = S.tuning; if (!m || !T_CFG().enabled || !$('#tn-log')) return;
+  const st = m.status ?? {}, ai = m.ai ?? {}, g = st.gpu, cr = m.crashes ?? {};
+  const pm = v => (num(v) >= 0 ? '+' : '') + num(v);
+  $('#tn-ai-sub').textContent = ai.running ? `Tuning ${ai.goal ?? ''}… (${ai.cli === 'wsl' ? 'Claude Code in WSL' : 'Claude Code'})`
+    : !ai.cli ? 'Claude Code not found (Windows or WSL). Install it from claude.ai/code and sign in once with "claude".'
+    : ai.error ? 'Last run: ' + ai.error : ai.summary ? 'Last run finished' : `Uses your Claude Code login (${ai.cli === 'wsl' ? 'WSL' : 'Windows'}). It can only run Glint's tuning tools.`;
+  $('#tn-ai-start').disabled = !!ai.running || !ai.cli || !!st.busy; $('#tn-ai-stop').disabled = !ai.running;
+  const log = $('#tn-log'), atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 20;
+  const lines = [...(ai.transcript ?? [])]; if (st.busy && st.progress) lines.push('… ' + st.progress);
+  log.innerHTML = lines.length ? lines.map(l => `<div class="${l.startsWith('→') ? 'tn-tool' : l.startsWith('!') ? 'tn-err' : ''}">${esc(l)}</div>`).join('') : '<div class="muted">The AI\'s plan, every test it runs and its summary appear here.</div>';
+  if (ai.summary && !ai.running) log.insertAdjacentHTML('beforeend', `<div class="tn-sum">${esc(ai.summary)}</div>`);
+  if (atEnd) log.scrollTop = log.scrollHeight;
+  $('#tn-gpu-name').textContent = g ? g.name : 'GPU';
+  $('#tn-gpu-sub').textContent = g ? `Driver ${g.driver} · ${num(g.vramGiB)} GB · power limit ${num(g.powerLimitW?.default)} W (the tuner never changes it)` : (st.gpuError ?? 'No NVIDIA GPU found');
+  $('#tn-ws-row').style.display = g?.workstation ? '' : 'none';
+  const sv = st.saved, L = st.limits ?? {};
+  $('#tn-gpu').innerHTML = !g ? '' : `
+    ${st.reverted ? `<div class="tn-warn">${esc(st.reverted)} <button class="btn small" id="tn-clear">Allow again</button></div>` : ''}
+    ${g.blocked ? `<div class="tn-warn">${esc(g.blocked)}</div>` : ''}
+    <div class="tn-kv"><span>Now</span><b>core ${pm(g.offsets?.core)} MHz · memory ${pm(g.offsets?.memAb)}</b>
+      <span>Saved result</span><b>${sv ? `core ${pm(sv.core)} · memory ${pm(sv.memAb)} <span class="muted">(${esc(new Date(sv.when).toLocaleDateString())})</span>` : '—'}</b>
+      <span>This card's limits</span><b>core ≤ ${pm(L.maxCore)} · memory ≤ ${pm(L.maxMemAb)} · stop at ${num(L.abortCoreC)} °C / ${num(L.abortMemC)} °C memory</b>
+      ${g.eccCorrected != null ? `<span>ECC corrected errors</span><b>${num(g.eccCorrected)}</b>` : ''}</div>`;
+  $('#tn-clear')?.addEventListener('click', () => tuningAsk('clearRevert'));
+  $('#tn-apply').disabled = !sv || !!st.busy; 
+  const ev = cr.events ?? [], cores = Object.entries(cr.cpuCoresToLoosen ?? {});
+  $('#tn-crash-sub').textContent = cr.watching ? 'Watching (an overclock is applied)' : 'Idle: only watches while an overclock is applied';
+  const KIND = { gpu_tdr: 'GPU driver reset', gpu_app_crash: 'Game crash in the NVIDIA driver', whea_corrected: 'CPU hardware error (corrected)', whea_fatal: 'CPU hardware error', unexpected_shutdown: 'Unexpected shutdown', bugcheck: 'Bluescreen' };
+  $('#tn-crashes').innerHTML = (cores.length ? `<div class="tn-warn">CPU errors on core ${cores.map(([k, n]) => esc(k) + ' (' + num(n) + '×)').join(', ')}: loosen its Curve Optimizer value by 2.</div>` : '')
+    + (ev.length ? `<table class="tn-table"><tbody>${ev.slice(0, 8).map(e => `<tr><td>${esc(new Date(e.time).toLocaleString())}</td><td>${esc(own(KIND, e.kind) ?? e.kind)}</td><td class="muted">${esc(e.actionText ?? '')}</td></tr>`).join('')}</tbody></table>` : '<div class="muted" style="font-size:12px;margin-top:8px">No crashes recorded.</div>');
+  const h = st.history ?? [];
+  $('#tn-history').innerHTML = h.length ? `<table class="tn-table"><thead><tr><th>When</th><th>Core</th><th>Memory</th><th>Length</th><th>Result</th><th>Clock</th><th>Peak</th><th>VRAM</th></tr></thead><tbody>${h.slice(0, 20).map(r => `
+    <tr><td>${esc(new Date(r.time).toLocaleTimeString())}</td><td>${pm(r.core)}</td><td>${pm(r.memAb)}</td><td>${num(r.seconds)} s${r.light ? ' light' : ''}</td>
+      <td class="${r.ok ? 'tn-pass' : 'tn-fail'}">${r.ok ? 'pass' : 'fail'}${r.why ? ` <span class="muted">${esc(r.why)}</span>` : ''}</td>
+      <td>${r.loadMhz ? num(r.loadMhz) + ' MHz' : '—'}</td><td>${r.peakCoreC ? num(r.peakCoreC).toFixed(0) + ' °C' : '—'}</td><td>${r.gBps ? num(r.gBps).toFixed(0) + ' GB/s' : '—'}</td></tr>`).join('')}</tbody></table>`
+    : '<div class="muted" style="font-size:12px;margin-top:8px">No tests yet.</div>';
 }
 
 /* Game overlay page */
