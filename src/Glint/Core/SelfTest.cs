@@ -629,7 +629,7 @@ public static class SelfTest
         SelfTestV02.Run(C);
         SelfTestSecurity.Run(C);
         SelfTestUpdater.Run(C);
-        try { Glint.Tuning.GpuTuningTests.Run(C); Glint.Tuning.TuningTests.Run(C); }
+        try { Glint.Tuning.GpuTuningTests.Run(C); Glint.Tuning.TuningTests.Run(C); Glint.Tuning.CrashWatchTests.Run(C); }
         catch (Exception e) { C("tuning: suite ran", false, e.ToString()); }
 
         // ---------------- Home Assistant over MQTT (in-process fake broker on 127.0.0.1)

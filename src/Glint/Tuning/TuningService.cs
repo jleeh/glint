@@ -59,6 +59,10 @@ public sealed class TuningService : IDisposable
     public string Progress { get; private set; } = "";
     public object? LastResult { get; private set; }
     public string? OpenError { get; private set; }
+    /// <summary>Offsets currently applied by Glint (null = stock): what crash watch backs off from.</summary>
+    public (int Core, int MemNvml, double MemRatio)? AppliedNow { get; private set; }
+    /// <summary>The GPU if it has been opened (crash watch never opens it on its own).</summary>
+    public IGpuControl? OpenedGpu => _gpu;
     /// <summary>Raised on every phase / progress change (the dashboard and the AI transcript listen).</summary>
     public event Action<string>? Log;
 
@@ -175,6 +179,7 @@ public sealed class TuningService : IDisposable
         int memNvml = TuningLimits.ClampMemNvml((int)Math.Round(memAb / ratio), ratio);
         var rec = new GpuTestRecord(DateTime.Now, core, memAb, seconds, light, false, null, null, null, null, null, null, gpu.Driver);
         lock (_gate) { State.Testing = rec; Save(); }     // on disk before the card sees the setting
+        if (AppliedNow != null) { AppliedNow = null; Applied?.Invoke(0, 0); }   // the test ends at stock
         double peakCore = 0, peakMem = 0, power = 0; int loadMhz = 0, samples = 0;
         void Tick()
         {
@@ -240,8 +245,10 @@ public sealed class TuningService : IDisposable
     {
         var gpu = Ready(allowWhileBusy: false);
         double ratio = State.MemRatio ?? 0.5;
-        gpu.SetOffset(ClockKind.Core, TuningLimits.ClampCore(core));
-        gpu.SetOffset(ClockKind.Memory, TuningLimits.ClampMemNvml((int)Math.Round(memAb / ratio), ratio));
+        int c = TuningLimits.ClampCore(core), m = TuningLimits.ClampMemNvml((int)Math.Round(memAb / ratio), ratio);
+        gpu.SetOffset(ClockKind.Core, c);
+        gpu.SetOffset(ClockKind.Memory, m);
+        AppliedNow = c == 0 && m == 0 ? null : (c, m, ratio);
         Say($"Applied core {core:+0;-0} / memory {memAb:+0;-0} ({by})");
         Applied?.Invoke(core, memAb);
         return new { applied = true, core, memAb };
@@ -284,6 +291,7 @@ public sealed class TuningService : IDisposable
         if (Busy) { _stop = true; _job?.Join(15000); }
         var gpu = _gpu;
         var errs = gpu?.ResetAll() ?? Array.Empty<string>();
+        AppliedNow = null;
         if (reason != null) lock (_gate) { State.RevertedReason = reason; Save(); }
         Say("GPU back to stock" + (reason != null ? ": " + reason : ""));
         Applied?.Invoke(0, 0);
@@ -399,6 +407,23 @@ public sealed class TuningService : IDisposable
     {
         try { return JsonSerializer.Deserialize<TuningState>(File.ReadAllText(path), GlintConfig.Json) ?? new(); }
         catch { return new(); }
+    }
+
+    /// <summary>Was the last shutdown unexpected (Kernel-Power 41, a bugcheck, or the "previous shutdown was unexpected"
+    /// record) since this boot? Then a saved overclock must not be re-applied at startup.</summary>
+    public static bool LastShutdownWasCrash()
+    {
+        var upMs = Environment.TickCount64 + 120000;
+        var q = "*[System[((Provider[@Name='Microsoft-Windows-Kernel-Power'] and EventID=41) or " +
+                "(Provider[@Name='Microsoft-Windows-WER-SystemErrorReporting'] and EventID=1001) or " +
+                $"(Provider[@Name='EventLog'] and EventID=6008)) and TimeCreated[timediff(@SystemTime) <= {upMs}]]]";
+        try
+        {
+            using var reader = new EventLogReader(new EventLogQuery("System", PathType.LogName, q));
+            using var e = reader.ReadEvent();
+            return e != null;
+        }
+        catch (EventLogException) { return false; }
     }
 
     /// <summary>NVIDIA driver resets (TDR / Xid) logged since <paramref name="since"/>: any of these during a test = unstable.</summary>

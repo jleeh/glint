@@ -15,6 +15,8 @@ public sealed class GlintService : IDisposable
     public Updater Updater { get; }
     /// <summary>Overclocking (off by default): opens nothing until tuning is enabled and something asks.</summary>
     public Glint.Tuning.TuningService Tuning { get; }
+    /// <summary>Crash watch: event-log subscriptions that exist only while an overclock is applied and crash watch is on.</summary>
+    public Glint.Tuning.CrashWatch Crashes { get; }
 
     public IReadOnlyDictionary<string, double> Sensors { get; private set; } = new Dictionary<string, double>();
     public IReadOnlyDictionary<string, int> Rpm { get; private set; } = new Dictionary<string, int>();
@@ -48,6 +50,11 @@ public sealed class GlintService : IDisposable
         Updater = new Updater(Updates, () => Config);
         Tuning = new Glint.Tuning.TuningService(() => Config, Glint.Tuning.TuningHardware.OpenGpu, Glint.Tuning.TuningHardware.OpenStress,
             () => Sensors.TryGetValue("gpu.memjunction", out var mj) ? mj : null, boost => Engine.GpuBoost = boost ?? 0);
+        Crashes = new Glint.Tuning.CrashWatch(() => Config.Tuning ?? new(), () => Tuning.OpenedGpu, () => Tuning.AppliedNow,
+            (core, memNvml) => Tuning.BackOff(core, (int)Math.Round(memNvml * (Tuning.AppliedNow?.MemRatio ?? Tuning.State.MemRatio ?? 0.5)), "crash watch"),
+            () => Tuning.Stock($"{Config.Tuning?.MaxCrashes} GPU crashes within {Config.Tuning?.CrashWindowDays} days: back to stock until you re-tune"));
+        // watch only while Glint has an overclock applied (no event-log subscriptions otherwise)
+        Tuning.Applied += (core, mem) => { if (core == 0 && mem == 0) Crashes.Stop(); else Crashes.Start(); };
         _thread = new Thread(Loop) { IsBackground = true, Name = "Glint fans", Priority = ThreadPriority.AboveNormal };
         _thread.Start();
         try
@@ -185,6 +192,7 @@ public sealed class GlintService : IDisposable
     public void Dispose()
     {
         Overlay?.Dispose(); // stops the ETW session
+        Crashes.Dispose();
         Tuning.Dispose();   // stops a running test (the test itself puts the card back to stock)
         HomeAssistant.Dispose(); // publishes "offline" while the broker link is still up
         _stop = true;
