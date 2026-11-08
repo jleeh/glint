@@ -135,6 +135,10 @@ public sealed class TuningService : IDisposable
             limits = new { maxCore = ceilCore, maxMemAb = ceilMem, abortCoreC = TuningLimits.ClampAbortCore(c.AbortCoreC),
                            abortMemC = TuningLimits.ClampAbortMem(c.AbortMemC), maxTestSeconds = MaxTestSeconds },
             memRatio = State.MemRatio,
+            // the test in progress (for the monitor window's progress bar) and a live sample while busy
+            testing = State.Testing == null ? null : new { core = State.Testing.Core, memAb = State.Testing.MemAb, seconds = State.Testing.Seconds,
+                                                           light = State.Testing.Light, startedAt = State.Testing.Time },
+            live = Busy && gpu != null ? Live(gpu) : null,
             saved = State.Saved, reverted = State.RevertedReason,
             history = State.History.TakeLast(30).Reverse(),
             last = LastResult,
@@ -303,6 +307,17 @@ public sealed class TuningService : IDisposable
         Say("GPU back to stock" + (reason != null ? ": " + reason : ""));
         Applied?.Invoke(0, 0);
         return new { stock = true, errors = errs };
+    }
+
+    object? Live(IGpuControl gpu)
+    {
+        try
+        {
+            var s = gpu.Sample();
+            return new { coreC = TuningLimits.ValidTemp(s.CoreC), memC = TuningLimits.ValidTemp(_memJunction()), mhz = s.CoreMhz, memMhz = s.MemMhz,
+                         powerW = Math.Round(s.PowerW, 1), utilPct = s.UtilPct, fanPct = s.FanPct, throttle = s.Throttle };
+        }
+        catch { return null; }
     }
 
     // ------------------------------------------------------------------ helpers
