@@ -650,7 +650,7 @@ public static class SelfTest
             ex = e.LastExplain.GetValueOrDefault("f") ?? "";
             C("fans: a new input starts from its own reading", ex.Contains("probe=29.0°→20%") && ex.Contains("liquid=31.0°→24%"), ex);
         }
-        try { Glint.Tuning.GpuTuningTests.Run(C); Glint.Tuning.TuningTests.Run(C); Glint.Tuning.CrashWatchTests.Run(C); Glint.Tuning.CpuTuningTests.Run(C); }
+        try { Glint.Tuning.GpuTuningTests.Run(C); Glint.Tuning.TuningTests.Run(C); Glint.Tuning.CrashWatchTests.Run(C); Glint.Tuning.CpuTuningTests.Run(C); Glint.Tuning.AiGoalTests.Run(C); }
         catch (Exception e) { C("tuning: suite ran", false, e.ToString()); }
 
         // ---------------- Home Assistant over MQTT (in-process fake broker on 127.0.0.1)
