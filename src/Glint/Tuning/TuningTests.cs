@@ -165,6 +165,27 @@ public static class TuningTests
             ai.OnStream("not json");
             var st3 = JsonSerializer.Serialize(ai.Status());
             C("AI: transcript shows text and tool calls; summary from the result", st3.Contains("Testing core") && st3.Contains("gpu.test") && st3.Contains("Saved core"), st3[..Math.Min(300, st3.Length)]);
+
+            // ---- tuning monitor window: events, the message it pushes, its one action
+            var (sm, _) = Make(new SimConfig(), "monitor.json");
+            var started = new List<string>();
+            sm.JobStarted += n => started.Add(n);
+            var cpuT = new CpuTuning(() => cfg, () => null);
+            var aiM = new AiTuner(@"C:\x\Glint.exe", () => null);
+            string Flat(object o) => System.Text.RegularExpressions.Regex.Replace(JsonSerializer.Serialize(o, GlintConfig.Json), @"\s+", "");
+            var idleMsg = Flat(UI.TuningMonitor.Message(sm, aiM, cpuT));
+            C("monitor: message carries status, ai and cpu", idleMsg.Contains("\"type\":\"tuning\"") && idleMsg.Contains("\"status\":{") && idleMsg.Contains("\"ai\":{") && idleMsg.Contains("\"cpu\":"), idleMsg[..Math.Min(160, idleMsg.Length)]);
+            C("monitor: idle message has no test and no live sample", !idleMsg.Contains("\"testing\":{") && !idleMsg.Contains("\"live\":{"));
+            sm.StartGpuTest(100, 0, 10, false);
+            C("monitor: starting a GPU test raises JobStarted once", started.Count == 1 && started[0] == "gpu test", string.Join(",", started));
+            var busyMsg = Flat(UI.TuningMonitor.Message(sm, aiM, cpuT));
+            Result(sm);
+            C("monitor: message survives a running or just-finished job", busyMsg.Contains("\"type\":\"tuning\"") && !busyMsg.Contains("\"error\""), busyMsg[..Math.Min(120, busyMsg.Length)]);
+            C("monitor: unknown actions are refused", !UI.TuningMonitor.Act("format", sm, aiM) && !UI.TuningMonitor.Act(null, sm, aiM));
+            C("monitor: stop action is accepted and a later test still runs", UI.TuningMonitor.Act("stop", sm, aiM) && Err(() => sm.StartGpuTest(100, 0, 10, false)) == "" && Rec(sm) != null);
+            var hist = Flat(sm.History(0, 15));
+            C("monitor: history page reports total and items", hist.Contains("\"total\":") && hist.Contains("\"items\":["), hist[..Math.Min(100, hist.Length)]);
+            sm.Dispose();
         }
         finally { try { Directory.Delete(dir, true); } catch { } }
     }

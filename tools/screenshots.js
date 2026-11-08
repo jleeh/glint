@@ -76,6 +76,15 @@ function fontEnv() {
   await nav('setup'); await wait(600);                          // fictional report: one failing plugin, a few warnings
   await shot('setup-check');
   await nav('tuning'); await wait(400); await p.click('#tn-ai-start'); await wait(500); await shot('tuning');
+  await p.evaluate(() => { const c = document.getElementById('content'); c.scrollTop = document.getElementById('tn-history').closest('.card').offsetTop - 80; });
+  await shot('tuning-history');
+  // the small tuning monitor window (its own page), at the window's default size
+  const mon = await b.newPage();
+  await mon.setViewport({ width: 520, height: 720, deviceScaleFactor: 2 });
+  await mon.goto(PAGE.replace('index.html', 'monitor.html')); await wait(1500);
+  await mon.evaluate(() => document.fonts.ready);
+  await mon.screenshot({ path: path.join(OUT, 'tuning-monitor.png') }); console.log('wrote tuning-monitor.png');
+  await mon.close();
   await nav('plugins'); await shot('plugins');
 
   await nav('overlay');

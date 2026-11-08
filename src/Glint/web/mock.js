@@ -80,7 +80,7 @@
     },
     sensorNames: { 'mb:Temperature #1': 'Motherboard', 'mb:Temperature #2': 'Chipset' },
     homeAssistant: { enabled: false, host: '', port: 1883, tls: false, discoveryPrefix: 'homeassistant', baseTopic: 'glint' },
-    tuning: { enabled: true, allowWorkstation: false, applyAtStartup: false, abortCoreC: 83, abortMemC: 96, crashWatch: true, autoBackoff: true, maxCrashes: 3, crashWindowDays: 7 },
+    tuning: { enabled: true, allowWorkstation: false, applyAtStartup: false, emergencyCoreC: 90, emergencyMemC: 100, unlockPower: true, crashWatch: true, autoBackoff: true, maxCrashes: 3, crashWindowDays: 7 },
     overlay: { enabled: true, hotkey: 'Ctrl+Shift+O', position: 'top-left', offsetX: 16, offsetY: 16, scale: 1, opacity: 1, backgroundOpacity: 0.72, accent: null, layout: 'detailed', onlyWhenGame: false,
       items: [{ source: 'fps' }, { source: 'frametime' }, { source: 'low1' }, { source: 'cpu' }, { source: 'gpu' }, { source: 'gpu.hotspot' }, { source: 'liquid' }] },
   };
@@ -372,30 +372,76 @@
     return { type: 'preview', rgb: enc(b), field: enc(f), fw, fh };
   };
 
-  // Tuning page (fictional demo card and run; tuning is enabled in the demo config so the page has something to show)
-  const TN = { saved: null, ai: { running: false, cli: 'windows', transcript: [], summary: null } };
+  // Tuning page + monitor window (fictional demo card and run; tuning is enabled in the demo config so the page has something to show)
+  const TN = { saved: { core: 120, memAb: 750 }, ai: { running: false, cli: 'windows', transcript: [], summary: null }, hist: null, testStart: null };
+  const MIN = 6e4;
+  function tnHistory() {
+    if (TN.hist) return TN.hist;
+    // 36 older tests (a demo run adds 2 more: 38 in all), newest first. A few failed, a few throttled on temperature or power: a spread for the pagination and the chips.
+    const base = Date.now() - 3 * 3600e3, rows = [];
+    const offs = [[0, 0], [50, 0], [100, 0], [150, 0], [200, 0], [150, 250], [150, 500], [150, 750], [150, 1000], [125, 750], [120, 750], [120, 750]];
+    for (let i = 0; i < 36; i++) {
+      const [core, memAb] = offs[i % offs.length], ok = !(core >= 200 || memAb >= 1000), light = i % 5 === 1;
+      rows.unshift({ time: new Date(base + i * 4 * MIN).toISOString(), core, memAb, seconds: light ? 30 : 45 + (i % 3) * 15, light, ok, why: ok ? null : core >= 200 ? '3 wrong results out of 412' : '2 ECC-corrected VRAM errors (the memory offset is too high)',
+        loadMhz: ok ? 2790 + core * 1.1 | 0 : 2900, peakCoreC: 62 + (i % 9), peakMemC: 78 + (i % 7), powerW: 300 + (i % 6) * 6, gBps: ok ? 903 + memAb * 0.09 | 0 : null, rate: ok ? 412 + core * 0.22 | 0 : null,
+        thermalLimited: ok && i % 7 === 3, powerLimited: ok && i % 4 === 2, powerLimitW: 340, driver: '999.99' });
+    }
+    return (TN.hist = rows);
+  }
+  const mockHistory = a => { const all = tnHistory(), o = Math.max(0, a?.offset | 0), l = Math.max(1, Math.min(100, a?.limit | 0 || 15)); return { type: 'tuningHistory', history: { total: all.length, offset: o, limit: l, items: all.slice(o, o + l) } }; };
+  window.__mockAddTest = () => tnHistory().unshift({ time: new Date().toISOString(), core: 135, memAb: 750, seconds: 60, light: false, ok: true, loadMhz: 3010, peakCoreC: 70, powerW: 335, gBps: 972, rate: 450, thermalLimited: false, powerLimited: true, powerLimitW: 340, driver: '999.99' });
+  function tnStartRun(goal) {
+    const t0 = (TN.t0 ??= Date.now() - 95e3), tm = n => new Date(t0 + n * 1e3).toISOString(), h = tnHistory();
+    if (!TN.runAdded) {
+    TN.runAdded = true;
+    h.unshift({ time: tm(14), core: 100, memAb: 0, seconds: 45, light: false, ok: true, loadMhz: 2900, peakCoreC: 66, powerW: 318, gBps: 903, rate: 434, powerLimited: true, powerLimitW: 340, driver: '999.99' });
+    h.unshift({ time: tm(5), core: 0, memAb: 0, seconds: 30, light: true, ok: true, loadMhz: 2790, peakCoreC: 64, powerW: 301, gBps: 903, rate: 412, driver: '999.99' });
+    }
+    TN.testStart = Date.now() - 18e3;
+    TN.ai = { running: true, goal, cli: 'windows', startedAt: tm(0), summary: null, transcript: [
+      'Starting Claude Code (windows) to tune: ' + goal + ', up to 45 min',
+      '→ tuning.status {}',
+      'This is a **Demo GeForce RTX 4080** with a power limit that can go from 320 W to 340 W. Plan:\n\n1. Measure stock first (so every gain is measured, not guessed)\n2. Find the core edge in steps of *50 MHz*\n3. Then memory, then a long soak\n\n| Step | Setting | Why |\n|---|---|---|\n| 1 | stock | baseline |\n| 2 | core `+100` | first step up |',
+      '→ tuning.gpu.test {"core":0,"memAb":0,"seconds":30,"light":true}',
+      '→ tuning.wait {"seconds":25}',
+      'Stock is **2790 MHz**, 412 G ops/s. Now core +100.',
+      '→ tuning.gpu.test {"core":100,"memAb":0,"seconds":45}',
+      '→ tuning.wait {"seconds":25}',
+      '+100 passed but hit the power limit, so more core will not help much. Trying memory next.',
+      '→ tuning.gpu.test {"core":150,"memAb":500,"seconds":45}',
+      '→ tuning.wait {"seconds":25}'] };
+  }
   function mockTuning(m) {
-    if (m.op === 'aiStart') TN.ai = { running: true, goal: m.args?.goal ?? 'gpu', cli: 'windows', transcript: ['Starting Claude Code (windows) to tune: gpu, up to 45 min', '→ tuning.status {}', 'Card allows up to +500 core. Starting at +100.', '→ tuning.gpu.test {"core":100,"memAb":0,"seconds":45}'], summary: null };
-    if (m.op === 'aiStop') TN.ai = { ...TN.ai, running: false, transcript: [...TN.ai.transcript, 'Stopped by the user'] };
-    const h = [
-      { time: new Date(Date.now() - 6e5).toISOString(), core: 200, memAb: 0, seconds: 45, light: false, ok: false, why: '3 wrong results out of 412', driver: '999.99' },
-      { time: new Date(Date.now() - 9e5).toISOString(), core: 150, memAb: 0, seconds: 45, light: false, ok: true, loadMhz: 2925, peakCoreC: 66, powerW: 312, driver: '999.99' },
-      { time: new Date(Date.now() - 12e5).toISOString(), core: 100, memAb: 500, seconds: 60, light: false, ok: true, loadMhz: 2880, peakCoreC: 64, gBps: 912, driver: '999.99' },
-    ];
-    return { type: 'tuning', status: { enabled: true, busy: TN.ai.running, phase: TN.ai.running ? 'gpu test' : 'idle', progress: TN.ai.running ? 'Testing core +100 / memory +0 for 45 s' : '',
-      gpu: { name: 'Demo GeForce RTX 4080', driver: '999.99', vbios: 'DEMO.00', vramGiB: 16, powerLimitW: { default: 320, max: 340 }, workstation: false, tunable: true, blocked: null, offsets: { core: 0, memAb: 0 }, eccCorrected: null },
-      limits: { maxCore: 500, maxMemAb: 3000, abortCoreC: 83, abortMemC: 96, maxTestSeconds: 300 }, memRatio: 0.5, saved: { core: 120, memAb: 750, when: new Date().toISOString() }, reverted: null, history: h },
+    if (m.op === 'aiStart') tnStartRun(m.args?.goal ?? 'gpu');
+    if (m.op === 'aiStop' || m.op === 'stop') { TN.ai = { ...TN.ai, running: false, transcript: [...TN.ai.transcript, 'Stopped by the user'] }; TN.testStart = null; }
+    const h = tnHistory(), running = TN.ai.running, t = Date.now() / 1000;
+    const stock = { core: 0, memAb: 0, seconds: 30, light: true, ok: true, loadMhz: 2790, rate: 412, gBps: 903, powerW: 301, peakCoreC: 64 };
+    const tuned = { core: 120, memAb: 750, seconds: 60, light: false, ok: true, loadMhz: 2985, rate: 447, gBps: 968, powerW: 331, peakCoreC: 71 };
+    return { type: 'tuning', at: new Date().toISOString(), status: { enabled: true, busy: running, phase: running ? 'gpu test' : 'idle', progress: running ? 'Testing core +150 / memory +500 for 45 s' : '',
+      gpu: { name: 'Demo GeForce RTX 4080', driver: '999.99', vbios: 'DEMO.00', vramGiB: 16, powerLimitW: { default: 320, max: 340, now: running ? 340 : 320 }, slowdownC: 83, workstation: false, tunable: true, blocked: null, offsets: { core: 0, memAb: 0 }, eccCorrected: null },
+      limits: { maxCore: 500, maxMemAb: 3000, emergencyCoreC: 86, emergencyMemC: 100, unlockPower: window.__lastConfig?.tuning?.unlockPower ?? true, maxTestSeconds: 300 }, memRatio: 0.5,
+      compare: window.__mockNoStock ? { stock: null, tuned: null, savedCore: null, savedMemAb: null } : { stock, tuned, savedCore: 120, savedMemAb: 750 },
+      testing: running && TN.testStart ? { core: 150, memAb: 500, seconds: 45, light: false, startedAt: new Date(TN.testStart).toISOString() } : null,
+      live: running ? { coreC: +(71 + 2 * Math.sin(t / 3)).toFixed(1), memC: +(84 + Math.sin(t / 5)).toFixed(1), mhz: 2985 + Math.round(20 * Math.sin(t)), memMhz: 11200, powerW: 336, utilPct: 99, fanPct: 85, throttle: ['power cap'] } : null,
+      saved: { core: 120, memAb: 750, when: new Date().toISOString() }, reverted: null, history: h.slice(0, 30) },
       ai: TN.ai, crashes: { watching: false, events: [], cpuCoresToLoosen: {} },
       cpu: { enabled: true, phase: 'searching', stoppedReason: null,
         cpu: { name: 'Demo Ryzen 7 9700X', family: 'amd-zen5', label: 'AMD Ryzen 9000 (Zen 5)', vendor: 'amd', cores: 8, microcode: null, advisory: null, tempC: 71 },
         curveOptimizer: { supported: true, tunable: true, why: null, startHint: -25, abortC: 90, expect: 'takes several hours' },
-        search: { startValue: -25, running: true, summaryFound: true, cores: 8, values: [-22, -25, -19, -25, -24, -21, -25, -23], adjustments: 9, failedCores: {}, wheaSinceStart: 0, peakC: 78,
+        search: { startValue: -25, running: false, summaryFound: true, cores: 8, values: [-22, -25, -19, -25, -24, -21, -25, -23], adjustments: 9, failedCores: {}, wheaSinceStart: 0, peakC: 78,
           final: [-19, -22, -16, -22, -21, -18, -22, -20], margin: 3, biosSheet: 'Demo board - enter these in the BIOS (Del):\n  Advanced > AMD Overclocking > Precision Boost Overdrive\n  Core 0 Curve Optimizer ........... Negative 19\n  Core 7 Curve Optimizer ........... Negative 20' } } };
   }
   window.mockBridge = {
     addEventListener: (n, f) => et.addEventListener(n, f),
     postMessage: m => {
       m = structuredClone(m); // like WebView2: the host gets a copy, never the page's live objects
+      if (m.type === 'ready' && m.page === 'monitor') {            // the tuning monitor window: demo run in progress, status every second
+        (window.__msgs ??= []).push(m);
+        if (!window.__mockIdleMonitor && !TN.ai.running) tnStartRun('gpu');
+        setTimeout(() => emit(mockTuning({ op: 'status' })), 10); setInterval(() => emit(mockTuning({ op: 'status' })), 1000);
+        return;
+      }
+      if (m.type === 'action' && m.op === 'stop') TN.ai.running && (TN.ai = { ...TN.ai, running: false, transcript: [...TN.ai.transcript, 'Stopped by the user'] }, TN.testStart = null);
       if (m.type === 'ready') { setTimeout(() => { emit(INIT); /* two minutes of history for the sparklines */ for (let i = 120; i >= 0; i--) emit(state(i)); }, 10); setInterval(() => emit(state()), 1000); setInterval(() => performance.now() < sensorsUntil && emit(catalog()), 1000); setInterval(() => previewOn && emit(preview()), 50); }
       if (m.type === 'preview') previewOn = m.on;
       if (m.type === 'sensorsWanted') { if (m.reset) mm.clear(); if (performance.now() >= sensorsUntil) setTimeout(() => emit(catalog()), 5); sensorsUntil = performance.now() + 3000; }
@@ -407,6 +453,7 @@
       if (m.type === 'checkUpdate') { window.__mockChecks = (window.__mockChecks ?? 0) + 1; setTimeout(() => { UPDATE.checkedAt = new Date().toISOString(); if (window.__mockNoUpdate) Object.assign(UPDATE, { latest: '0.2.0', available: false }); emit({ type: 'updateInfo', update: UPDATE }); }, 120); }
       if (m.type === 'installUpdate' || (m.type === 'setupFix' && m.fix === 'installUpdate')) runInstall();
       if (m.type === 'tuning') setTimeout(() => emit(mockTuning(m)), 15);
+      if (m.type === 'tuning' && m.op === 'history') setTimeout(() => emit(mockHistory(m.args)), 20);
       if (m.type === 'testPattern') testPattern = m.on ? { zone: m.zone, count: m.count } : (testPattern?.zone === m.zone ? null : testPattern);
       if (m.type === 'autoLayout') { const cfg = window.__lastConfig ?? INIT.config; cfg.lighting.layout = JSON.parse(JSON.stringify(AUTO)); setTimeout(() => emit({ type: 'layout', placements: AUTO, config: cfg }), 20); }
     },

@@ -689,7 +689,7 @@ const fs = require('fs');
       const C = `red;background:url(x)"><img src=x onerror=window.__xss=1 data-xss>`;           // colour: CSS + markup injection
       window.__inj = [];
       const BAD = 'img,script,iframe,object,embed,[data-xss],[onerror],[onload],[onclick],[onmouseover]';
-      const own = n => n.matches('script[src="mock.js"], script[src="app.js"]');                   // index.html's own scripts
+      const own = n => n.matches('script[src="mock.js"], script[src="app.js"], script[src="tuning-format.js"], script[src="monitor.js"]');                   // index.html's own scripts
       const look = n => { if (n.nodeType !== 1) return; [n, ...n.querySelectorAll(BAD)].forEach(x => { if (x.matches(BAD) && !own(x)) window.__inj.push(x.outerHTML.slice(0, 120)); }); };
       new MutationObserver(ms => ms.forEach(m => m.addedNodes.forEach(look))).observe(document, { childList: true, subtree: true });
       const zone = { id: P, dev: P, start: 0, count: 8, kind: 'ring', cols: 0, category: P, name: P };
@@ -718,6 +718,17 @@ const fs = require('fs');
         } else if (m.type === 'sensors') {
           m.catalog.hardware.push({ id: P, name: P, type: P, sub: [], sensors: [{ id: P, name: P, type: P, unit: P, value: 1, min: 1, max: 2, aliases: [P, '/' + P] }] });
           m.catalog.error = P;
+        } else if (m.type === 'tuning' && m.status) {
+          const st = m.status, IMG = '<img src=x onerror=window.__xss=1 data-xss>';
+          st.gpu.name = P; st.gpu.driver = P; st.reverted = P; st.history.forEach(r => { r.why = P; r.driver = P; r.loadMhz = P; r.core = P; r.thermalLimited = true; });
+          st.compare.tuned.loadMhz = P; st.compare.stock.rate = P; st.compare.tuned.core = P;
+          if (st.testing) st.testing.core = P;
+          if (st.live) st.live.throttle = [P, 'thermal'];
+          m.ai.transcript.push(P, '**' + P + '**', '[x](javascript:window.__xss=1) ' + IMG, '# ' + P, '- ' + P, '| a | ' + P + ' |\n|---|---|\n| ' + IMG + ' | `' + IMG + '` |',
+            '→ tuning.gpu.test {"core":"' + IMG + '","memAb":0}', '→ ' + IMG, '! ' + P);
+          m.ai.summary = P + '\n\n## ' + P + '\n* ' + IMG; m.ai.goal = P; m.ai.running = false;
+        } else if (m.type === 'tuningHistory') {
+          m.history.items.forEach(r => { r.why = P; r.core = P; r.memAb = P; r.loadMhz = P; r.thermalLimited = true; r.powerLimited = true; r.time = P; });
         } else if (m.type === 'setup') {
           m.report.items.push({ id: P, title: P, status: 'fail', detail: P, fixLabel: P, fix: P, fixArg: P, important: true });
           m.report.items.push({ id: P + 2, title: P, status: P, detail: P, important: false });
@@ -739,6 +750,11 @@ const fs = require('fs');
     await xp.evaluate(() => { go('overlay'); document.getElementById('ov-add').click(); }); await wait(1300);
     await xp.evaluate(() => { go('sensors'); }); await wait(1300);
     await xp.evaluate(() => { go('devices'); toast('"><img src=x onerror=window.__xss=1 data-xss>'); }); await wait(200);
+    await xp.evaluate(() => { go('tuning'); }); await wait(500);
+    await xp.evaluate(() => document.getElementById('tn-ai-start').click()); await wait(700);
+    await xp.evaluate(() => { document.querySelector('[data-hp="1"]')?.click(); }); await wait(500);
+    const tnx = await xp.evaluate(() => ({ log: document.getElementById('tn-log').textContent.length, anchors: document.querySelectorAll('#page-tuning a').length, rows: document.querySelectorAll('#tn-history tbody tr').length }));
+    check('xss: tuning page (transcript Markdown, results, history, compare) is inert and still renders', tnx.log > 50 && tnx.anchors === 0 && tnx.rows > 0, JSON.stringify(tnx));
     const r = await xp.evaluate(() => ({
       xss: window.__xss, inj: window.__inj, now: document.querySelectorAll('img, [data-xss]').length,
       css: [...document.querySelectorAll('[style]')].filter(e => /url\(|;\s*background:\s*url/i.test(e.getAttribute('style'))).map(e => e.getAttribute('style').slice(0, 80)),
@@ -767,13 +783,155 @@ const fs = require('fs');
   await nav('tuning');
   await wait(300);
   check('tuning: page shows the AI card and the GPU', await p.$eval('#page-tuning', el => el.textContent.includes('Tune with AI') && el.textContent.includes('Demo GeForce RTX 4080')));
-  check('tuning: history table lists tests (pass and fail)', await p.$$eval('#tn-history tbody tr', r => r.length) === 3 && await p.$eval('#tn-history', el => el.textContent.includes('fail') && el.textContent.includes('pass')));
+  check('tuning: history table lists the first page of tests (pass and fail)', await p.$$eval('#tn-history tbody tr', r => r.length) === 15 && await p.$eval('#tn-history', el => el.textContent.includes('fail') && el.textContent.includes('pass')));
   check('tuning: saved result shown', await p.$eval('#tn-gpu', el => el.textContent.includes('+120') && el.textContent.includes('+750')));
   check('tuning: CPU card shows per-core values and the BIOS sheet', await p.$eval('#tn-cpu', el => el.textContent.includes('Negative 19') && el.querySelectorAll('.tn-cores span').length === 8));
   await p.click('#tn-ai-start'); await wait(400);
-  check('tuning: Tune with AI shows the live transcript', await p.$eval('#tn-log', el => el.textContent.includes('tuning.gpu.test') && el.textContent.includes('Starting Claude Code')));
+  check('tuning: Tune with AI shows the live transcript', await p.$eval('#tn-log', el => el.textContent.includes('Test core +150') && el.textContent.includes('Starting Claude Code')));
   check('tuning: start disabled while a run is going', await p.$eval('#tn-ai-start', el => el.disabled));
   await p.click('#tn-ai-stop'); await wait(300);
+
+  // --- tuning page: formatting, stock vs tuned, unlock toggle, paginated history, monitor button
+  await nav('tuning');
+  await wait(500);
+  const mdt = await p.evaluate(() => ({
+    img: TF.md('<img src=x onerror=window.__t=1> **b**'), link: TF.md('[click](javascript:window.__t=1)'), code: TF.md('use `**not bold**` and **bold** and *it*'),
+    tbl: TF.md('| a | b |\n|---|---|\n| 1 | **2** |'), list: TF.md('1. one\n2. two\n\n- x\n- y'), head: TF.md('## Title\ntext'), fence: TF.md('```\n<b>x</b>\n```'),
+  }));
+  check('markdown: raw HTML is escaped, links drop their target', !/<img/i.test(mdt.img) && mdt.img.includes('&lt;img') && !/<a[\s>]/.test(mdt.link) && !mdt.link.includes('javascript'), mdt.img + ' | ' + mdt.link);
+  check('markdown: bold/italic/code/table/lists/headings become elements', mdt.code.includes('<code>**not bold**</code>') && mdt.code.includes('<strong>bold</strong>') && mdt.code.includes('<em>it</em>')
+    && mdt.tbl.includes('<table') && mdt.tbl.includes('<th>a</th>') && mdt.tbl.includes('<strong>2</strong>') && mdt.list.includes('<ol') && mdt.list.includes('<ul') && mdt.head.includes('<h4') && mdt.fence.includes('&lt;b&gt;x&lt;/b&gt;'), JSON.stringify(mdt).slice(0, 200));
+  const steps = await p.evaluate(() => ['→ tuning.gpu.test {"core":250,"memAb":0,"seconds":45,"light":true}', '→ tuning.status {}', '→ tuning.gpu.save {"core":200,"memAb":750}', '→ tuning.gpu.stock {}', '→ tuning.wait {"seconds":25}', '→ tuning.gpu.test {"core":100,"memAb":500,"seconds":4', 'plain text'].map(l => TF.stepText(l)));
+  check('steps: tool calls become friendly text, tuning.wait is hidden', JSON.stringify(steps) === JSON.stringify(['Test core +250 / memory +0 · 45 s (light)', 'Read status', 'Save core +200 / memory +750', 'Back to stock', '', 'Test core +100 / memory +500 · 4 s', null]), JSON.stringify(steps));
+  // the AI log on the Tuning page
+  await p.click('#tn-ai-start'); await wait(500);
+  const lg = await p.$eval('#tn-log', el => ({ t: el.textContent, steps: [...el.querySelectorAll('.tf-step')].map(x => x.textContent), tbl: el.querySelectorAll('table.md-table').length, strong: el.querySelectorAll('strong').length, li: el.querySelectorAll('ol li').length, res: el.querySelectorAll('.tf-res').length, run: el.querySelectorAll('.tf-res.run').length }));
+  check('tuning log: tool calls shown as friendly steps, no raw JSON or tuning.wait', lg.steps.some(x => x.includes('Test core +150 / memory +500 · 45 s')) && lg.steps.some(x => x.includes('Read status')) && !lg.t.includes('{"core"') && !lg.t.includes('tuning.wait') && !lg.t.includes('seconds":25'), lg.steps.join(' | '));
+  check('tuning log: Markdown rendered (table, bold, numbered list), no raw asterisks or pipes', lg.tbl === 1 && lg.strong >= 2 && lg.li === 3 && !lg.t.includes('**') && !lg.t.includes('|---'), JSON.stringify({ tbl: lg.tbl, strong: lg.strong, li: lg.li }));
+  check('tuning log: finished tests are result cards, the running one is marked', lg.res === 3 && lg.run === 1, JSON.stringify({ res: lg.res, run: lg.run }));
+  const mq = await p.evaluate(() => (window.__msgs ?? []).filter(m => m.type === 'tuning').length);
+  await p.click('#tn-monitor'); await wait(150);
+  check('tuning: "Open monitor" asks the host for the monitor window', await p.evaluate(() => (window.__msgs ?? []).some(m => m.type === 'tuning' && m.op === 'monitor')), mq);
+  await p.click('#tn-ai-stop'); await wait(300);
+  // power / limits wording and the unlock toggle
+  const gp = await p.$eval('#page-tuning', el => ({ head: el.querySelector('.tn-head').textContent, sub: el.querySelector('#tn-gpu-sub').textContent, gpu: el.querySelector('#tn-gpu').textContent }));
+  check('tuning: header explains the new limits model (no "never ... power limits")', gp.head.includes("card's own maximum") && gp.head.includes('emergency') && !/never voltage or power limits/.test(gp.head) && !/stop at your temperature limits/.test(gp.head), gp.head.slice(0, 160));
+  check('tuning: GPU card shows power limit now/default/max and slowdown + emergency temperatures', gp.sub.includes('320 W now') && gp.sub.includes('340 W card maximum') && gp.gpu.includes('slows down at 83 °C') && gp.gpu.includes('86 °C') && gp.gpu.includes('100 °C'), gp.sub + ' | ' + gp.gpu.slice(0, 200));
+  check('tuning: unlock-power toggle starts on', !!(await p.$('#tn-unlock.on')) && /Unlock power limit \(up to this card's maximum/.test(await p.$eval('#tn-unlock + label', e => e.textContent)));
+  await p.click('#tn-unlock');
+  check('tuning: unlock-power toggle goes through the config (off)', (await cfg())?.tuning?.unlockPower === false);
+  await p.click('#tn-unlock');
+  check('tuning: unlock-power toggle goes through the config (on again)', (await cfg())?.tuning?.unlockPower === true);
+  // stock vs tuned
+  await wait(3300);
+  const cm = await p.evaluate(() => ({
+    rows: [...document.querySelectorAll('#tn-cmp .cmp-row')].map(r => ({ k: r.dataset.cmp, d: r.querySelector('.cmp-delta').textContent, c: r.querySelector('.cmp-delta').className, s: r.querySelector('.cmp-stock i').style.width, t: r.querySelector('.cmp-tuned i').style.width })),
+    legend: document.querySelector('#tn-cmp .tn-cmp-legend')?.textContent ?? '',
+  }));
+  const by = k => cm.rows.find(r => r.k === k);
+  check('compare: bars for clock, compute, VRAM, power and temperature', cm.rows.map(r => r.k).join() === 'loadMhz,rate,gBps,powerW,peakCoreC', cm.rows.map(r => r.k).join());
+  check('compare: labels Stock and Tuned (core +120 / memory +750)', cm.legend.includes('Stock') && cm.legend.includes('Tuned (core +120 / memory +750)'), cm.legend);
+  check('compare: % deltas (clock +7.0 % green, power +10.0 % amber), tuned bar longer than stock', by('loadMhz')?.d === '+7.0%' && by('loadMhz').c.includes('gain') && by('powerW')?.d === '+10.0%' && by('powerW').c.includes('cost') && by('loadMhz').t === '100%' && parseFloat(by('loadMhz').s) < 100, JSON.stringify(cm.rows[0]) + JSON.stringify(by('powerW')));
+  await p.evaluate(() => { window.__mockNoStock = true; tuningAsk(); }); await wait(400);
+  check('compare: no baseline → clear empty state, no bars', (await p.$$('#tn-cmp .cmp-row')).length === 0 && (await p.$eval('#tn-cmp-empty', e => e.textContent)).includes('measures stock first'));
+  await p.evaluate(() => { window.__mockNoStock = false; tuningAsk(); }); await wait(300);
+  // paginated history: 38 saved tests, 15 per page
+  const hs = async () => p.evaluate(() => ({ rows: document.querySelectorAll('#tn-history tbody tr').length, info: document.getElementById('tn-hinfo')?.textContent ?? '', first: document.querySelector('#tn-history tbody tr')?.textContent ?? '', cur: document.querySelector('#tn-history .cur')?.textContent ?? '', nums: [...document.querySelectorAll('#tn-history [data-hp]')].map(b => b.dataset.hp).join() }));
+  await p.evaluate(() => { try { sessionStorage.clear(); } catch { } tnHist.page = 0; renderTuning(); }); await wait(500);
+  let h1 = await hs();
+  check('history: page 1 has 15 rows, total 38, pages 1..3', h1.rows === 15 && h1.info.includes('1–15 of 38 tests') && h1.info.includes('page 1 of 3') && h1.nums === 'prev,0,1,2,next', JSON.stringify(h1));
+  check('history: rows show clock, compute, VRAM, power, peak and limited chips', await p.$eval('#tn-history', el => el.querySelectorAll('.tf-chip.warn').length > 0 && /\d+ G\/s/.test(el.textContent) && /\d+ GB\/s/.test(el.textContent) && /\d+ W/.test(el.textContent) && /\d+ °C/.test(el.textContent)));
+  await p.click('#tn-history [data-hp="1"]'); await wait(500);
+  const h2 = await hs();
+  check('history: page 2 shows the next 15 rows', h2.rows === 15 && h2.info.includes('16–30 of 38') && h2.cur === '2' && h2.first !== h1.first, h2.info);
+  await p.click('#tn-history [data-hp="next"]'); await wait(500);
+  const h3 = await hs();
+  check('history: last page shows the remaining 8, Older is disabled', h3.rows === 8 && h3.info.includes('31–38 of 38') && await p.$eval('#tn-history [data-hp="next"]', b => b.disabled), h3.info);
+  await p.click('#tn-history [data-hp="1"]'); await wait(400);
+  await wait(3300);                                                       // the 3 s refresh must keep the page
+  check('history: the page survives the 3 s refresh', (await hs()).info.includes('page 2 of 3'), (await hs()).info);
+  await nav('overview'); await nav('tuning'); await wait(600);
+  check('history: the page survives leaving and re-rendering the Tuning page', (await hs()).info.includes('page 2 of 3') && (await hs()).cur === '2', (await hs()).info);
+  await p.evaluate(() => window.__mockAddTest()); await wait(3500);
+  const h4 = await hs();
+  check('history: a new test does not yank the reader off page 2; total goes to 39', h4.info.includes('page 2 of 3') && h4.info.includes('of 39 tests'), h4.info);
+  await p.click('#tn-history [data-hp="0"]'); await wait(500);
+  await p.evaluate(() => window.__mockAddTest()); await wait(3500);
+  const h5 = await hs();
+  check('history: on page 1 the newest test appears at the top', h5.info.includes('page 1 of 3') && h5.info.includes('of 40 tests') && /\+135/.test(h5.first), h5.info + ' | ' + h5.first.slice(0, 60));
+  await p.select('#tn-psize', '30'); await wait(600);
+  const h6 = await hs();
+  check('history: page size 30 → 30 rows, 2 pages; the choice survives a re-render', h6.rows === 30 && h6.info.includes('page 1 of 2'), h6.info);
+  await nav('overview'); await nav('tuning'); await wait(600);
+  check('history: page size is remembered', (await hs()).rows === 30);
+  await p.select('#tn-psize', '15'); await wait(500);
+  check('history: back to 15 per page', (await hs()).rows === 15);
+
+  // --- tuning monitor window (monitor.html): rendered against mock.js's demo run
+  {
+    const mp = await b.newPage();
+    await mp.setViewport({ width: 520, height: 720 });
+    mp.setDefaultTimeout(4000);
+    const merr = [];
+    mp.on('pageerror', e => merr.push(e.message)); mp.on('console', m => { if (m.type() === 'error') merr.push(m.text()); });
+    await mp.evaluateOnNewDocument(() => {
+      window.__inj = [];
+      const BAD = 'img,script,iframe,object,embed,[data-xss],[onerror],[onload]';
+      const own = n => n.matches('script[src="mock.js"], script[src="tuning-format.js"], script[src="monitor.js"]');
+      new MutationObserver(ms => ms.forEach(m => m.addedNodes.forEach(n => { if (n.nodeType === 1) [n, ...n.querySelectorAll(BAD)].forEach(x => { if (x.matches(BAD) && !own(x)) window.__inj.push(x.outerHTML.slice(0, 100)); }); }))).observe(document, { childList: true, subtree: true });
+    });
+    await mp.goto('file://' + page.replace(/index\.html$/, 'monitor.html'));
+    await wait(1300);
+    const T = async f => mp.evaluate(f);
+    const hd = await T(() => ({ title: document.getElementById('m-title').textContent, sub: document.getElementById('m-sub').textContent, stop: document.getElementById('m-stop').disabled, prog: !document.getElementById('m-prog').hidden }));
+    check('monitor: header says what is being tested, with a progress bar and an enabled Stop', hd.title === 'Testing core +150 / memory +500 · 45 s' && hd.sub.includes('AI tuning GPU') && !hd.stop && hd.prog, JSON.stringify(hd));
+    const lg = await T(() => { const el = document.getElementById('m-log'); return { t: el.textContent, steps: [...el.querySelectorAll('.tf-step')].map(x => x.textContent), tbl: el.querySelectorAll('table.md-table th').length, strong: el.querySelectorAll('strong').length, ol: el.querySelectorAll('ol li').length, code: el.querySelectorAll('code').length, pass: el.querySelectorAll('.tf-res.pass').length, run: el.querySelectorAll('.tf-res.run').length, chip: el.querySelectorAll('.tf-res .tf-chip.warn').length }; });
+    check('monitor: Markdown rendered as elements (table, bold, list, code), not raw asterisks', lg.tbl === 3 && lg.strong >= 2 && lg.ol === 3 && lg.code >= 1 && !lg.t.includes('**') && !lg.t.includes('|---'), JSON.stringify({ tbl: lg.tbl, strong: lg.strong, ol: lg.ol, code: lg.code }));
+    check('monitor: tool calls are friendly steps; tuning.wait and raw JSON are hidden', lg.steps.length === 4 && lg.steps[0] === '▸Read status' && lg.steps.includes('▸Test core +100 / memory +0 · 45 s') && lg.steps.includes('▸Test core +0 / memory +0 · 30 s (light)') && !lg.t.includes('tuning.') && !lg.t.includes('{"'), lg.steps.join(' | '));
+    check('monitor: finished tests are result rows (pass, power-limited chip), the current one is RUNNING', lg.pass === 2 && lg.run === 1 && lg.chip >= 1 && lg.t.includes('434 G ops/s') && lg.t.includes('903 GB/s'), JSON.stringify({ pass: lg.pass, run: lg.run, chip: lg.chip }));
+    const gg = await T(() => ({ n: document.querySelectorAll('.mg').length, txt: document.getElementById('m-gauges').textContent, warn: document.querySelectorAll('.mg .mk.warn').length, bad: document.querySelectorAll('.mg .mk.bad').length, chips: document.getElementById('m-chips').textContent }));
+    check('monitor: gauges for core/memory temperature, clock, power, fan and load, with slowdown + emergency marks', gg.n === 6 && /GPU core/i.test(gg.txt) && /Memory temp/i.test(gg.txt) && /Power/i.test(gg.txt) && gg.warn >= 2 && gg.bad >= 2 && gg.txt.includes('340 W'), JSON.stringify({ n: gg.n, warn: gg.warn, bad: gg.bad }));
+    check('monitor: power-limited chip while the card is power-capped', gg.chips.includes('power-limited'), gg.chips);
+    const pw = await T(() => {
+      const base = structuredClone(M.msg), w = () => document.getElementById('m-prog-fill').style.width;
+      window.__now = () => 1e12; const at = s => { const m = structuredClone(base); m.status.testing.seconds = 60; m.status.testing.startedAt = new Date(1e12 - s * 1000).toISOString(); monitorApply(m); return w(); };
+      const r = [at(0), at(15), at(30), at(60), at(90)];
+      const m = structuredClone(base); m.status.testing = null; monitorApply(m); r.push(document.getElementById('m-prog').hidden);
+      const t = structuredClone(base); t.status.live.throttle = ['thermal slowdown']; monitorApply(t); r.push(document.getElementById('m-chips').textContent);
+      delete window.__now; return r;
+    });
+    check('monitor: progress bar width follows elapsed time (0 / 25 / 50 / 100 / clamped 100 %), hidden when no test runs', pw[0] === '0%' && pw[1] === '25%' && pw[2] === '50%' && pw[3] === '100%' && pw[4] === '100%' && pw[5] === true, pw.slice(0, 6).join(' '));
+    check('monitor: thermal-limited chip when the card throttles on temperature', String(pw[6]).includes('thermal-limited'), pw[6]);
+    const fin = await T(() => {
+      const m = structuredClone(M.msg); m.ai.running = false; m.status.busy = false; m.status.testing = null; m.status.live = null; m.ai.summary = '## Result\n**Saved** core `+120` / memory `+750`\n\n| Metric | Stock | Tuned |\n|---|---|---|\n| Clock | 2790 | **2985** |\n\n- stable for 180 s';
+      monitorApply(m);
+      const s = document.querySelector('#m-log .tf-summary');
+      return { h: !!s?.querySelector('h4'), tbl: s?.querySelectorAll('td').length, strong: s?.querySelectorAll('strong').length, li: s?.querySelectorAll('li').length, title: document.getElementById('m-title').textContent, stop: document.getElementById('m-stop').disabled, once: document.querySelectorAll('#m-log .tf-say').length };
+    });
+    check('monitor: the final summary is rendered as Markdown; header goes back to Idle', fin.h && fin.tbl === 3 && fin.strong >= 2 && fin.li === 1 && fin.title === 'Idle' && fin.stop, JSON.stringify(fin));
+    const er = await T(() => { monitorApply({ type: 'tuning', error: 'GPU busy' }); return document.getElementById('m-title').textContent; });
+    check('monitor: a host error is shown, not a blank window', er === 'Status unavailable', er);
+    await mp.evaluate(() => { window.__mockIdleMonitor = false; });
+    await wait(1300);                                                       // the mock's 1 s push brings the demo run back
+    await mp.click('#m-top');
+    check('monitor: "Keep on top" toggle tells the host', await T(() => document.getElementById('m-top').classList.contains('on') && window.__msgs.some(m => m.type === 'top' && m.on === true)));
+    await mp.click('#m-stop'); await wait(1400);
+    const sp = await T(() => ({ sent: window.__msgs.some(m => m.type === 'action' && m.op === 'stop'), title: document.getElementById('m-title').textContent, stop: document.getElementById('m-stop').disabled, bar: document.getElementById('m-prog').hidden }));
+    check('monitor: Stop sends the stop action and the window shows Idle afterwards', sp.sent && sp.title === 'Idle' && sp.stop && sp.bar, JSON.stringify(sp));
+    check('monitor: asks the host for status on load', await T(() => window.__msgs.some(m => m.type === 'ready' && m.page === 'monitor')));
+    // hostile transcript / status text stays inert
+    const hx = await T(() => {
+      const P = `"'><img src=x onerror=window.__xss=1 data-xss>`, m = structuredClone(M.msg);
+      m.ai.running = true; m.ai.goal = P; m.status.gpu.name = P; m.status.testing = { core: P, memAb: P, seconds: P, light: true, startedAt: P };
+      m.status.live = { coreC: P, memC: P, mhz: P, powerW: P, fanPct: P, utilPct: P, throttle: [P] }; m.status.history.forEach(r => { r.why = P; r.core = P; });
+      m.ai.transcript = [P, '**' + P + '**', '[x](javascript:window.__xss=1)', '# ' + P, '| a | b |\n|-|-|\n| ' + P + ' | ' + P + ' |', '→ tuning.gpu.test {"core":"' + P + '"}', '→ ' + P, '! ' + P];
+      m.ai.summary = P; monitorApply(m);
+      return { xss: window.__xss, inj: window.__inj, a: document.querySelectorAll('a').length, shown: document.getElementById('m-log').innerHTML.includes('&lt;img src=x onerror') };
+    });
+    check('monitor xss: hostile transcript / status text injects nothing and runs nothing', hx.xss === undefined && hx.inj.length === 0 && hx.a === 0 && hx.shown, JSON.stringify(hx).slice(0, 200));
+    check('monitor: no JavaScript errors', merr.length === 0, merr.slice(0, 3).join(' | '));
+    await mp.close();
+  }
   await p.click('#tn-startup');
   check('tuning: apply-at-startup toggle goes through the config', (await cfg())?.tuning?.applyAtStartup === true);
   p.once('dialog', d => d.accept());

@@ -40,6 +40,8 @@ public sealed class AiTuner : IDisposable
     public event Action<string>? Line;
     /// <summary>Called when a run ends (the service puts the card back to stock if a test was still running).</summary>
     public event Action? Ended;
+    /// <summary>Raised when a run has started (the tuning monitor window opens on it).</summary>
+    public event Action? Started;
 
     /// <param name="find">Tests pass a fake; the default looks for Claude Code on Windows, then in WSL.</param>
     public AiTuner(string glintExe, Func<ClaudeCli?>? find = null)
@@ -80,6 +82,7 @@ public sealed class AiTuner : IDisposable
             p.StandardInput.Write(Prompt(goal, budgetMinutes));
             p.StandardInput.Close();
             _proc = p;
+            try { Started?.Invoke(); } catch { }
             return new { started = true, cli = cli.Kind, goal, budgetMinutes };
         }
     }

@@ -16,6 +16,7 @@ namespace Glint.UI;
 public sealed class WebDashboard : Form
 {
     readonly GlintService _svc;
+    readonly Action? _openMonitor;
     readonly WebView2 _web = new() { Dock = DockStyle.Fill, DefaultBackgroundColor = Color.FromArgb(12, 13, 18) };
     readonly System.Windows.Forms.Timer _state = new() { Interval = 1000 }, _preview = new() { Interval = 50 };
     bool _ready;
@@ -25,9 +26,10 @@ public sealed class WebDashboard : Form
 
     [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
 
-    public WebDashboard(GlintService svc)
+    public WebDashboard(GlintService svc, Action? openMonitor = null)
     {
         _svc = svc;
+        _openMonitor = openMonitor;
         Text = "Glint";
         Size = new Size(1320, 860);
         MinimumSize = new Size(980, 640);
@@ -135,6 +137,15 @@ public sealed class WebDashboard : Form
         catch (Exception e) { return new { type = "tuning", error = e.Message }; }
     }
 
+    static object? Open(Action a) { a(); return null; }
+
+    /// <summary>One page of the saved test history for the Tuning page's pagination.</summary>
+    object HistoryMessage(int offset, int limit)
+    {
+        var h = _svc.Tuning.History(offset, limit);
+        return new { type = "tuningHistory", history = h };
+    }
+
     void OnMessage(string json)
     {
         JsonNode? m;
@@ -218,6 +229,8 @@ public sealed class WebDashboard : Form
                             "status" => null,
                             "aiStart" => _svc.Config.Tuning?.Enabled == true ? _svc.Ai.Start((string?)a["goal"] ?? "gpu", (int?)(double?)a["budgetMinutes"] ?? 45) : throw new InvalidOperationException("turn tuning on first"),
                             "aiStop" => _svc.Ai.Stop(),
+                            "history" => Open(() => Push(HistoryMessage(Math.Max(0, (int?)(double?)a["offset"] ?? 0), Math.Clamp((int?)(double?)a["limit"] ?? 15, 1, 100)))),
+                            "monitor" => Open(() => _openMonitor?.Invoke()),
                             "stop" => _svc.Tuning.Stop(),
                             "stock" => _svc.Tuning.Stock(),
                             "applySaved" => _svc.Tuning.State.Saved is { } sv ? _svc.Tuning.Apply(sv.Core, sv.MemAb) : throw new InvalidOperationException("no saved result yet"),
