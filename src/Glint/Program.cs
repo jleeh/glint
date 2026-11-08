@@ -139,6 +139,8 @@ static class Program
         if (args.Length > 0 && args[0] == "overlaybench") return GameOverlay.OverlayTests.Bench(args.Length > 1 ? args[1] : "overlaybench.json", args.Length > 2 ? int.Parse(args[2]) : 10);
         if (args.Length > 0 && args[0] == "etwsmoke") return GameOverlay.OverlayTests.EtwSmoke(args.Length > 1 ? args[1] : "etwsmoke.json", args.Length > 2 ? int.Parse(args[2]) : 3);
         if (args.Length > 0 && args[0] == "ctl") return Cli.Ctl(args.Skip(1).ToArray());
+        // real-hardware tuning check (NVML + CUDA): only with --hw, run by a human on their own PC as administrator
+        if (args.Length > 1 && args[0] == "tunetest") return Glint.Tuning.TuneHardwareTest.Run(args[1], args.Contains("--hw"));
         if (args.Length > 0 && args[0] == "mcp") return Cli.Mcp(args.Length > 2 && args[1] == "--only" ? args[2] : null);
         if (EnsureLeanGc(args)) return 0;
         return RunTray(args.Contains("--restarted"));
