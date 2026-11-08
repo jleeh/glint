@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Same rules as index.html: own script only, no remote anything. Inline style attributes carry computed widths (numbers only). -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Glint · Tuning monitor</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="mon">
+<div class="mon-wrap">
+  <header class="mon-head">
+    <div class="mon-top">
+      <div class="mon-state-dot" id="m-dot"></div>
+      <div class="mon-titles"><div class="mon-title" id="m-title">Idle</div><div class="mon-sub" id="m-sub"></div></div>
+      <button class="btn danger" id="m-stop" disabled>Stop</button>
+    </div>
+    <div class="bar mon-prog" id="m-prog" hidden><i id="m-prog-fill" style="width:0%"></i></div>
+    <div class="mon-prog-text muted" id="m-prog-text"></div>
+  </header>
+  <section class="mon-gauges" id="m-gauges"></section>
+  <div class="mon-chips" id="m-chips"></div>
+  <section class="mon-log" id="m-log"></section>
+  <footer class="mon-foot">
+    <div class="row" style="gap:8px"><div class="toggle" id="m-top" title="Keep this window above other windows"></div><label for="m-top">Keep on top</label></div>
+    <span class="muted" id="m-clock"></span>
+  </footer>
+</div>
+<script src="mock.js"></script>
+<script src="tuning-format.js"></script>
+<script src="monitor.js"></script>
+</body>
+</html>

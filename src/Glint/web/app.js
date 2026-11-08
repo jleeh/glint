@@ -190,6 +190,11 @@ bridge?.addEventListener('message', e => {
   } else if (m.type === 'tuning') {
     S.tuning = m;
     if (S.page === 'tuning') liveTuning();
+  } else if (m.type === 'tuningHistory') {
+    tnHist.data = m.history;
+    const last = Math.max(0, Math.ceil(num(m.history?.total) / tnHist.size) - 1);
+    if (tnHist.page > last) { tnHist.page = last; tnSave(); tnAskHistory(); }       // tests were deleted: stay on a page that exists
+    if (S.page === 'tuning') liveHistory();
   } else if (m.type === 'toast') toast(m.text, m.kind);
 });
 
@@ -1781,19 +1786,19 @@ function renderSetup() {
 }
 
 /* Tuning page: AI overclocking. Off by default; nothing is tested, applied or watched until the user turns it on. */
-const T_CFG = () => (S.cfg.tuning ??= { enabled: false, allowWorkstation: false, applyAtStartup: false, abortCoreC: 83, abortMemC: 96, crashWatch: true, autoBackoff: true, maxCrashes: 3, crashWindowDays: 7 });
+const T_CFG = () => (S.cfg.tuning ??= { enabled: false, allowWorkstation: false, applyAtStartup: false, emergencyCoreC: 90, emergencyMemC: 100, unlockPower: true, crashWatch: true, autoBackoff: true, maxCrashes: 3, crashWindowDays: 7 });
 let tuningPoll = null;
 function tuningAsk(op = 'status', args) { send({ type: 'tuning', op, args }); }
 function renderTuning() {
   const c = T_CFG();
   clearInterval(tuningPoll);
-  tuningPoll = setInterval(() => { if (S.page === 'tuning') tuningAsk(); else clearInterval(tuningPoll); }, 3000);
-  tuningAsk();
+  tuningPoll = setInterval(() => { if (S.page === 'tuning') { tuningAsk(); tnAskHistory(); } else clearInterval(tuningPoll); }, 3000);
+  tuningAsk(); tnAskHistory();
   $('#page-tuning').innerHTML = `
     <div class="card card-pad tn-head">
       <div style="flex:1;min-width:260px"><div class="card-title">AI overclocking</div>
         <div class="card-sub">Claude (your own Claude Code login) finds the fastest stable GPU and CPU settings with Glint's stress tests. Glint enforces every limit itself:
-        clock offsets only, never voltage or power limits; tests stop at your temperature limits; the card goes back to stock after every test; crashes back the overclock off automatically.</div></div>
+        clock offsets only (no voltage control); the GPU power limit goes up only to the card's own maximum; throttling at the card's temperature or power limit is a limit the AI optimises under, and only emergency temperatures stop a test; the card goes back to stock after every test; crashes back the overclock off automatically.</div></div>
       <div class="row" style="gap:10px"><span class="muted" style="font-size:12px">${c.enabled ? 'On' : 'Off'}</span><div class="toggle ${c.enabled ? 'on' : ''}" id="tn-enabled" title="Turn tuning on or off"></div></div>
     </div>
     ${!c.enabled ? `<div class="card card-pad muted" style="font-size:13px">Tuning is off. Nothing is tested, applied or watched, and Glint never touches your clocks. Turn it on above to start.
@@ -1803,13 +1808,15 @@ function renderTuning() {
         <div class="row" style="gap:10px;margin-top:12px;flex-wrap:wrap">
           <div class="seg" id="tn-goal">${[['gpu', 'GPU'], ['cpu', 'CPU'], ['all', 'Both']].map(([g, l]) => `<button data-g="${g}" class="${(S.tnGoal ?? 'gpu') === g ? 'on' : ''}">${l}</button>`).join('')}</div>
           <select id="tn-budget" class="input">${[15, 30, 45, 90, 180].map(m => `<option value="${m}" ${(S.tnBudget ?? 45) === m ? 'selected' : ''}>${m} min</option>`).join('')}</select>
-          <button class="btn primary" id="tn-ai-start">Tune with AI</button><button class="btn" id="tn-ai-stop">Stop</button>
+          <button class="btn primary" id="tn-ai-start">Tune with AI</button><button class="btn" id="tn-ai-stop">Stop</button><button class="btn" id="tn-monitor" title="A small window with live gauges, progress and the AI's reasoning">Open monitor</button>
         </div>
-        <div class="tn-log" id="tn-log"></div>
+        <div class="tn-log tf" id="tn-log"></div>
       </div>
       <div class="card card-pad"><div class="card-title" id="tn-gpu-name">GPU</div><div class="card-sub" id="tn-gpu-sub"></div>
         <div id="tn-gpu"></div>
+        <div id="tn-cmp" class="tn-cmp"></div>
         <div class="row" style="gap:8px;margin-top:12px;flex-wrap:wrap"><button class="btn" id="tn-apply">Apply saved result</button><button class="btn" id="tn-stock">Back to stock</button></div>
+        <div class="row tn-sw"><div class="toggle ${c.unlockPower !== false ? 'on' : ''}" id="tn-unlock"></div><label>Unlock power limit <span class="muted">(up to this card's maximum, never beyond; no voltage control)</span></label></div>
         <div class="row tn-sw"><div class="toggle ${c.applyAtStartup ? 'on' : ''}" id="tn-startup"></div><label>Apply the saved result when Glint starts <span class="muted">(skipped after a crash or a driver update)</span></label></div>
         <div class="row tn-sw" id="tn-ws-row"><div class="toggle ${c.allowWorkstation ? 'on' : ''}" id="tn-ws"></div><label>Allow tuning a workstation GPU <span class="muted">(RTX PRO, RTX A, Quadro: validated at stock clocks)</span></label></div>
       </div>
@@ -1823,7 +1830,7 @@ function renderTuning() {
         <div class="row" style="gap:8px;font-size:13px;margin-top:6px"><span class="muted">Back to stock after</span><input type="number" class="input tn-num" id="tn-max" min="1" max="20" value="${num(c.maxCrashes, 3)}"><span class="muted">crashes in</span><input type="number" class="input tn-num" id="tn-days" min="1" max="90" value="${num(c.crashWindowDays, 7)}"><span class="muted">days</span></div>
         <div id="tn-crashes"></div>
       </div>
-      <div class="card card-pad" style="grid-column:1/-1"><div class="card-title">Test history</div><div class="card-sub">Every stress test, newest first. A test that was running when the PC crashed is recorded as unstable.</div>
+      <div class="card card-pad" style="grid-column:1/-1"><div class="card-title">Test history</div><div class="card-sub">Every stress test, newest first. Hitting the card's own temperature or power limit is a limit, not a failure. A test that was running when the PC crashed is recorded as unstable.</div>
         <div id="tn-history"></div></div>
     </div>`}`;
   $('#tn-enabled').onclick = () => {
@@ -1832,13 +1839,19 @@ function renderTuning() {
   };
   if (!c.enabled) return;
   const flip = (id, key) => { $(id).onclick = () => { c[key] = !c[key]; commit(true); }; };
-  flip('#tn-startup', 'applyAtStartup'); flip('#tn-ws', 'allowWorkstation'); flip('#tn-cw', 'crashWatch'); flip('#tn-bo', 'autoBackoff');
+  flip('#tn-startup', 'applyAtStartup'); flip('#tn-unlock', 'unlockPower'); flip('#tn-ws', 'allowWorkstation'); flip('#tn-cw', 'crashWatch'); flip('#tn-bo', 'autoBackoff');
   $('#tn-max').onchange = e => { c.maxCrashes = clamp(Math.round(num(e.target.value, 3)), 1, 20); commit(); };
   $('#tn-days').onchange = e => { c.crashWindowDays = clamp(Math.round(num(e.target.value, 7)), 1, 90); commit(); };
   $('#tn-goal').onclick = e => { const b = e.target.closest('[data-g]'); if (!b) return; S.tnGoal = b.dataset.g; $$('#tn-goal button').forEach(x => x.classList.toggle('on', x === b)); };
   $('#tn-budget').onchange = e => { S.tnBudget = num(e.target.value, 45); };
   $('#tn-ai-start').onclick = () => tuningAsk('aiStart', { goal: S.tnGoal ?? 'gpu', budgetMinutes: S.tnBudget ?? 45 });
   $('#tn-ai-stop').onclick = () => tuningAsk('aiStop');
+  $('#tn-monitor').onclick = () => tuningAsk('monitor');
+  $('#tn-history').onclick = e => {
+    const b = e.target.closest('[data-hp]'); if (!b || b.disabled) return;
+    tnSetPage(b.dataset.hp === 'prev' ? tnHist.page - 1 : b.dataset.hp === 'next' ? tnHist.page + 1 : num(b.dataset.hp));
+  };
+  $('#tn-history').onchange = e => { if (e.target.id === 'tn-psize') { tnHist.size = clamp(num(e.target.value, 15), 5, 100); tnHist.page = 0; tnSave(); tnAskHistory(); } };
   $('#tn-apply').onclick = () => tuningAsk('applySaved');
   $('#tn-stock').onclick = () => tuningAsk('stock');
   $('#tn-cpu-stop').onclick = () => tuningAsk('cpuStop');
@@ -1859,12 +1872,11 @@ function liveTuning() {
     : ai.error ? 'Last run: ' + ai.error : ai.summary ? 'Last run finished' : `Uses your Claude Code login (${ai.cli === 'wsl' ? 'WSL' : 'Windows'}). It can only run Glint's tuning tools.`;
   $('#tn-ai-start').disabled = !!ai.running || !ai.cli || !!st.busy; $('#tn-ai-stop').disabled = !ai.running;
   const log = $('#tn-log'), atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 20;
-  const lines = [...(ai.transcript ?? [])]; if (st.busy && st.progress) lines.push('… ' + st.progress);
-  log.innerHTML = lines.length ? lines.map(l => `<div class="${l.startsWith('→') ? 'tn-tool' : l.startsWith('!') ? 'tn-err' : ''}">${esc(l)}</div>`).join('') : '<div class="muted">The AI\'s plan, every test it runs and its summary appear here.</div>';
-  if (ai.summary && !ai.running) log.insertAdjacentHTML('beforeend', `<div class="tn-sum">${esc(ai.summary)}</div>`);
+  const html = TF.timeline(ai, st) + (st.busy && st.progress ? `<div class="tf-note">… ${esc(st.progress)}</div>` : '');
+  log.innerHTML = html || '<div class="muted">The AI\'s plan, every test it runs and its summary appear here.</div>';
   if (atEnd) log.scrollTop = log.scrollHeight;
   $('#tn-gpu-name').textContent = g ? g.name : 'GPU';
-  $('#tn-gpu-sub').textContent = g ? `Driver ${g.driver} · ${num(g.vramGiB)} GB · power limit ${num(g.powerLimitW?.default)} W (the tuner never changes it)` : (st.gpuError ?? 'No NVIDIA GPU found');
+  $('#tn-gpu-sub').textContent = g ? `Driver ${g.driver} · ${num(g.vramGiB)} GB · power limit ${num(g.powerLimitW?.now)} W now · ${num(g.powerLimitW?.default)} W default · ${num(g.powerLimitW?.max)} W card maximum` : (st.gpuError ?? 'No NVIDIA GPU found');
   $('#tn-ws-row').style.display = g?.workstation ? '' : 'none';
   const sv = st.saved, L = st.limits ?? {};
   $('#tn-gpu').innerHTML = !g ? '' : `
@@ -1872,7 +1884,7 @@ function liveTuning() {
     ${g.blocked ? `<div class="tn-warn">${esc(g.blocked)}</div>` : ''}
     <div class="tn-kv"><span>Now</span><b>core ${pm(g.offsets?.core)} MHz · memory ${pm(g.offsets?.memAb)}</b>
       <span>Saved result</span><b>${sv ? `core ${pm(sv.core)} · memory ${pm(sv.memAb)} <span class="muted">(${esc(new Date(sv.when).toLocaleDateString())})</span>` : '—'}</b>
-      <span>This card's limits</span><b>core ≤ ${pm(L.maxCore)} · memory ≤ ${pm(L.maxMemAb)} · stop at ${num(L.abortCoreC)} °C / ${num(L.abortMemC)} °C memory</b>
+      <span>This card's limits</span><b>core ≤ ${pm(L.maxCore)} · memory ≤ ${pm(L.maxMemAb)} · card slows down at ${g.slowdownC != null ? num(g.slowdownC) + ' °C' : 'its own limit'} · emergency stop at ${num(L.emergencyCoreC)} °C / ${num(L.emergencyMemC)} °C memory · power ${L.unlockPower ? 'raised to the card maximum' : 'default'}</b>
       ${g.eccCorrected != null ? `<span>ECC corrected errors</span><b>${num(g.eccCorrected)}</b>` : ''}</div>`;
   $('#tn-clear')?.addEventListener('click', () => tuningAsk('clearRevert'));
   $('#tn-apply').disabled = !sv || !!st.busy; 
@@ -1892,12 +1904,67 @@ function liveTuning() {
   const KIND = { gpu_tdr: 'GPU driver reset', gpu_app_crash: 'Game crash in the NVIDIA driver', whea_corrected: 'CPU hardware error (corrected)', whea_fatal: 'CPU hardware error', unexpected_shutdown: 'Unexpected shutdown', bugcheck: 'Bluescreen' };
   $('#tn-crashes').innerHTML = (cores.length ? `<div class="tn-warn">CPU errors on core ${cores.map(([k, n]) => esc(k) + ' (' + num(n) + '×)').join(', ')}: loosen its Curve Optimizer value by 2.</div>` : '')
     + (ev.length ? `<table class="tn-table"><tbody>${ev.slice(0, 8).map(e => `<tr><td>${esc(new Date(e.time).toLocaleString())}</td><td>${esc(own(KIND, e.kind) ?? e.kind)}</td><td class="muted">${esc(e.actionText ?? '')}</td></tr>`).join('')}</tbody></table>` : '<div class="muted" style="font-size:12px;margin-top:8px">No crashes recorded.</div>');
-  const h = st.history ?? [];
-  $('#tn-history').innerHTML = h.length ? `<table class="tn-table"><thead><tr><th>When</th><th>Core</th><th>Memory</th><th>Length</th><th>Result</th><th>Clock</th><th>Peak</th><th>VRAM</th></tr></thead><tbody>${h.slice(0, 20).map(r => `
-    <tr><td>${esc(new Date(r.time).toLocaleTimeString())}</td><td>${pm(r.core)}</td><td>${pm(r.memAb)}</td><td>${num(r.seconds)} s${r.light ? ' light' : ''}</td>
-      <td class="${r.ok ? 'tn-pass' : 'tn-fail'}">${r.ok ? 'pass' : 'fail'}${r.why ? ` <span class="muted">${esc(r.why)}</span>` : ''}</td>
-      <td>${r.loadMhz ? num(r.loadMhz) + ' MHz' : '—'}</td><td>${r.peakCoreC ? num(r.peakCoreC).toFixed(0) + ' °C' : '—'}</td><td>${r.gBps ? num(r.gBps).toFixed(0) + ' GB/s' : '—'}</td></tr>`).join('')}</tbody></table>`
-    : '<div class="muted" style="font-size:12px;margin-top:8px">No tests yet.</div>';
+  $('#tn-cmp').innerHTML = g ? tnCompare(st.compare) : '';
+  liveHistory();
+}
+
+/* Stock vs tuned: bars per metric, % delta (green = better, amber = costs more power / heat). */
+function tnCompare(cp) {
+  const head = '<div class="label">Stock vs tuned</div>';
+  if (!cp?.stock) return head + '<div class="muted" style="font-size:12.5px;margin-top:6px" id="tn-cmp-empty">No stock baseline yet. Run Tune with AI: it measures stock first.</div>';
+  if (!cp.tuned) return head + `<div class="muted" style="font-size:12.5px;margin-top:6px" id="tn-cmp-empty">Stock is measured (${cp.stock.loadMhz ? num(cp.stock.loadMhz) + ' MHz' : '—'}${cp.stock.rate ? ', ' + num(cp.stock.rate).toFixed(0) + ' G ops/s' : ''}). No passing tuned result to compare yet.</div>`;
+  const a = cp.stock, b = cp.tuned;
+  const rows = [
+    ['Clock under load', 'loadMhz', v => num(v).toFixed(0) + ' MHz', true],
+    ['Compute', 'rate', v => num(v).toFixed(0) + ' G/s', true],
+    ['VRAM bandwidth', 'gBps', v => num(v).toFixed(0) + ' GB/s', true],
+    ['Power', 'powerW', v => num(v).toFixed(0) + ' W', false],
+    ['Peak temp', 'peakCoreC', v => num(v).toFixed(0) + ' °C', false],
+  ].filter(([, k]) => num(a[k]) > 0 && num(b[k]) > 0);
+  const pmv = v => (num(v) >= 0 ? '+' : '−') + Math.abs(num(v));
+  return head + `<div class="tn-cmp-legend"><span><i style="background:#5b6478"></i>Stock</span><span><i style="background:var(--accent)"></i>Tuned (core ${pmv(b.core)} / memory ${pmv(b.memAb)})</span></div>`
+    + rows.map(([label, k, f, perf]) => {
+      const av = num(a[k]), bv = num(b[k]), mx = Math.max(av, bv), d = (bv - av) / av * 100;
+      const cls = Math.abs(d) < 0.5 ? 'flat' : perf ? (d > 0 ? 'gain' : 'cost') : (d > 0 ? 'cost' : 'gain');
+      return `<div class="cmp-row" data-cmp="${esc(k)}"><span class="lbl">${esc(label)}</span><div class="cmp-bars">
+        <div class="cmp-bar cmp-stock"><i style="width:${(av / mx * 100).toFixed(1)}%"></i><span>${esc(f(av))}</span></div>
+        <div class="cmp-bar cmp-tuned"><i style="width:${(bv / mx * 100).toFixed(1)}%"></i><span>${esc(f(bv))}</span></div></div>
+        <span class="cmp-delta ${cls}">${d >= 0 ? '+' : '−'}${Math.abs(d).toFixed(1)}%</span></div>`;
+    }).join('');
+}
+
+/* Test history: every saved test, paginated through the host (history op). The page and size survive refreshes and re-renders. */
+const tnHist = (() => {
+  let page = 0, size = 15;
+  try { page = clamp(Math.round(num(sessionStorage.getItem('glint.tn.page'), 0)), 0, 100000); size = clamp(Math.round(num(localStorage.getItem('glint.tn.psize'), 15)), 5, 100); } catch { }
+  return { page, size, data: null };
+})();
+function tnSave() { try { sessionStorage.setItem('glint.tn.page', String(tnHist.page)); localStorage.setItem('glint.tn.psize', String(tnHist.size)); } catch { } }
+function tnAskHistory() { if (T_CFG().enabled) tuningAsk('history', { offset: tnHist.page * tnHist.size, limit: tnHist.size }); }
+function tnSetPage(p) {
+  const last = Math.max(0, Math.ceil(num(tnHist.data?.total) / tnHist.size) - 1);
+  tnHist.page = clamp(Math.round(num(p)), 0, last); tnSave(); tnAskHistory(); liveHistory();
+}
+function liveHistory() {
+  const el = $('#tn-history'); if (!el) return;
+  const d = tnHist.data, pm = v => (num(v) >= 0 ? '+' : '') + num(v);
+  const items = d?.items ?? (S.tuning?.status?.history ?? []).slice(tnHist.page * tnHist.size, (tnHist.page + 1) * tnHist.size);
+  const total = d ? num(d.total) : (S.tuning?.status?.history ?? []).length;
+  if (!items.length) { el.innerHTML = '<div class="muted" style="font-size:12px;margin-top:8px">No tests yet.</div>'; return; }
+  const pages = Math.max(1, Math.ceil(total / tnHist.size)), cur = Math.min(tnHist.page, pages - 1);
+  const nums = [...new Set([0, cur - 1, cur, cur + 1, pages - 1].filter(x => x >= 0 && x < pages))].sort((x, y) => x - y);
+  let prev = -1; const btns = [];
+  for (const n of nums) { if (prev >= 0 && n > prev + 1) btns.push('<span class="muted">…</span>'); btns.push(`<button class="btn small ${n === cur ? 'cur' : ''}" data-hp="${n}">${n + 1}</button>`); prev = n; }
+  const first = cur * tnHist.size + 1;
+  el.innerHTML = `<div style="overflow-x:auto"><table class="tn-table"><thead><tr><th>When</th><th>Core</th><th>Memory</th><th>Length</th><th>Result</th><th>Clock</th><th>Compute</th><th>VRAM</th><th>Power</th><th>Peak</th><th>Notes</th></tr></thead><tbody>${items.map(r => `
+    <tr><td>${esc(new Date(r.time).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }))}</td><td>${pm(r.core)}</td><td>${pm(r.memAb)}</td><td>${num(r.seconds)} s${r.light ? ' light' : ''}</td>
+      <td class="${r.ok ? 'tn-pass' : 'tn-fail'}">${r.ok ? 'pass' : 'fail'}</td>
+      <td>${r.loadMhz ? num(r.loadMhz) + ' MHz' : '—'}</td><td>${r.rate ? num(r.rate).toFixed(0) + ' G/s' : '—'}</td><td>${r.gBps ? num(r.gBps).toFixed(0) + ' GB/s' : '—'}</td>
+      <td>${r.powerW ? num(r.powerW).toFixed(0) + ' W' : '—'}</td><td>${r.peakCoreC ? num(r.peakCoreC).toFixed(0) + ' °C' : '—'}</td>
+      <td>${TF.limitChips(r)}${r.why ? ` <span class="muted">${esc(r.why)}</span>` : ''}</td></tr>`).join('')}</tbody></table></div>
+    <div class="tn-pager"><button class="btn small" data-hp="prev" ${cur <= 0 ? 'disabled' : ''}>‹ Newer</button>${btns.join('')}<button class="btn small" data-hp="next" ${cur >= pages - 1 ? 'disabled' : ''}>Older ›</button>
+      <span class="info" id="tn-hinfo">${first}–${first + items.length - 1} of ${total} tests · page ${cur + 1} of ${pages}</span>
+      <select id="tn-psize" class="input" title="Tests per page">${[15, 30, 50].map(n => `<option value="${n}" ${n === tnHist.size ? 'selected' : ''}>${n} / page</option>`).join('')}</select></div>`;
 }
 
 /* Game overlay page */

@@ -227,6 +227,17 @@ static class Program
             Eval($"go('{pg}')"); Pump(300);
             C($"page {pg} renders in WebView2", Eval($"document.getElementById('page-{pg}').children.length > 0") == "true");
         }
+        // the tuning monitor window: real WebView2, real status push (tuning is off in this config: it must show Idle, touch no GPU)
+        var mon = new UI.TuningMonitor(svc) { StartPosition = FormStartPosition.Manual, Location = new Point(-32000, -32000), ShowInTaskbar = false };
+        mon.Show();
+        var msw = Stopwatch.StartNew();
+        while (!mon.Ready && msw.ElapsedMilliseconds < 15000) { Application.DoEvents(); Thread.Sleep(20); }
+        C("monitor window loads and says ready", mon.Ready, $"{msw.ElapsedMilliseconds} ms");
+        Pump(1800);
+        string MEval(string js) { var t = mon.EvalAsync(js); var w = Stopwatch.StartNew(); while (!t.IsCompleted && w.ElapsedMilliseconds < 5000) { Application.DoEvents(); Thread.Sleep(10); } return t.IsCompleted ? t.Result : "timeout"; }
+        C("monitor window receives the status push and renders Idle", MEval("document.getElementById('m-title').textContent") == "\"Idle\"" && MEval("document.getElementById('m-clock').textContent !== ''") == "true", MEval("document.getElementById('m-title').textContent"));
+        C("monitor window: Stop with nothing running is harmless and disabled", MEval("document.getElementById('m-stop').disabled") == "true");
+        mon.Close(); mon.Dispose();
         d.Close(); d.Dispose();
         Pump(4000);
         int edgeAfter = Edge();

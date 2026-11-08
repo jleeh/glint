@@ -17,7 +17,7 @@ sandboxed JavaScript plugins.
 | `src/Glint/Core/` | `GlintService` (owns everything), `Rig` (device discovery + LibreHardwareMonitor sensors + sensor catalog), `FanEngine`, `LightingEngine` + `Effects` + `Layout`, `Config` + `ConfigSchema` (schema + `ConfigValidator`), `ControlServer` (named-pipe API) + `Cli` (ctl + MCP), `HomeAssistant` + `Mqtt`, `SetupCheck` (on-demand setup report), `UpdateCheck` (optional GitHub releases check, the repo URL lives here), `SelfTest` (+ `SelfTestV02`). |
 | `src/Glint/Devices/` | Device interfaces (`ILightDevice`, `IFanController`), the driver registry, SMBus access via PawnIO, the OpenRGB SDK bridge (`OpenRgbBridge`; tests use an in-process fake server on 127.0.0.1 only). |
 | `src/Glint/Plugins/` | Plugin host: Jint for device plugins, one shared V8 runtime for effect plugins, trust store, `PluginCheck` (simulated-device tests). `devices/` and `effects/` hold the bundled plugins. |
-| `src/Glint/Tuning/` | Overclocking, off by default: `TuningService` (owns the GPU, the safety rails and tuning-state.json), `Nvml` / `CudaStress` (native NVIDIA layer) with `SimulatedGpu` for tests, `CrashWatch` + `CrashEvents` (event-log crash detection and back-off), `CpuTuning` (Ryzen Curve Optimizer search through the bundled CoreCycler, fetched by `tools/fetch-corecycler.ps1` into the git-ignored `src/Glint/third_party/`; its thermal watchdog is a timer that exists only while a search runs), `AiTuner` (Claude Code over a tuning-only MCP server), `TuningLimits` (hard caps). |
+| `src/Glint/Tuning/` | Overclocking, off by default: `TuningService` (owns the GPU, the safety rails and tuning-state.json), `Nvml` / `CudaStress` (native NVIDIA layer) with `SimulatedGpu` for tests, `CrashWatch` + `CrashEvents` (event-log crash detection and back-off), `CpuTuning` (Ryzen Curve Optimizer search through the bundled CoreCycler, fetched by `tools/fetch-corecycler.ps1` into the git-ignored `src/Glint/third_party/`; its thermal watchdog is a timer that exists only while a search runs), `AiTuner` (Claude Code over a tuning-only MCP server), `TuningLimits` (hard caps). The tuning monitor window (`UI/TuningMonitor.cs`, `web/monitor.html` + `monitor.js`, shared `web/tuning-format.js`) opens on `TuningService.JobStarted` / `AiTuner.Started`; it only exists while open. |
 | `src/Glint/Overlay/` | Game overlay: ETW present-event FPS (no injection), frame statistics, layered click-through window. |
 | `src/Glint/UI/` | Tray (`TrayApp`) and the WebView2 host (`WebDashboard`). |
 | `src/Glint/web/` | Dashboard: plain HTML/CSS/JS, no build step. `mock.js` fakes the host with a fictional demo rig. |
@@ -52,7 +52,10 @@ new checks fail against broken code.
    used (the Sensors page catalog, the overlay's ETW session, audio capture, the dashboard itself).
 3. **Overclocking safety.** Tuning is off by default and every limit lives in `TuningService` / `TuningLimits` /
    `Nvml.CheckOffset`, never in the caller (dashboard, CLI, MCP, AI). Tests never load `nvml.dll` / `nvcuda.dll`: use
-   `SimulatedGpu`. The AI tuner gets no built-in Claude Code tools and only the `tuning.*` MCP tools.
+   `SimulatedGpu`. The AI tuner gets no built-in Claude Code tools and only the `tuning.*` MCP tools. Model: clock
+   offsets only, no voltage control; the GPU power limit is raised only to the card's own maximum (`unlockPower`);
+   temperature/power throttling is a limit the tuner optimises under (flagged `thermalLimited` / `powerLimited`),
+   and only the emergency temperatures stop a test.
 4. **Device safety.** Plugins identify the device before writing, never send firmware/bootloader/save-to-flash
    commands, fan plugins hand control back in `shutdown()`, SMBus plugins declare addresses and never touch
    0x50–0x57. Fan fail-safe (100% on a lost sensor) must always win over overrides.

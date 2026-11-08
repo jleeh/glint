@@ -128,7 +128,12 @@ device before writing, and can never touch the SPD EEPROM (0x50–0x57).
 ## Recipe: overclocking (only when the user asks)
 
 Tuning is off by default (`tuning.enabled`); only turn it on when the user asks for overclocking. Every limit is
-enforced by Glint, so a wrong request fails instead of crossing a limit.
+enforced by Glint, so a wrong request fails instead of crossing a limit. The goal is the best *sustained* performance
+that is stable: a card that reaches its own temperature or power limit throttles, and the test is flagged
+`thermalLimited` / `powerLimited` (a limit to optimise under, not a failure). Only emergency temperatures stop a test.
+Clock offsets only: no voltage control, and the GPU power limit is raised only to the card's own maximum
+(`tuning.unlockPower`). `tuning.status` also reports the running test (`testing`), a live sample (`live`) and
+`compare` (stock vs the best tuned result); a monitor window shows the same to the user while a test runs.
 
 1. `tuning.status`: the GPU, whether it may be tuned (`gpu.blocked` says why not: tuning off, a workstation card
    without `tuning.allowWorkstation`, no offsets in the driver), this card's limits, the saved result and the last 30 tests.

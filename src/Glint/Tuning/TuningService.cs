@@ -68,6 +68,8 @@ public sealed class TuningService : IDisposable
     public IGpuControl? OpenedGpu => _gpu;
     /// <summary>Raised on every phase / progress change (the dashboard and the AI transcript listen).</summary>
     public event Action<string>? Log;
+    /// <summary>Raised (on the job's caller thread) when a background job such as a GPU test starts; the tuning monitor window opens on it.</summary>
+    public event Action<string>? JobStarted;
 
     /// <param name="openGpu">null result = no NVIDIA GPU. Tests pass a <see cref="SimulatedGpu"/>.</param>
     /// <param name="memJunction">Memory-junction temperature from Glint's sensors (LibreHardwareMonitor), validated by the caller or here.</param>
@@ -446,6 +448,12 @@ public sealed class TuningService : IDisposable
     int ToAb(int nvml) => (int)Math.Round(nvml * (State.MemRatio ?? 0.5));
 
     void Run(string name, Func<object> work)
+    {
+        StartJob(name, work);
+        try { JobStarted?.Invoke(name); } catch { }
+    }
+
+    void StartJob(string name, Func<object> work)
     {
         lock (_gate)
         {
