@@ -184,6 +184,19 @@ public static class ConfigValidator
             else if (c.OpenRgb.Exclude.Any(string.IsNullOrWhiteSpace)) E.Add("openRgb.exclude has an empty entry");
         }
 
+        // ---- tuning (overclocking; off by default)
+        if (c.Tuning == null) E.Add("tuning is missing (use {} for the defaults)");
+        else
+        {
+            var t = c.Tuning;
+            if (!(t.AbortCoreC >= Glint.Tuning.TuningLimits.MinAbortC && t.AbortCoreC <= Glint.Tuning.TuningLimits.MaxAbortCoreC))
+                E.Add($"tuning.abortCoreC must be {Glint.Tuning.TuningLimits.MinAbortC}..{Glint.Tuning.TuningLimits.MaxAbortCoreC} °C");
+            if (!(t.AbortMemC >= Glint.Tuning.TuningLimits.MinAbortC + 10 && t.AbortMemC <= Glint.Tuning.TuningLimits.MaxAbortMemC))
+                E.Add($"tuning.abortMemC must be {Glint.Tuning.TuningLimits.MinAbortC + 10}..{Glint.Tuning.TuningLimits.MaxAbortMemC} °C");
+            Range("tuning.maxCrashes", t.MaxCrashes, 1, 20);
+            Range("tuning.crashWindowDays", t.CrashWindowDays, 1, 90);
+        }
+
         // ---- overlay
         if (c.Overlay == null) E.Add("overlay is missing (use {} for the defaults)");
         else CheckOverlay(c.Overlay, haveLive ? live : null, fans, E, W);
@@ -428,6 +441,18 @@ public static class ConfigValidator
             {
                 ["check"] = F("boolean", "Ask GitHub for the latest release (one request to the releases/latest API at startup and every 24 h; no other network, no telemetry). Shown on the Setup check page, Settings and the tray menu.", true, false),
                 ["autoInstall"] = F("boolean", "Install a newer verified release by itself: only after 10 minutes without keyboard/mouse input, with no fullscreen game in front and not on battery; at most one attempt per version per day. Needs check. Off by default.", false, true),
+            }),
+            ["tuning"] = F("object", "Overclocking, AI-driven: GPU core/memory offsets verified by Glint's own CUDA stress test (never voltage or power limits), per-core Ryzen Curve Optimizer, and crash watch with automatic back-off. Everything is off by default; tuning.status shows the hardware, limits, results and crashes.", fields: new JsonObject
+            {
+                ["enabled"] = F("boolean", "Show the Tuning page and allow tests. Off = Glint never touches clocks.", false, true),
+                ["allowWorkstation"] = F("boolean", "Allow tuning a workstation / data-centre GPU (RTX PRO, RTX A, Quadro). They're validated at stock clocks, so this is an explicit opt-in.", false, true),
+                ["applyAtStartup"] = F("boolean", "Re-apply the saved GPU result when Glint starts (skipped after a crash, a driver change or repeated crashes).", false, true),
+                ["abortCoreC"] = F("number", "Stress tests stop (GPU back to stock) at this core temperature.", 83, 83, Glint.Tuning.TuningLimits.MinAbortC, Glint.Tuning.TuningLimits.MaxAbortCoreC),
+                ["abortMemC"] = F("number", "...and at this memory-junction temperature.", 96, 96, Glint.Tuning.TuningLimits.MinAbortC + 10, Glint.Tuning.TuningLimits.MaxAbortMemC),
+                ["crashWatch"] = F("boolean", "While an overclock is applied, watch the event log for driver resets, hardware errors and bugchecks.", true, true),
+                ["autoBackoff"] = F("boolean", "On a GPU crash with an overclock applied, lower it a step (core -15 MHz, then memory -250).", true, true),
+                ["maxCrashes"] = F("integer", "This many GPU crashes within crashWindowDays puts the GPU back to stock.", 3, 3, 1, 20),
+                ["crashWindowDays"] = F("integer", "Window for maxCrashes, in days.", 7, 7, 1, 90),
             }),
             ["openRgb"] = F("object", "OpenRGB bridge (off by default; takes effect after app.restart). When enabled and an OpenRGB SDK server is reachable at startup, its devices become Glint lighting devices ('orgb-...'). Devices Glint already drives natively are skipped so two drivers never fight. Check with setup.check.", fields: new JsonObject
             {

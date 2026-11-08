@@ -38,6 +38,8 @@ public sealed class GlintConfig
     public UpdateOptions Updates { get; set; } = new();
     /// <summary>OpenRGB SDK bridge (off by default): drive devices an OpenRGB server on this PC knows.</summary>
     public OpenRgbConfig OpenRgb { get; set; } = new();
+    /// <summary>Overclocking (GPU auto-OC, Curve Optimizer guide, crash watch). Everything is off until the user turns it on.</summary>
+    public TuningConfig Tuning { get; set; } = new();
 
     // ------------------------------------------------------------------ io
 
@@ -289,6 +291,30 @@ public sealed class OpenRgbConfig
     public int Port { get; set; } = 6742;
     /// <summary>OpenRGB devices to leave alone: device name (or part of it) or Glint id ("orgb-...").</summary>
     public List<string> Exclude { get; set; } = new();
+}
+
+/// <summary>
+/// Overclocking. Off by default: nothing is tested, applied or watched until <see cref="Enabled"/> is turned on and the
+/// user starts a test. Results live in tuning-state.json next to config.json, not here.
+/// </summary>
+public sealed class TuningConfig
+{
+    /// <summary>Show the Tuning page and allow tests. Off = Glint never touches clocks (and resets nothing it didn't set).</summary>
+    public bool Enabled { get; set; }
+    /// <summary>Allow tuning a workstation / data-centre GPU (RTX PRO, RTX A, Quadro...). They're validated at stock, so this is an explicit opt-in.</summary>
+    public bool AllowWorkstation { get; set; }
+    /// <summary>Re-apply the saved GPU result when Glint starts (skipped after a crash, a driver change or repeated crashes).</summary>
+    public bool ApplyAtStartup { get; set; }
+    /// <summary>Stress tests stop (back to stock) at these temperatures. Clamped to hard limits.</summary>
+    public double AbortCoreC { get; set; } = 83;
+    public double AbortMemC { get; set; } = 96;
+    /// <summary>Watch Windows' event log for driver resets, hardware errors and bugchecks while an overclock is applied.</summary>
+    public bool CrashWatch { get; set; } = true;
+    /// <summary>On a GPU crash with an overclock applied: lower it a step (core first, then memory).</summary>
+    public bool AutoBackoff { get; set; } = true;
+    /// <summary>This many GPU crashes within <see cref="CrashWindowDays"/> puts the GPU back to stock.</summary>
+    public int MaxCrashes { get; set; } = 3;
+    public int CrashWindowDays { get; set; } = 7;
 }
 
 public sealed class SensorOptions
