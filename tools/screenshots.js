@@ -78,6 +78,18 @@ function fontEnv() {
   await nav('tuning'); await wait(400); await p.click('#tn-ai-start'); await wait(500); await shot('tuning');
   await p.evaluate(() => { const c = document.getElementById('content'); c.scrollTop = document.getElementById('tn-history').closest('.card').offsetTop - 80; });
   await shot('tuning-history');
+  // manual overclock (GPU card) and the per-profile overclock table
+  await p.evaluate(() => { S.tnMan = { core: 140, mem: 750, prof: null }; document.getElementById('tn-man').scrollIntoView({ block: 'center' }); renderTuning(); }); await wait(500);
+  await p.evaluate(() => { document.getElementById('tn-man').scrollIntoView({ block: 'center' }); });
+  await shot('tuning-manual');
+  await p.evaluate(() => window.__mockConfigChanged(c => { for (const n of ['Gaming', 'Night shift', 'Streaming', 'Benchmark']) c.profiles[n] = JSON.parse(JSON.stringify(c.profiles.Balanced)); }));
+  await wait(400);
+  await p.evaluate(() => { document.getElementById('tn-profiles').scrollIntoView({ block: 'center' }); });
+  await shot('tuning-profiles');
+  await p.click('#profile-manage'); await wait(300);
+  await shot('profiles-manager');
+  await p.keyboard.press('Escape');
+  await nav('overview'); await shot('profiles-dropdown');
   // the small tuning monitor window (its own page), at the window's default size
   const mon = await b.newPage();
   await mon.setViewport({ width: 520, height: 720, deviceScaleFactor: 2 });

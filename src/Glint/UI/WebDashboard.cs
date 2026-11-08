@@ -144,6 +144,12 @@ public sealed class WebDashboard : Form
         catch (Exception e) { return new { type = "tuning", error = e.Message }; }
     }
 
+    static string AiTarget(JsonObject a)
+    {
+        var t = (string?)a["target"] ?? (string?)a["goal"];
+        return t is "gpu" or "cpu" or "all" ? t : "gpu";
+    }
+
     static object? Open(Action a) { a(); return null; }
 
     /// <summary>One page of the saved test history for the Tuning page's pagination.</summary>
@@ -218,6 +224,13 @@ public sealed class WebDashboard : Form
                 }
                 catch (Exception e) { Push(new { type = "toast", kind = "error", text = "Couldn't apply: " + e.Message }); }
                 break;
+            case "profileRename":
+                {
+                    // goes through GlintService.RenameProfile: validated, the overclock and activeProfile follow
+                    var err = _svc.RenameProfile((string?)m!["from"] ?? "", (string?)m["to"] ?? "");
+                    if (err != null) { Push(new { type = "toast", kind = "error", text = "Not renamed: " + err }); Push(InitMessage()); }
+                    break;
+                }
             case "sensorsWanted":
                 _svc.Rig.WantCatalog();
                 if ((bool?)m!["reset"] == true) _svc.Rig.ResetCatalogMinMax();
@@ -234,7 +247,9 @@ public sealed class WebDashboard : Form
                         _ = op switch
                         {
                             "status" => null,
-                            "aiStart" => _svc.Config.Tuning?.Enabled == true ? _svc.Ai.Start((string?)a["goal"] ?? "gpu", (int?)(double?)a["budgetMinutes"] ?? 45) : throw new InvalidOperationException("turn tuning on first"),
+                            // goal = what to optimise for (quiet / balanced / performance / custom) and context = the user's own words are
+                            // being added by the AI tuner; target is gpu / cpu / all (older pages sent it as "goal")
+                            "aiStart" => _svc.Config.Tuning?.Enabled == true ? _svc.Ai.Start(AiTarget(a), (int?)(double?)a["budgetMinutes"] ?? 45) : throw new InvalidOperationException("turn tuning on first"),
                             "aiStop" => _svc.Ai.Stop(),
                             "history" => Open(() => Push(HistoryMessage(Math.Max(0, (int?)(double?)a["offset"] ?? 0), Math.Clamp((int?)(double?)a["limit"] ?? 15, 1, 100)))),
                             "monitor" => Open(() => _openMonitor?.Invoke()),
@@ -245,6 +260,8 @@ public sealed class WebDashboard : Form
                             "manualApply" => _svc.Tuning.Apply(I("core"), I("memAb"), (bool?)a["force"] ?? false),
                             "manualSave" => _svc.Tuning.SaveResult(I("core"), I("memAb"), (string?)a["profile"], (bool?)a["force"] ?? false),
                             "test" => _svc.Tuning.StartGpuTest(I("core"), I("memAb"), (double?)a["seconds"] ?? 60, (bool?)a["light"] ?? false),
+                            // clear one profile's saved overclock (the profile must exist in the config)
+                            "clearProfile" => (string?)a["profile"] is { } cp && _svc.Config.Profiles.ContainsKey(cp) ? _svc.Tuning.ClearProfile(cp) : throw new ArgumentException("no such profile"),
                             "clearRevert" => _svc.Tuning.ClearRevert(),
                             "cpuFinish" => _svc.Cpu.Finish((bool?)a["force"] ?? false),
                             "cpuStop" => _svc.Cpu.Stop(),

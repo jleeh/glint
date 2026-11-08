@@ -117,18 +117,22 @@ const fmtT = v => v == null ? '–' : v.toFixed(v >= 100 ? 0 : 1);
 
 /* ------------------------------------------------------------------ messaging */
 
-let commitTimer = null;
+let commitTimer = null, commitSend = null;
 function commit(rerender) {
   clearTimeout(commitTimer);
   S.ovrLocalUntil = Date.now() + 2500; // local edits win over the host's (older) override list until it has caught up
-  commitTimer = setTimeout(() => {
+  commitSend = () => {
+    commitSend = null;
     send({ type: 'config', config: S.cfg });
     // a typed MQTT password is sent once, then forgotten: the page never holds or shows the stored one
     const ha = S.cfg.homeAssistant;
     if (ha && 'password' in ha) { S.init.haHasPassword = ha.password !== ''; delete ha.password; haPassUi(); }
-  }, 140);
+  };
+  commitTimer = setTimeout(commitSend, 140);
   if (rerender) renderPage(S.page);
 }
+// send a pending config edit now (before an operation that the host must see after it, like a rename)
+function flushCommit() { if (commitSend) { clearTimeout(commitTimer); commitSend(); } }
 
 bridge?.addEventListener('message', e => {
   const m = typeof e.data === 'string' ? JSON.parse(e.data) : e.data;
@@ -201,6 +205,7 @@ bridge?.addEventListener('message', e => {
   } else if (m.type === 'tuning') {
     S.tuning = m;
     if (S.page === 'tuning') liveTuning();
+    if (S.pm) pmRender();
   } else if (m.type === 'tuningHistory') {
     tnHist.data = m.history;
     const last = Math.max(0, Math.ceil(num(m.history?.total) / tnHist.size) - 1);
@@ -259,15 +264,25 @@ function renderPage(p) {
   ({ overview: renderOverview, cooling: renderCooling, sensors: renderSensors, lighting: renderLighting, devices: renderDevices, plugins: renderPlugins, overlay: renderOverlay, tuning: renderTuning, setup: renderSetup, settings: renderSettings })[p]();
   live();
 }
+// The header switcher: segmented buttons while the names fit, a dropdown when there are many or long ones.
+const PROFILE_SEG_MAX = { count: 6, chars: 52 };
+function profilesFit(names) { return names.length <= PROFILE_SEG_MAX.count && names.reduce((n, p) => n + p.length, 0) <= PROFILE_SEG_MAX.chars; }
+function switchProfile(name) {
+  if (!own(S.cfg.profiles, name)) return;
+  S.cfg.activeProfile = name; S.profile = name;
+  renderProfiles(); commit(true);
+  toast(`Fan profile: ${name}`);
+}
 function renderProfiles() {
-  const seg = $('#profile-seg');
-  seg.innerHTML = Object.keys(S.cfg.profiles).map(p => `<button data-p="${esc(p)}" class="${p === S.cfg.activeProfile ? 'on' : ''}">${esc(p)}</button>`).join('');
-  seg.onclick = e => {
-    const b = e.target.closest('button'); if (!b) return;
-    S.cfg.activeProfile = b.dataset.p; S.profile = b.dataset.p;
-    renderProfiles(); commit(true);
-    toast(`Fan profile: ${b.dataset.p}`);
-  };
+  const names = Object.keys(S.cfg.profiles), seg = $('#profile-seg'), sel = $('#profile-sel'), fit = profilesFit(names);
+  seg.hidden = !fit; sel.hidden = fit;
+  seg.innerHTML = fit ? names.map(p => `<button data-p="${esc(p)}" class="${p === S.cfg.activeProfile ? 'on' : ''}">${esc(p)}</button>`).join('') : '';
+  sel.innerHTML = fit ? '' : names.map(p => `<option value="${esc(p)}" ${p === S.cfg.activeProfile ? 'selected' : ''}>${esc(p)}</option>`).join('');
+  $('#profile-manage').innerHTML = IC.sliders;
+  seg.onclick = e => { const b = e.target.closest('button'); if (b) switchProfile(b.dataset.p); };
+  sel.onchange = () => switchProfile(sel.value);
+  $('#profile-manage').onclick = () => openProfileManager();
+  if (S.pm) pmRender();
 }
 
 /* live updates that don't rebuild the page */
@@ -292,6 +307,7 @@ const IC = {
   fan: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="1.6"/><path d="M12 10.4c0-3.5.8-6.4 3.3-6.4 1.8 0 2.6 1.7 1.8 3.3s-3.3 2.6-5.1 3.1M13.6 12c3.5 0 6.4.8 6.4 3.3 0 1.8-1.7 2.6-3.3 1.8s-2.6-3.3-3.1-5.1M12 13.6c0 3.5-.8 6.4-3.3 6.4-1.8 0-2.6-1.7-1.8-3.3s3.3-2.6 5.1-3.1M10.4 12C6.9 12 4 11.2 4 8.7 4 6.9 5.7 6.1 7.3 6.9s2.6 3.3 3.1 5.1"/></svg>',
   plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
   x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>',
+  sliders: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg>',
   copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
   trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>',
   hub: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 10h2M7 14h2M12 10h5M12 14h5"/></svg>',
@@ -1799,6 +1815,12 @@ function renderSetup() {
 /* Tuning page: AI overclocking. Off by default; nothing is tested, applied or watched until the user turns it on. */
 const T_CFG = () => (S.cfg.tuning ??= { enabled: false, allowWorkstation: false, applyAtStartup: false, emergencyCoreC: 90, emergencyMemC: 100, unlockPower: true, crashWatch: true, autoBackoff: true, maxCrashes: 3, crashWindowDays: 7 });
 let tuningPoll = null;
+const TN_CTX_MAX = 1000;
+const TN_STYLES = [['quiet', 'Quiet', 'Cool and quiet: modest gains, low power and temperature'], ['balanced', 'Balanced', 'A good gain without pushing the card'], ['performance', 'Performance', 'The fastest stable result the card can do'], ['custom', 'Custom', 'Follow only what you write below']];
+const tnStyle = () => { if (S.tnStyle == null) { try { S.tnStyle = localStorage.getItem('glint.tn.style'); } catch { } } return TN_STYLES.some(x => x[0] === S.tnStyle) ? S.tnStyle : 'balanced'; };
+const tnContext = () => { if (S.tnContext == null) { try { S.tnContext = localStorage.getItem('glint.tn.context') ?? ''; } catch { S.tnContext = ''; } } return String(S.tnContext).slice(0, TN_CTX_MAX); };
+function tnDraftSave() { try { localStorage.setItem('glint.tn.style', tnStyle()); localStorage.setItem('glint.tn.context', tnContext()); } catch { } }
+function tnCtxCount() { const e = $('#tn-ctx-n'); if (e) e.textContent = `${tnContext().length} / ${TN_CTX_MAX}`; }
 function tuningAsk(op = 'status', args) { send({ type: 'tuning', op, args }); }
 function renderTuning() {
   const c = T_CFG();
@@ -1821,16 +1843,24 @@ function renderTuning() {
           <select id="tn-budget" class="input">${[15, 30, 45, 90, 180].map(m => `<option value="${m}" ${(S.tnBudget ?? 45) === m ? 'selected' : ''}>${m} min</option>`).join('')}</select>
           <button class="btn primary" id="tn-ai-start">Tune with AI</button><button class="btn" id="tn-ai-stop">Stop</button><button class="btn" id="tn-monitor" title="A small window with live gauges, progress and the AI's reasoning">Open monitor</button>
         </div>
+        <div class="field" style="margin-top:12px"><label>Goal</label>
+          <div class="seg" id="tn-style" role="radiogroup" aria-label="Tuning goal">${TN_STYLES.map(([g, l, tip]) => `<button data-s="${g}" role="radio" aria-checked="${tnStyle() === g}" title="${esc(tip)}" class="${tnStyle() === g ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+        <div class="field" style="margin-top:10px"><label for="tn-context">What should the end result be like? <span class="muted" id="tn-ctx-n"></span></label>
+          <textarea id="tn-context" rows="3" maxlength="${TN_CTX_MAX}" placeholder="e.g. fans never above 50%; stability matters more than the last few MHz; I game at 4K and the card is in a small case" spellcheck="true">${esc(tnContext())}</textarea></div>
+        <div class="muted" id="tn-ai-ran" style="font-size:12.5px;margin-top:8px"></div>
         <div class="tn-log tf" id="tn-log"></div>
       </div>
       <div class="card card-pad"><div class="card-title" id="tn-gpu-name">GPU</div><div class="card-sub" id="tn-gpu-sub"></div>
         <div id="tn-gpu"></div>
         <div id="tn-cmp" class="tn-cmp"></div>
+        ${manMarkup()}
         <div class="row" style="gap:8px;margin-top:12px;flex-wrap:wrap"><button class="btn" id="tn-apply">Apply saved result</button><button class="btn" id="tn-stock">Back to stock</button></div>
         <div class="row tn-sw"><div class="toggle ${c.unlockPower !== false ? 'on' : ''}" id="tn-unlock"></div><label>Unlock power limit <span class="muted">(up to this card's maximum, never beyond; no voltage control)</span></label></div>
         <div class="row tn-sw"><div class="toggle ${c.applyAtStartup ? 'on' : ''}" id="tn-startup"></div><label>Apply the saved result when Glint starts <span class="muted">(skipped after a crash or a driver update)</span></label></div>
         <div class="row tn-sw" id="tn-ws-row"><div class="toggle ${c.allowWorkstation ? 'on' : ''}" id="tn-ws"></div><label>Allow tuning a workstation GPU <span class="muted">(RTX PRO, RTX A, Quadro: validated at stock clocks)</span></label></div>
       </div>
+      <div class="card card-pad" style="grid-column:1/-1"><div class="row between"><div><div class="card-title">Overclock per profile</div><div class="card-sub">Every fan profile carries its own GPU overclock (or runs at stock). Switching profile applies it.</div></div><button class="btn small" id="tn-pm">Manage profiles…</button></div>
+        <div id="tn-profiles"></div></div>
       <div class="card card-pad"><div class="card-title" id="tn-cpu-name">CPU</div><div class="card-sub" id="tn-cpu-sub"></div>
         <div id="tn-cpu"></div>
         <div class="row" style="gap:8px;margin-top:12px;flex-wrap:wrap"><button class="btn" id="tn-cpu-finish">Finish search</button><button class="btn" id="tn-cpu-stop">Stop search</button></div>
@@ -1855,7 +1885,15 @@ function renderTuning() {
   $('#tn-days').onchange = e => { c.crashWindowDays = clamp(Math.round(num(e.target.value, 7)), 1, 90); commit(); };
   $('#tn-goal').onclick = e => { const b = e.target.closest('[data-g]'); if (!b) return; S.tnGoal = b.dataset.g; $$('#tn-goal button').forEach(x => x.classList.toggle('on', x === b)); };
   $('#tn-budget').onchange = e => { S.tnBudget = num(e.target.value, 45); };
-  $('#tn-ai-start').onclick = () => tuningAsk('aiStart', { goal: S.tnGoal ?? 'gpu', budgetMinutes: S.tnBudget ?? 45 });
+  $('#tn-style').onclick = e => { const b = e.target.closest('[data-s]'); if (!b) return; S.tnStyle = b.dataset.s; tnDraftSave(); $$('#tn-style button').forEach(x => { x.classList.toggle('on', x === b); x.setAttribute('aria-checked', x === b); }); };
+  $('#tn-context').oninput = e => { if (e.target.value.length > TN_CTX_MAX) e.target.value = e.target.value.slice(0, TN_CTX_MAX); S.tnContext = e.target.value; tnDraftSave(); tnCtxCount(); };
+  tnCtxCount();
+  $('#tn-ai-start').onclick = () => {
+    const context = tnContext().trim().slice(0, TN_CTX_MAX);
+    if (tnStyle() === 'custom' && !context) return toast('Custom goal: describe what you want in the box first', 'error');
+    // goal = the style (quiet / balanced / performance / custom), context = the user's words, target = gpu / cpu / all
+    tuningAsk('aiStart', { goal: tnStyle(), target: S.tnGoal ?? 'gpu', budgetMinutes: S.tnBudget ?? 45, context });
+  };
   $('#tn-ai-stop').onclick = () => tuningAsk('aiStop');
   $('#tn-monitor').onclick = () => tuningAsk('monitor');
   $('#tn-history').onclick = e => {
@@ -1863,6 +1901,8 @@ function renderTuning() {
     tnSetPage(b.dataset.hp === 'prev' ? tnHist.page - 1 : b.dataset.hp === 'next' ? tnHist.page + 1 : num(b.dataset.hp));
   };
   $('#tn-history').onchange = e => { if (e.target.id === 'tn-psize') { tnHist.size = clamp(num(e.target.value, 15), 5, 100); tnHist.page = 0; tnSave(); tnAskHistory(); } };
+  $('#tn-pm').onclick = () => openProfileManager();
+  manBind();
   $('#tn-apply').onclick = () => tuningAsk('applySaved');
   $('#tn-stock').onclick = () => tuningAsk('stock');
   $('#tn-cpu-stop').onclick = () => tuningAsk('cpuStop');
@@ -1898,6 +1938,9 @@ function liveTuning() {
       <span>This card's limits</span><b>core ≤ ${pm(L.maxCore)} · memory ≤ ${pm(L.maxMemAb)} · card slows down at ${g.slowdownC != null ? num(g.slowdownC) + ' °C' : 'its own limit'} · emergency stop at ${num(L.emergencyCoreC)} °C / ${num(L.emergencyMemC)} °C memory · power ${L.unlockPower ? 'raised to the card maximum' : 'default'}</b>
       ${g.eccCorrected != null ? `<span>ECC corrected errors</span><b>${num(g.eccCorrected)}</b>` : ''}</div>`;
   $('#tn-clear')?.addEventListener('click', () => tuningAsk('clearRevert'));
+  liveMan(); liveProfileOc();
+  const brief = TF.aiBrief(ai), rb = $('#tn-ai-ran');
+  rb.textContent = brief ? `${ai.running ? 'Running with' : 'Last run'} \u00b7 ${brief}` : '';
   $('#tn-apply').disabled = !sv || !!st.busy; 
   const cp = m.cpu ?? {}, ci = cp.cpu ?? {}, co = cp.curveOptimizer ?? {}, sr = cp.search;
   $('#tn-cpu-name').textContent = ci.name ?? 'CPU';
@@ -1976,6 +2019,218 @@ function liveHistory() {
     <div class="tn-pager"><button class="btn small" data-hp="prev" ${cur <= 0 ? 'disabled' : ''}>‹ Newer</button>${btns.join('')}<button class="btn small" data-hp="next" ${cur >= pages - 1 ? 'disabled' : ''}>Older ›</button>
       <span class="info" id="tn-hinfo">${first}–${first + items.length - 1} of ${total} tests · page ${cur + 1} of ${pages}</span>
       <select id="tn-psize" class="input" title="Tests per page">${[15, 30, 50].map(n => `<option value="${n}" ${n === tnHist.size ? 'selected' : ''}>${n} / page</option>`).join('')}</select></div>`;
+}
+
+/* ------------------------------------------------------------------ profiles: manager, per-profile overclocks, manual overclocking */
+
+// Same rules as the host (ConfigValidator.ProfileNameError + uniqueness): the host re-checks everything.
+function profileNameError(name, except) {
+  const n = String(name ?? '');
+  if (!n.trim()) return 'Give the profile a name';
+  if (n.length > 40) return 'At most 40 characters';
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(n)) return 'No control characters';
+  if (n.trim().toLowerCase() === 'stock') return '"Stock" is reserved (it means no overclock)';
+  if (Object.keys(S.cfg.profiles).some(k => k !== except && k.trim().toLowerCase() === n.trim().toLowerCase())) return 'A profile with that name already exists';
+  return '';
+}
+const pmv = v => (num(v) >= 0 ? '+' : '−') + Math.abs(num(v));
+/* A profile's overclock from the tuning status: {kind: 'stock' | 'tested' | 'untested', text, driver, when}. */
+function profileOc(name) {
+  const o = own(S.tuning?.status?.profiles, name);
+  if (!o || (num(o.core) === 0 && num(o.memAb) === 0)) return { kind: 'stock', text: 'stock' };
+  const tested = num(o.testedCore) >= num(o.core) && num(o.testedMemAb) >= num(o.memAb);
+  return { kind: tested ? 'tested' : 'untested', text: `core ${pmv(o.core)} · memory ${pmv(o.memAb)}`, driver: o.driver, when: o.when };
+}
+const ocBadge = oc => oc.kind === 'stock' ? '<span class="muted">stock</span>'
+  : `${esc(oc.text)} <span class="oc-tag ${oc.kind}" title="${oc.kind === 'tested' ? 'Passed a full stress test at or above these offsets' : 'Saved without a passing full test: it may be unstable'}">${oc.kind}</span>`;
+const tuningOn = () => !!S.cfg?.tuning?.enabled;
+
+/* Manager (a dialog from the header button): create a copy, rename, reorder, delete, switch, clear the overclock. */
+function openProfileManager() {
+  if (S.pm) return;
+  S.pm = { rename: null, err: '', prevFocus: document.activeElement };
+  const d = document.createElement('div');
+  d.id = 'pm'; d.className = 'pm-back';
+  d.innerHTML = '<div class="pm-card" role="dialog" aria-modal="true" aria-labelledby="pm-title"></div>';
+  document.body.append(d);
+  d.addEventListener('mousedown', e => { if (e.target === d) closeProfileManager(); });
+  if (tuningOn()) tuningAsk();
+  pmRender();
+  $('#pm-new')?.focus();
+}
+function closeProfileManager() {
+  const f = S.pm?.prevFocus; $('#pm')?.remove(); S.pm = null;
+  try { f?.focus?.(); } catch { }
+}
+function pmRender() {
+  const card = $('#pm .pm-card'); if (!card) return;
+  const keep = { new: $('#pm-new')?.value ?? '', from: $('#pm-from')?.value, ren: $('#pm-ren')?.value };
+  const af = document.activeElement, afId = af && card.contains(af) ? af.id : '', afSel = afId && af.selectionStart != null ? [af.selectionStart, af.selectionEnd] : null;
+  const names = Object.keys(S.cfg.profiles), act = S.cfg.activeProfile, oc = tuningOn();
+  const row = (p, i) => {
+    const isAct = p === act, o = profileOc(p), editing = S.pm.rename === p;
+    return `<tr data-prow="${esc(p)}" class="${isAct ? 'act' : ''}">
+      <td class="pm-name">${editing ? `<input type="text" id="pm-ren" maxlength="60" value="${esc(keep.ren ?? p)}" aria-label="New name for ${esc(p)}" spellcheck="false" autocomplete="off"><button class="btn small primary" data-pm="rename-ok">Save</button><button class="btn small" data-pm="rename-no">Cancel</button>`
+        : `<b>${esc(p)}</b>${isAct ? ' <span class="oc-tag active">active</span>' : ''}`}</td>
+      <td class="muted">${num(S.cfg.profiles[p]?.length)} rule${S.cfg.profiles[p]?.length === 1 ? '' : 's'}</td>
+      ${oc ? `<td>${ocBadge(o)}</td>` : ''}
+      <td class="pm-act">
+        <button class="icon-btn small" data-pm="up" data-p="${esc(p)}" title="Move up" ${i === 0 ? 'disabled' : ''}>▲</button>
+        <button class="icon-btn small" data-pm="down" data-p="${esc(p)}" title="Move down" ${i === names.length - 1 ? 'disabled' : ''}>▼</button>
+        <button class="btn small" data-pm="switch" data-p="${esc(p)}" ${isAct ? 'disabled' : ''}>Switch</button>
+        <button class="btn small" data-pm="rename" data-p="${esc(p)}">Rename</button>
+        <button class="btn small danger" data-pm="delete" data-p="${esc(p)}" ${isAct ? 'disabled title="The active profile can\'t be deleted: switch to another one first"' : ''}>Delete</button>
+      </td></tr>`;
+  };
+  card.innerHTML = `
+    <div class="row between"><div><div class="card-title" id="pm-title">Fan profiles</div><div class="card-sub">Each profile has its own fan rules${oc ? ' and its own GPU overclock' : ''}. Switching applies both.</div></div>
+      <button class="icon-btn" data-pm="close" aria-label="Close">${IC.x}</button></div>
+    <div style="overflow-x:auto"><table class="tn-table pm-table"><thead><tr><th>Profile</th><th>Rules</th>${oc ? '<th>Overclock</th>' : ''}<th></th></tr></thead><tbody>${names.map(row).join('')}</tbody></table></div>
+    <div class="pm-new row" style="gap:8px;flex-wrap:wrap">
+      <input type="text" id="pm-new" maxlength="60" placeholder="New profile name" value="${esc(keep.new)}" aria-label="New profile name" spellcheck="false" autocomplete="off">
+      <span class="muted" style="font-size:12.5px">as a copy of</span>
+      <select id="pm-from" aria-label="Copy of">${names.map(p => `<option value="${esc(p)}" ${p === (keep.from && own(S.cfg.profiles, keep.from) ? keep.from : act) ? 'selected' : ''}>${esc(p)}</option>`).join('')}</select>
+      <button class="btn primary small" data-pm="create">Create</button>
+    </div>
+    <div class="pm-err" id="pm-err" role="alert"></div>`;
+  $('#pm-err').textContent = S.pm.err;
+  const back = afId && document.getElementById(afId);
+  if (back) { back.focus(); if (afSel) try { back.setSelectionRange(...afSel); } catch { } }
+  else if (S.pm.rename != null) { const r = $('#pm-ren'); if (r) { r.focus(); r.select(); } }
+}
+function pmError(t) { S.pm.err = t; const e = $('#pm-err'); if (e) e.textContent = t; }
+document.addEventListener('click', e => {
+  const b = e.target.closest('#pm [data-pm]'); if (!b || b.disabled) return;
+  const op = b.dataset.pm, p = b.dataset.p;
+  if (op === 'close') return closeProfileManager();
+  if (op === 'switch') { switchProfile(p); return pmRender(); }
+  if (op === 'rename') { S.pm.rename = p; S.pm.err = ''; return pmRender(); }
+  if (op === 'rename-no') { S.pm.rename = null; S.pm.err = ''; return pmRender(); }
+  if (op === 'rename-ok') {
+    const from = S.pm.rename, to = $('#pm-ren').value.trim(), err = to === from ? '' : profileNameError(to, from);
+    if (err) return pmError(err);
+    S.pm.rename = null; S.pm.err = '';
+    if (to !== from) { flushCommit(); S.ovrLocalUntil = 0; send({ type: 'profileRename', from, to }); }      // the host renames the profile, its overclock and activeProfile together
+    return pmRender();
+  }
+  if (op === 'create') {
+    const name = $('#pm-new').value.trim(), from = $('#pm-from').value, err = profileNameError(name);
+    if (err) return pmError(err);
+    if (!own(S.cfg.profiles, from)) return pmError('Pick a profile to copy');
+    S.cfg.profiles[name] = structuredClone(S.cfg.profiles[from]);
+    S.pm.err = ''; $('#pm-new').value = '';
+    commit(true); renderProfiles(); return pmRender();
+  }
+  if (op === 'delete') {
+    if (p === S.cfg.activeProfile) return pmError('The active profile can\'t be deleted: switch to another one first');
+    if (Object.keys(S.cfg.profiles).length <= 1) return pmError('There must be at least one profile');
+    if (!confirm(`Delete the profile "${p}"${profileOc(p).kind !== 'stock' ? ' and its saved overclock' : ''}? Its fan rules can't be recovered.`)) return;
+    delete S.cfg.profiles[p]; if (S.profile === p) S.profile = S.cfg.activeProfile;
+    S.pm.err = ''; commit(true); renderProfiles(); return pmRender();
+  }
+  if (op === 'up' || op === 'down') {
+    const ks = Object.keys(S.cfg.profiles), i = ks.indexOf(p), j = i + (op === 'up' ? -1 : 1);
+    if (i < 0 || j < 0 || j >= ks.length) return;
+    [ks[i], ks[j]] = [ks[j], ks[i]];
+    S.cfg.profiles = Object.fromEntries(ks.map(k => [k, S.cfg.profiles[k]]));
+    commit(true); renderProfiles(); return pmRender();
+  }
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && S.pm) { e.stopPropagation(); if (S.pm.rename != null) { S.pm.rename = null; S.pm.err = ''; pmRender(); } else closeProfileManager(); }
+  if (e.key === 'Enter' && e.target.id === 'pm-new') $('#pm [data-pm="create"]')?.click();
+  if (e.key === 'Enter' && e.target.id === 'pm-ren') $('#pm [data-pm="rename-ok"]')?.click();
+});
+
+/* Tuning page: every profile with its overclock, and what you can do with it. */
+function liveProfileOc() {
+  const el = $('#tn-profiles'); if (!el) return;
+  const names = Object.keys(S.cfg.profiles), act = S.cfg.activeProfile;
+  el.innerHTML = `<div style="overflow-x:auto"><table class="tn-table"><thead><tr><th>Profile</th><th>Overclock</th><th>Saved on driver</th><th>Saved</th><th></th></tr></thead><tbody>${names.map(p => {
+    const o = profileOc(p), isAct = p === act;
+    return `<tr data-ocrow="${esc(p)}" class="${isAct ? 'act' : ''}"><td><b>${esc(p)}</b>${isAct ? ' <span class="oc-tag active">active</span>' : ''}</td><td>${ocBadge(o)}</td>
+      <td class="muted">${o.kind === 'stock' ? '—' : esc(o.driver ?? '—')}</td><td class="muted">${o.kind === 'stock' || !o.when ? '—' : esc(new Date(o.when).toLocaleDateString())}</td>
+      <td class="pm-act"><button class="btn small" data-pswitch="${esc(p)}" ${isAct ? 'disabled' : ''}>Switch to it</button><button class="btn small" data-pclear="${esc(p)}" ${o.kind === 'stock' ? 'disabled' : ''}>Clear overclock</button></td></tr>`;
+  }).join('')}</tbody></table></div>`;
+}
+document.addEventListener('click', e => {
+  const sw = e.target.closest('#tn-profiles [data-pswitch]'), cl = e.target.closest('#tn-profiles [data-pclear]');
+  if (sw && !sw.disabled) switchProfile(sw.dataset.pswitch);
+  if (cl && !cl.disabled) {
+    const p = cl.dataset.pclear;
+    if (own(S.cfg.profiles, p) && confirm(`Clear the overclock saved for "${p}"? It will run at stock clocks${p === S.cfg.activeProfile ? ' now' : ''}.`)) tuningAsk('clearProfile', { profile: p });
+  }
+});
+
+/* Manual overclocking (GPU card). The sliders live outside the polled markup so a refresh never moves them. */
+const MAN_UNITS = { core: 'MHz', mem: '' };
+const manState = () => (S.tnMan ??= { core: 0, mem: 0, prof: null });
+const manClamp = (v, max) => clamp(Math.round(num(v, 0)), 0, Math.max(0, num(max, 0)));
+function manLimits() { const L = S.tuning?.status?.limits ?? {}; return { core: num(L.maxCore, 0), mem: num(L.maxMemAb, 0) }; }
+/* Proven = a passing full (not light) test at or above these offsets on this driver (this page's recent history and the
+   profiles' saved tested levels). The host decides for real: this only decides whether to ask first. */
+function manProven(core, mem) {
+  if (core <= 0 && mem <= 0) return true;
+  const st = S.tuning?.status ?? {}, drv = st.gpu?.driver;
+  if (!drv) return false;
+  if ((st.history ?? []).some(h => h.ok && !h.light && h.driver === drv && num(h.core) >= core && num(h.memAb) >= mem)) return true;
+  return Object.values(st.profiles ?? {}).some(o => o.driver === drv && num(o.testedCore) >= core && num(o.testedMemAb) >= mem && (num(o.testedCore) > 0 || num(o.testedMemAb) > 0));
+}
+function manMarkup() {
+  const m = manState();
+  return `<div class="tn-man" id="tn-man"><div class="label">Manual overclock</div>
+    <div class="man-row"><label for="tn-m-core">Core</label><input type="range" id="tn-m-core" min="0" max="500" step="5" value="${m.core}"><input type="number" class="input tn-num" id="tn-m-core-n" min="0" max="500" step="5" value="${m.core}" aria-label="Core offset in MHz"><span class="muted">MHz</span></div>
+    <div class="man-row"><label for="tn-m-mem">Memory</label><input type="range" id="tn-m-mem" min="0" max="3000" step="50" value="${m.mem}"><input type="number" class="input tn-num" id="tn-m-mem-n" min="0" max="3000" step="50" value="${m.mem}" aria-label="Memory offset (Afterburner units)"><span class="muted">AB</span></div>
+    <div class="muted" style="font-size:12.5px;margin-top:6px" id="tn-m-info"></div>
+    <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap"><button class="btn" id="tn-m-test" title="A 60 second stress test at these offsets; the card goes back to stock after it">Test 60 s</button><button class="btn" id="tn-m-apply">Apply</button>
+      <span class="muted" style="font-size:12.5px">Save to</span><select id="tn-m-prof" aria-label="Profile to save to"></select><button class="btn" id="tn-m-save">Save to profile</button></div>
+    <div class="muted" style="font-size:12.5px;margin-top:6px" id="tn-m-power"></div></div>`;
+}
+function manBind() {
+  const m = manState();
+  const set = (k, v) => {
+    const max = manLimits()[k]; v = manClamp(v, max); m[k] = v;
+    $(`#tn-m-${k === 'core' ? 'core' : 'mem'}`).value = v; $(`#tn-m-${k === 'core' ? 'core' : 'mem'}-n`).value = v; liveMan();
+  };
+  $('#tn-m-core').oninput = e => set('core', e.target.value); $('#tn-m-mem').oninput = e => set('mem', e.target.value);
+  $('#tn-m-core-n').onchange = e => set('core', e.target.value); $('#tn-m-mem-n').onchange = e => set('mem', e.target.value);
+  $('#tn-m-prof').onchange = e => { m.prof = e.target.value; liveMan(); };
+  $('#tn-m-test').onclick = () => tuningAsk('test', { core: m.core, memAb: m.mem, seconds: 60 });
+  const ask = (what, extra) => {
+    const proven = manProven(m.core, m.mem), args = { core: m.core, memAb: m.mem, ...extra };
+    if (!proven) {
+      if (!confirm(`Untested overclock\n\ncore ${pmv(m.core)} MHz / memory ${pmv(m.mem)} has not passed a full stress test on this driver. An untested overclock can crash games, reset the GPU driver or blue-screen the PC. Glint's crash watch will back it off, but only after a crash.\n\nRun "Test 60 s" first unless you accept that risk.\n\n${what} anyway?`)) return;
+      args.force = true;                                                // the only place the dashboard ever sends force
+    }
+    return args;
+  };
+  $('#tn-m-apply').onclick = () => { const a = ask('Apply'); if (a) tuningAsk('manualApply', a); };
+  $('#tn-m-save').onclick = () => {
+    const p = $('#tn-m-prof').value; if (!own(S.cfg.profiles, p)) return;
+    const a = ask(`Save for "${p}"`, { profile: p }); if (a) tuningAsk('manualSave', a);
+  };
+}
+function liveMan() {
+  const box = $('#tn-man'); if (!box) return;
+  const m = manState(), st = S.tuning?.status ?? {}, g = st.gpu, L = manLimits();
+  for (const [k, id] of [['core', 'core'], ['mem', 'mem']]) {
+    const max = L[k] || (k === 'core' ? 500 : 3000);
+    for (const sfx of ['', '-n']) $(`#tn-m-${id}${sfx}`).max = max;
+    m[k] = manClamp(m[k], max);
+    $(`#tn-m-${id}`).value = m[k]; if (document.activeElement !== $(`#tn-m-${id}-n`)) $(`#tn-m-${id}-n`).value = m[k];
+    $(`#tn-m-${id}`).style.setProperty('--p', (max ? m[k] / max * 100 : 0) + '%');
+  }
+  const names = Object.keys(S.cfg.profiles);
+  if (!names.includes(m.prof)) m.prof = S.cfg.activeProfile;
+  const sel = $('#tn-m-prof'), want = names.join('\u0001');
+  if (sel.dataset.sig !== want) { sel.dataset.sig = want; sel.innerHTML = names.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join(''); }
+  sel.value = m.prof;
+  const proven = manProven(m.core, m.mem), busy = !!st.busy, ok = !!g && g.tunable !== false && !g.blocked;
+  const o = g?.offsets ?? {};
+  $('#tn-m-info').innerHTML = `Applied now: <b>core ${esc(pmv(o.core))} MHz · memory ${esc(pmv(o.memAb))}</b> · this setting: ${proven ? '<span class="oc-tag tested">proven by a full test</span>' : '<span class="oc-tag untested">untested</span> (applying or saving asks first)'} · limits core ≤ ${esc(pmv(L.core))}, memory ≤ ${esc(pmv(L.mem))}`;
+  const pl = g?.powerLimitW ?? {}, unlocked = !!st.limits?.unlockPower;
+  $('#tn-m-power').textContent = g ? (unlocked ? `Power limit unlocked: raised to the card's maximum (${num(pl.max)} W) while an overclock is applied` : `Power limit locked at the default (${num(pl.default)} W): turn on "Unlock power limit" below to raise it to ${num(pl.max)} W`) : '';
+  for (const id of ['#tn-m-test', '#tn-m-apply', '#tn-m-save', '#tn-m-core', '#tn-m-mem', '#tn-m-core-n', '#tn-m-mem-n', '#tn-m-prof']) $(id).disabled = busy || !ok;
 }
 
 /* Game overlay page */

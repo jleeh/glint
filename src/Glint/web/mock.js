@@ -233,7 +233,7 @@
     const haStatus = { enabled: !!ha.enabled, connected: !!(ha.enabled && ha.host), broker: ha.host ? `${ha.tls ? 'mqtts' : 'mqtt'}://${ha.host}:${ha.port}` : '',
       lastError: ha.enabled && !ha.host ? 'no broker host set' : '', entities: ha.enabled && ha.host ? 27 : 0, reconnects: 0 };
     const cfgNow = window.__lastConfig ?? INIT.config;
-    return { type: 'state', sensors, rpm, duty, explain: {}, profile: INIT.config.activeProfile, error: '', ha: haStatus,
+    return { type: 'state', sensors, rpm, duty, explain: {}, profile: cfgNow.activeProfile, error: '', ha: haStatus,
       update: cfgNow.updates?.check === false ? { ...UPDATE, latest: null, available: false, checkedAt: null } : UPDATE, install, openRgb: null, testPattern: testPattern?.zone ?? null,
       overrides: Object.fromEntries(Object.entries((window.__lastConfig ?? INIT.config).profiles).map(([k, rs]) => [k, rs.map(r => r.override ?? null)])),
       perf: { cpuSeconds: cpu, privateMB: 58, fps: 30, devices: { cc: 30, lnp: 18.9, mystic: 21.7, ram: 10.1, razer25a: 30, rival1720: 30 }, cores: 32 } };
@@ -373,7 +373,7 @@
   };
 
   // Tuning page + monitor window (fictional demo card and run; tuning is enabled in the demo config so the page has something to show)
-  const TN = { saved: { core: 120, memAb: 750 }, ai: { running: false, cli: 'windows', transcript: [], summary: null }, hist: null, testStart: null };
+  const TN = { saved: { core: 120, memAb: 750 }, offsets: { core: 0, memAb: 0 }, ai: { running: false, cli: 'windows', transcript: [], summary: null }, hist: null, testStart: null };
   const MIN = 6e4;
   function tnHistory() {
     if (TN.hist) return TN.hist;
@@ -390,7 +390,7 @@
   }
   const mockHistory = a => { const all = tnHistory(), o = Math.max(0, a?.offset | 0), l = Math.max(1, Math.min(100, a?.limit | 0 || 15)); return { type: 'tuningHistory', history: { total: all.length, offset: o, limit: l, items: all.slice(o, o + l) } }; };
   window.__mockAddTest = () => tnHistory().unshift({ time: new Date().toISOString(), core: 135, memAb: 750, seconds: 60, light: false, ok: true, loadMhz: 3010, peakCoreC: 70, powerW: 335, gBps: 972, rate: 450, thermalLimited: false, powerLimited: true, powerLimitW: 340, driver: '999.99' });
-  function tnStartRun(goal) {
+  function tnStartRun(goal, args) {
     const t0 = (TN.t0 ??= Date.now() - 95e3), tm = n => new Date(t0 + n * 1e3).toISOString(), h = tnHistory();
     if (!TN.runAdded) {
     TN.runAdded = true;
@@ -398,7 +398,7 @@
     h.unshift({ time: tm(5), core: 0, memAb: 0, seconds: 30, light: true, ok: true, loadMhz: 2790, peakCoreC: 64, powerW: 301, gBps: 903, rate: 412, driver: '999.99' });
     }
     TN.testStart = Date.now() - 18e3;
-    TN.ai = { running: true, goal, cli: 'windows', startedAt: tm(0), summary: null, transcript: [
+    TN.ai = { running: true, goal: args?.goal ?? 'balanced', target: goal, context: args?.context ?? 'Fans never above 50%; stability over the last few MHz; I game at 4K.', cli: 'windows', startedAt: tm(0), summary: null, transcript: [
       'Starting Claude Code (windows) to tune: ' + goal + ', up to 45 min',
       '→ tuning.status {}',
       'This is a **Demo GeForce RTX 4080** with a power limit that can go from 320 W to 340 W. Plan:\n\n1. Measure stock first (so every gain is measured, not guessed)\n2. Find the core edge in steps of *50 MHz*\n3. Then memory, then a long soak\n\n| Step | Setting | Why |\n|---|---|---|\n| 1 | stock | baseline |\n| 2 | core `+100` | first step up |',
@@ -411,19 +411,42 @@
       '→ tuning.gpu.test {"core":150,"memAb":500,"seconds":45}',
       '→ tuning.wait {"seconds":25}'] };
   }
+  // each Glint profile carries its own overclock (a fictional demo: Balanced is proven, Quiet was saved untested, the rest run at stock)
+  const tnSaved = (core, memAb, tc, tm) => ({ core, memAb, when: new Date(Date.now() - 86400e3).toISOString(), driver: '999.99', vbios: 'DEMO.00', testedCore: tc, testedMemAb: tm });
+  TN.profiles = { Balanced: tnSaved(120, 750, 120, 750), Quiet: tnSaved(200, 250, 150, 250) };
+  const tnProven = (c, m) => (c <= 0 && m <= 0) || tnHistory().some(h => h.ok && !h.light && h.driver === '999.99' && h.core >= c && h.memAb >= m);
+  const activeName = () => (window.__lastConfig ?? INIT.config).activeProfile;
+  // a change made elsewhere (MCP, CLI, tray, Home Assistant): the host pushes the whole config
+  window.__mockConfigChanged = fn => { const c = JSON.parse(JSON.stringify(window.__lastConfig ?? INIT.config)); fn(c); window.__lastConfig = c; emit({ type: 'configChanged', config: c }); };
+  function mockHostOps(m) {
+    const a = m.args ?? {}, err = t => setTimeout(() => emit({ type: 'toast', kind: 'error', text: t }), 5);
+    if (m.op === 'manualApply') {
+      if (!tnProven(a.core, a.memAb) && a.force !== true) return err('hasn\'t passed a full test on this driver: test it first');
+      TN.offsets = { core: a.core, memAb: a.memAb };
+    }
+    if (m.op === 'manualSave') {
+      if (!tnProven(a.core, a.memAb) && a.force !== true) return err('only a setting at or below one that passed a full test on this driver can be saved');
+      const best = tnHistory().filter(h => h.ok && !h.light && h.core >= a.core && h.memAb >= a.memAb).sort((x, y) => x.core + x.memAb - y.core - y.memAb)[0];
+      TN.profiles[a.profile ?? activeName()] = tnSaved(a.core, a.memAb, best?.core ?? 0, best?.memAb ?? 0);
+    }
+    if (m.op === 'clearProfile') { delete TN.profiles[a.profile]; if (a.profile === activeName()) TN.offsets = { core: 0, memAb: 0 }; }
+    if (m.op === 'applySaved') { const sv = TN.profiles[activeName()]; if (sv) TN.offsets = { core: sv.core, memAb: sv.memAb }; }
+    if (m.op === 'stock') TN.offsets = { core: 0, memAb: 0 };
+  }
   function mockTuning(m) {
-    if (m.op === 'aiStart') tnStartRun(m.args?.goal ?? 'gpu');
+    mockHostOps(m);
+    if (m.op === 'aiStart') { tnStartRun(m.args?.target ?? m.args?.goal ?? 'gpu', m.args); window.__lastAiStart = m.args; }
     if (m.op === 'aiStop' || m.op === 'stop') { TN.ai = { ...TN.ai, running: false, transcript: [...TN.ai.transcript, 'Stopped by the user'] }; TN.testStart = null; }
     const h = tnHistory(), running = TN.ai.running, t = Date.now() / 1000;
     const stock = { core: 0, memAb: 0, seconds: 30, light: true, ok: true, loadMhz: 2790, rate: 412, gBps: 903, powerW: 301, peakCoreC: 64 };
     const tuned = { core: 120, memAb: 750, seconds: 60, light: false, ok: true, loadMhz: 2985, rate: 447, gBps: 968, powerW: 331, peakCoreC: 71 };
     return { type: 'tuning', at: new Date().toISOString(), status: { enabled: true, busy: running, phase: running ? 'gpu test' : 'idle', progress: running ? 'Testing core +150 / memory +500 for 45 s' : '',
-      gpu: { name: 'Demo GeForce RTX 4080', driver: '999.99', vbios: 'DEMO.00', vramGiB: 16, powerLimitW: { default: 320, max: 340, now: running ? 340 : 320 }, slowdownC: 83, workstation: false, tunable: true, blocked: null, offsets: { core: 0, memAb: 0 }, eccCorrected: null },
+      gpu: { name: 'Demo GeForce RTX 4080', driver: '999.99', vbios: 'DEMO.00', vramGiB: 16, powerLimitW: { default: 320, max: 340, now: running ? 340 : 320 }, slowdownC: 83, workstation: false, tunable: true, blocked: null, offsets: TN.offsets, eccCorrected: null },
       limits: { maxCore: 500, maxMemAb: 3000, emergencyCoreC: 86, emergencyMemC: 100, unlockPower: window.__lastConfig?.tuning?.unlockPower ?? true, maxTestSeconds: 300 }, memRatio: 0.5,
       compare: window.__mockNoStock ? { stock: null, tuned: null, savedCore: null, savedMemAb: null } : { stock, tuned, savedCore: 120, savedMemAb: 750 },
       testing: running && TN.testStart ? { core: 150, memAb: 500, seconds: 45, light: false, startedAt: new Date(TN.testStart).toISOString() } : null,
       live: running ? { coreC: +(71 + 2 * Math.sin(t / 3)).toFixed(1), memC: +(84 + Math.sin(t / 5)).toFixed(1), mhz: 2985 + Math.round(20 * Math.sin(t)), memMhz: 11200, powerW: 336, utilPct: 99, fanPct: 85, throttle: ['power cap'] } : null,
-      saved: { core: 120, memAb: 750, when: new Date().toISOString() }, reverted: null, history: h.slice(0, 30) },
+      saved: TN.profiles[activeName()] ?? null, activeProfile: activeName(), profiles: TN.profiles, reverted: null, history: h.slice(0, 30) },
       ai: TN.ai, crashes: { watching: false, events: [], cpuCoresToLoosen: {} },
       cpu: { enabled: true, phase: 'searching', stoppedReason: null,
         cpu: { name: 'Demo Ryzen 7 9700X', family: 'amd-zen5', label: 'AMD Ryzen 9000 (Zen 5)', vendor: 'amd', cores: 8, microcode: null, advisory: null, tempC: 71 },
@@ -452,6 +475,15 @@
       if (m.type === 'ready' || m.type === 'setupCheck') setTimeout(() => emit({ type: 'setup', report: setupReport() }), m.type === 'ready' ? 40 : 120);
       if (m.type === 'checkUpdate') { window.__mockChecks = (window.__mockChecks ?? 0) + 1; setTimeout(() => { UPDATE.checkedAt = new Date().toISOString(); if (window.__mockNoUpdate) Object.assign(UPDATE, { latest: '0.2.0', available: false }); emit({ type: 'updateInfo', update: UPDATE }); }, 120); }
       if (m.type === 'installUpdate' || (m.type === 'setupFix' && m.fix === 'installUpdate')) runInstall();
+      if (m.type === 'config') for (const p of Object.keys(TN.profiles)) if (!m.config.profiles[p]) delete TN.profiles[p];   // a deleted profile takes its overclock
+      if (m.type === 'profileRename') setTimeout(() => {                                                                    // the host renames the profile, its overclock and activeProfile together
+        const c = JSON.parse(JSON.stringify(window.__lastConfig ?? INIT.config)), ks = Object.keys(c.profiles);
+        if (!ks.includes(m.from) || !m.to || ks.some(k => k !== m.from && k.toLowerCase() === m.to.toLowerCase())) return emit({ type: 'toast', kind: 'error', text: 'Not renamed' });
+        c.profiles = Object.fromEntries(ks.map(k => [k === m.from ? m.to : k, c.profiles[k]]));
+        if (c.activeProfile === m.from) c.activeProfile = m.to;
+        if (TN.profiles[m.from]) { TN.profiles[m.to] = TN.profiles[m.from]; delete TN.profiles[m.from]; }
+        window.__lastConfig = c; emit({ type: 'configChanged', config: c });
+      }, 10);
       if (m.type === 'tuning') setTimeout(() => emit(mockTuning(m)), 15);
       if (m.type === 'tuning' && m.op === 'history') setTimeout(() => emit(mockHistory(m.args)), 20);
       if (m.type === 'testPattern') testPattern = m.on ? { zone: m.zone, count: m.count } : (testPattern?.zone === m.zone ? null : testPattern);

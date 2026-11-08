@@ -138,6 +138,7 @@ public static class Cli
         T("curves.remove", Obj(("name", "string", "Curve name (refused while a rule uses it)", true)));
         T("profiles.create", Obj(("name", "string", "New profile name", true), ("from", "string", "Profile to copy (default: the active one)", false)));
         T("profiles.remove", Obj(("name", "string", "Profile name (not the active one)", true)));
+        T("profiles.rename", Obj(("from", "string", "Current profile name", true), ("to", "string", "New name (1-40 characters, unique, not 'Stock')", true)));
         T("profile.set", Obj(("name", "string", "Fan profile name", true)));
         T("config.get", Obj());
         T("config.schema", Obj());

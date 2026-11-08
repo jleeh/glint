@@ -167,5 +167,13 @@
     return out.join('');
   }
 
-  window.TF = { esc, num, pm, md, parseTool, stepText, resultCard, limitChips, progress, timeline };
+  // The AI run's target (gpu / cpu / all) and goal style (quiet / balanced / performance / custom) arrive as ai.target / ai.goal;
+  // older hosts sent the target as ai.goal, so both spellings are understood. Plain strings only: callers escape or use textContent.
+  const TARGETS = ['gpu', 'cpu', 'all'], STYLES = ['quiet', 'balanced', 'performance', 'custom'];
+  const aiTarget = ai => TARGETS.includes(ai?.target) ? ai.target : TARGETS.includes(ai?.goal) ? ai.goal : 'gpu';
+  const aiStyle = ai => STYLES.includes(String(ai?.goal).toLowerCase()) ? String(ai.goal).toLowerCase() : null;
+  const aiContext = ai => typeof ai?.context === 'string' ? ai.context.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '').slice(0, 1000) : '';
+  const aiBrief = (ai, max = 1000) => { const st = aiStyle(ai), cx = aiContext(ai).trim(); const c = cx.length > max ? cx.slice(0, max - 1) + '…' : cx;
+    return [st ? 'Goal: ' + st[0].toUpperCase() + st.slice(1) : '', c ? '\u201c' + c + '\u201d' : ''].filter(Boolean).join(' · '); };
+  window.TF = { aiTarget, aiStyle, aiContext, aiBrief, esc, num, pm, md, parseTool, stepText, resultCard, limitChips, progress, timeline };
 })();

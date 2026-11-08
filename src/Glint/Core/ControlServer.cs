@@ -156,6 +156,7 @@ public sealed class ControlServer : IDisposable
         ("curves.remove", "Delete a named curve. Refused (with the rules using it) if any rule input references it.", "{ name }"),
         ("profiles.create", "Create a fan profile as a copy of an existing one (default: the active profile). Does not switch to it (use profile.set).", "{ name, from? }"),
         ("profiles.remove", "Delete a fan profile (not the active one).", "{ name }"),
+        ("profiles.rename", "Rename a fan profile. Its overclock and Home Assistant's profile option follow; if it was the active profile it stays active. Names: 1-40 characters, no control characters, unique ignoring case, not \"Stock\".", "{ from, to }"),
         ("profile.set", "Switch fan profile.", "{ name }"),
         ("config.get", "The whole config.", ""),
         ("config.schema", "Description of every config field: type, meaning, valid range / enum, default, example (fan rules, curves, lighting effects and their params, layout, Home Assistant, sensor options). Read before editing the config.", ""),
@@ -411,12 +412,17 @@ public sealed class ControlServer : IDisposable
                 {
                     var c = Clone();
                     var name = S("name").Trim();
-                    if (name.Length == 0) return Fail("name is empty");
-                    if (c.Profiles.ContainsKey(name)) return Fail($"profile \"{name}\" already exists");
+                    if (ConfigValidator.ProfileNameError(name) is { } nameErr) return Fail(nameErr);
+                    if (c.Profiles.Keys.Any(k => k.Trim().Equals(name, StringComparison.OrdinalIgnoreCase))) return Fail($"profile \"{name}\" already exists");
                     var from = (string?)p["from"] ?? c.ActiveProfile;
                     if (!c.Profiles.TryGetValue(from, out var src)) return Fail($"no profile \"{from}\" (profiles: {string.Join(", ", c.Profiles.Keys)})");
                     c.Profiles[name] = JsonSerializer.Deserialize<List<FanRule>>(JsonSerializer.Serialize(src, GlintConfig.Json), GlintConfig.Json)!;
                     return Commit(c, extra: x => { x["profile"] = name; x["copiedFrom"] = from; });
+                }
+            case "profiles.rename":
+                {
+                    var err = _svc.RenameProfile(S("from"), S("to"));
+                    return err != null ? Fail(err) : new JsonObject { ["ok"] = true, ["profile"] = S("to").Trim(), ["renamedFrom"] = S("from") };
                 }
             case "profiles.remove":
                 {

@@ -90,6 +90,20 @@ public sealed class TrayApp : ApplicationContext
         _icon.Text = text.Length > 127 ? text[..127] : text;
     }
 
+    /// <summary>One radio-style item per fan profile (the active one ticked). '&amp;' is escaped so a name never becomes a keyboard accelerator.</summary>
+    internal static List<ToolStripMenuItem> ProfileItems(GlintConfig cfg, Action<string> pick)
+    {
+        var items = new List<ToolStripMenuItem>();
+        foreach (var p in cfg.Profiles.Keys)
+        {
+            var name = p;
+            var it = new ToolStripMenuItem(name.Replace("&", "&&")) { Checked = name == cfg.ActiveProfile, CheckOnClick = false };
+            it.Click += (_, _) => { if (cfg.Profiles.ContainsKey(name)) pick(name); };
+            items.Add(it);
+        }
+        return items;
+    }
+
     void BuildMenu()
     {
         var m = _icon.ContextMenuStrip!;
@@ -101,12 +115,7 @@ public sealed class TrayApp : ApplicationContext
         m.Items.Add(new ToolStripSeparator());
 
         var prof = new ToolStripMenuItem("Fan profile");
-        foreach (var p in cfg.Profiles.Keys)
-        {
-            var it = new ToolStripMenuItem(p) { Checked = p == cfg.ActiveProfile };
-            it.Click += (_, _) => { cfg.ActiveProfile = p; _svc.Apply(cfg); };
-            prof.DropDownItems.Add(it);
-        }
+        foreach (var it in ProfileItems(cfg, p => { cfg.ActiveProfile = p; _svc.Apply(cfg); })) prof.DropDownItems.Add(it);
         var fanOff = new ToolStripMenuItem("Fan control off") { Checked = !cfg.FanControl, ToolTipText = "Hand fans back to the BIOS, GPU driver and device firmware" };
         fanOff.Click += (_, _) => { cfg.FanControl = !cfg.FanControl; _svc.Apply(cfg); };
         prof.DropDownItems.Add(new ToolStripSeparator());

@@ -190,6 +190,25 @@ static class Program
         Eval("document.querySelector('#profile-seg button[data-p=\"Quiet\"]').click()");
         Pump(800);
         C("profile click reaches the service", svc.Config.ActiveProfile == "Quiet", svc.Config.ActiveProfile);
+        // profiles through the real page and host: create (config path), rename (host op keeps the overclock + active), push back
+        Eval("openProfileManager(); document.getElementById('pm-new').value = 'Gaming'; document.querySelector('#pm [data-pm=\"create\"]').click(); 1");
+        Pump(900);
+        C("manager: creating a profile reaches the service (a copy, 4 profiles)", svc.Config.Profiles.ContainsKey("Gaming") && svc.Config.Profiles.Count == 4 && svc.Config.Profiles["Gaming"].Count == svc.Config.Profiles["Quiet"].Count, string.Join(",", svc.Config.Profiles.Keys));
+        svc.Tuning.State.Profiles["Quiet"] = new Glint.Tuning.GpuSaved(80, 300, DateTime.Now, "1", "v", 80, 300);
+        Eval("document.querySelector('#pm tr[data-prow=\"Quiet\"] [data-pm=\"rename\"]').click(); document.getElementById('pm-ren').value = 'Silent'; document.querySelector('#pm [data-pm=\"rename-ok\"]').click(); 1");
+        Pump(1200);
+        C("manager: rename reaches the service; activeProfile, the overclock and the page follow", svc.Config.Profiles.ContainsKey("Silent") && !svc.Config.Profiles.ContainsKey("Quiet") && svc.Config.ActiveProfile == "Silent"
+          && svc.Tuning.State.Profiles.ContainsKey("Silent") && Eval("Object.keys(S.cfg.profiles).includes('Silent') && S.cfg.activeProfile === 'Silent'") == "true", svc.Config.ActiveProfile + " " + string.Join(",", svc.Config.Profiles.Keys));
+        Eval("document.querySelector('#pm tr[data-prow=\"Silent\"] [data-pm=\"rename\"]').click(); document.getElementById('pm-ren').value = 'Stock'; document.querySelector('#pm [data-pm=\"rename-ok\"]').click(); 1");
+        Pump(300);
+        C("manager: a bad name is refused in the page and nothing changes", svc.Config.Profiles.ContainsKey("Silent") && Eval("document.getElementById('pm-err').textContent.includes('reserved')") == "true");
+        Eval("closeProfileManager(); 1");
+        { var ext = System.Text.Json.JsonSerializer.Deserialize<GlintConfig>(System.Text.Json.JsonSerializer.Serialize(svc.Config, GlintConfig.Json), GlintConfig.Json)!;
+          ext.Profiles["FromElsewhere"] = ext.Profiles["Balanced"]; Pump(2800); svc.Apply(ext); Pump(900); }
+        C("a profile added elsewhere (MCP / CLI / HA) appears in the open page", Eval("Object.keys(S.cfg.profiles).includes('FromElsewhere') && [...document.querySelectorAll('#profile-seg button, #profile-sel option')].some(x => x.textContent === 'FromElsewhere')") == "true");
+        { var rs = System.Text.Json.JsonSerializer.Deserialize<GlintConfig>(System.Text.Json.JsonSerializer.Serialize(svc.Config, GlintConfig.Json), GlintConfig.Json)!;
+          rs.Profiles.Remove("FromElsewhere"); rs.Profiles.Remove("Gaming"); rs.Profiles["Quiet"] = rs.Profiles["Silent"]; rs.Profiles.Remove("Silent"); rs.ActiveProfile = "Balanced"; svc.Apply(rs); Pump(500); }
+        Eval("document.querySelector('#profile-seg button[data-p=\"Quiet\"]').click()"); Pump(800);
         C("config round-trip keeps lighting presets", svc.Config.Lighting.Presets.Count == cfg.Lighting.Presets.Count, $"{svc.Config.Lighting.Presets.Count}");
         // lighting effect
         Eval("window.__errs = []; window.addEventListener('error', e => __errs.push(e.message + ' @' + e.lineno)); 1");
@@ -366,6 +385,26 @@ static class Program
         C("plugins.remove deletes user plugins", list?.Any(x => ((string?)x!["file"])?.StartsWith("controltest") == true) == false);
         C("bundled plugins can't be deleted", Call("plugins.remove", new { file = "aurora.js" })?["error"] != null);
         C("profile.set validates names", Call("profile.set", new { name = "Nope" })?["error"] != null && Call("profile.set", new { name = "Quiet" })?["error"] == null && svc.Config.ActiveProfile == "Quiet");
+        static bool Until(Func<bool> f) { for (int i = 0; i < 60 && !f(); i++) Thread.Sleep(50); return f(); }
+        // profiles: create / rename / remove with name validation; a rename keeps the overclock attached (tuning state)
+        C("profiles.create: bad names rejected (empty, control chars, 'Stock', too long, duplicate ignoring case)",
+          new object[] { "  ", "a\u0007b", "Stock", new string('n', 41), "quiet" }.All(n => (bool?)Call("profiles.create", new { name = n, from = "Balanced" })?["result"]?["ok"] == false) && svc.Config.Profiles.Count == 3);
+        C("profiles.create: more than three profiles", (bool?)Call("profiles.create", new { name = "Gaming <b>x</b>", from = "Balanced" })?["result"]?["ok"] == true && (bool?)Call("profiles.create", new { name = "Night", from = "Quiet" })?["result"]?["ok"] == true && svc.Config.Profiles.Count == 5);
+        svc.Tuning.State.Profiles["Night"] = new Glint.Tuning.GpuSaved(90, 400, DateTime.Now, "1", "v", 90, 400);
+        var rnm = Call("profiles.rename", new { from = "Night", to = "Late shift" });
+        C("profiles.rename renames, keeps the rules and the overclock", (bool?)rnm?["result"]?["ok"] == true && svc.Config.Profiles.ContainsKey("Late shift") && !svc.Config.Profiles.ContainsKey("Night") && svc.Config.Profiles["Late shift"].Count == svc.Config.Profiles["Quiet"].Count
+          && svc.Tuning.State.Profiles.TryGetValue("Late shift", out var lsv) && lsv.Core == 90 && !svc.Tuning.State.Profiles.ContainsKey("Night"), rnm?.ToJsonString() ?? "");
+        string[] badTo = { "", "  ", "Stock", "STOCK", "quiet", "bal\u0000ance", new string('z', 41) };
+        C("profiles.rename rejects bad new names and changes nothing", badTo.All(n => (bool?)Call("profiles.rename", new { from = "Late shift", to = n })?["result"]?["ok"] != true) && svc.Config.Profiles.ContainsKey("Late shift") && svc.Config.Profiles.Count == 5);
+        C("profiles.rename: unknown profile / missing argument fail", Call("profiles.rename", new { from = "Nope", to = "X" })?["result"]?["ok"]?.GetValue<bool>() == false && Call("profiles.rename", new { from = "Late shift" })?["error"] != null);
+        Call("profile.set", new { name = "Late shift" });
+        Call("profiles.rename", new { from = "Late shift", to = "Graveyard" });
+        C("profiles.rename of the active profile keeps it active", svc.Config.ActiveProfile == "Graveyard" && svc.Tuning.State.Profiles.ContainsKey("Graveyard"), svc.Config.ActiveProfile);
+        C("profiles.remove refuses the active profile", (bool?)Call("profiles.remove", new { name = "Graveyard" })?["result"]?["ok"] == false);
+        Call("profile.set", new { name = "Balanced" });
+        C("profiles.remove deletes a profile and clears its overclock", (bool?)Call("profiles.remove", new { name = "Graveyard" })?["result"]?["ok"] == true && Until(() => !svc.Tuning.State.Profiles.ContainsKey("Graveyard")));
+        Call("profiles.remove", new { name = "Gaming <b>x</b>" });
+        C("profiles.rename is in help and in the MCP schema", Call("help")?["result"]?.AsArray().Any(m => (string?)m!["method"] == "profiles.rename") == true && svc.Config.Profiles.Count == 3);
         var noProf = Call("config.set", new { config = new { profiles = new { } } });
         C("config.set refuses a config with no profiles", noProf?["error"] != null || (bool?)noProf?["result"]?["ok"] == false, noProf?.ToJsonString() ?? "");
         var patch = Call("config.patch", new { path = "lighting.brightness", value = 42 });

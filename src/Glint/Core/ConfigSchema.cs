@@ -54,6 +54,16 @@ public static class ConfigValidator
     /// <summary>Errors only, with no knowledge of the live system (syntax, ranges, references inside the config).</summary>
     public static List<string> Validate(GlintConfig cfg) => Check(cfg, null).Errors;
 
+    /// <summary>Why this is not an acceptable profile name (null = fine): non-empty, at most 40 characters, no control characters, not "Stock".</summary>
+    public static string? ProfileNameError(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return "a profile has an empty name";
+        if (name.Length > 40) return $"profile name \"{name[..20]}…\" is longer than 40 characters";
+        if (name.Any(char.IsControl)) return "a profile name contains control characters";
+        if (name.Trim().Equals("Stock", StringComparison.OrdinalIgnoreCase)) return "\"Stock\" is reserved (it means no overclock)";
+        return null;
+    }
+
     public static ValidationResult Check(GlintConfig cfg, ValidationContext? ctx)
     {
         var errors = new List<string>(); var warnings = new List<string>();
@@ -96,9 +106,11 @@ public static class ConfigValidator
         c.Profiles ??= new();
         if (c.Profiles.Count == 0) E.Add("profiles: there must be at least one fan profile");
         else if (!c.Profiles.ContainsKey(c.ActiveProfile ?? "")) E.Add($"activeProfile \"{c.ActiveProfile}\" is not one of the profiles ({string.Join(", ", c.Profiles.Keys)})");
+        foreach (var dup in c.Profiles.Keys.GroupBy(k => k.Trim(), StringComparer.OrdinalIgnoreCase).Where(g => g.Count() > 1))
+            E.Add($"profiles: names must be unique ignoring case ({string.Join(", ", dup.Select(x => "\"" + x + "\""))})");
         foreach (var (pname, rules) in c.Profiles)
         {
-            if (string.IsNullOrWhiteSpace(pname)) E.Add("profiles: a profile has an empty name");
+            if (ProfileNameError(pname) is { } pe) E.Add($"profiles: {pe}");
             if (rules == null) { E.Add($"profile \"{pname}\" is null (use [] for an empty profile)"); continue; }
             foreach (var dup in rules.GroupBy(r => r.Name).Where(g => g.Count() > 1)) E.Add($"profile \"{pname}\": rule name \"{dup.Key}\" is used {dup.Count()} times (names must be unique)");
             foreach (var dup in rules.SelectMany(r => r.Fans.Select(f => (f, r.Name))).GroupBy(x => x.f, StringComparer.OrdinalIgnoreCase).Where(g => g.Count() > 1))

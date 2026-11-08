@@ -89,12 +89,37 @@ public sealed class GlintService : IDisposable
         });
     }
 
+    /// <summary>Rename a fan profile (its overclock follows; ActiveProfile follows if it was active). Validated like every
+    /// other change; returns an error text, or null when done. The one rename path for the dashboard and the control API.</summary>
+    public string? RenameProfile(string from, string to)
+    {
+        to = (to ?? "").Trim();
+        var c = System.Text.Json.JsonSerializer.Deserialize<GlintConfig>(System.Text.Json.JsonSerializer.Serialize(Config, GlintConfig.Json), GlintConfig.Json)!;
+        if (!c.Profiles.TryGetValue(from ?? "", out var rules)) return $"no profile \"{from}\" (profiles: {string.Join(", ", c.Profiles.Keys)})";
+        if (from == to) return null;
+        if (ConfigValidator.ProfileNameError(to) is { } pe) return pe;
+        if (c.Profiles.Keys.Any(k => k != from && k.Trim().Equals(to, StringComparison.OrdinalIgnoreCase))) return $"profile \"{to}\" already exists";
+        // keep the profile's position in the list
+        var ordered = c.Profiles.Select(kv => kv.Key == from ? KeyValuePair.Create(to, kv.Value) : kv).ToList();
+        c.Profiles = new Dictionary<string, List<FanRule>>(ordered);
+        if (c.ActiveProfile == from) c.ActiveProfile = to;
+        var v = ConfigValidator.Check(c, new ValidationContext { Sensors = Sensors.Keys.ToList(), Previous = Config });
+        if (!v.Ok) return string.Join("; ", v.Errors.Take(3));
+        Tuning?.RenameProfile(from!, to);   // before Apply: Apply clears the overclock of a profile that disappeared
+        Apply(c);
+        return null;
+    }
+
     /// <summary>Swap in a new config (from UI or file edit).</summary>
     public void Apply(GlintConfig cfg, bool save = true)
     {
         (cfg.HomeAssistant ??= new()).Normalize(); // never keep a plain-text MQTT password around
         var oldProfile = Config?.ActiveProfile;
+        var oldNames = Config?.Profiles.Keys.ToList();
         Config = cfg;
+        // a deleted profile takes its overclock with it (ClearProfile is a no-op for one that has none)
+        if (oldNames != null && oldNames.Where(n => !cfg.Profiles.ContainsKey(n)).ToList() is { Count: > 0 } gone)
+            _ = Task.Run(() => { try { foreach (var n in gone) Tuning?.ClearProfile(n); } catch (Exception e) { LastError = "tuning: " + e.Message; } });
         // each profile carries its own overclock: switching profile applies it (or stock), off the caller's thread
         if (oldProfile != null && oldProfile != cfg.ActiveProfile && cfg.Tuning?.Enabled == true)
         {

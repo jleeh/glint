@@ -46,15 +46,17 @@ function renderGauges(st) {
   $('#m-chips').innerHTML = chips.join('');
 }
 
+const tgt = ai => { const t = TF.aiTarget(ai); return t === 'all' ? 'GPU and CPU' : t.toUpperCase(); };
+const brief = ai => { const b = TF.aiBrief(ai, 140); return b ? ' · ' + b : ''; };   // shown with textContent
 function headline(m) {
   const st = m.status ?? {}, ai = m.ai ?? {}, cpu = m.cpu ?? {};
   if (m.error) return ['bad', 'Status unavailable', m.error];
   if (st.testing) return ['run', `Testing core ${TF.pm(st.testing.core)} / memory ${TF.pm(st.testing.memAb)} · ${num(st.testing.seconds)} s${st.testing.light ? ' (light)' : ''}`,
-    ai.running ? `AI tuning ${ai.goal === 'all' ? 'GPU and CPU' : String(ai.goal ?? 'gpu').toUpperCase()}` : 'Manual test'];
-  if (ai.running) return ['run', `AI tuning ${ai.goal === 'all' ? 'GPU and CPU' : String(ai.goal ?? 'gpu').toUpperCase()}…`, st.busy && st.progress ? st.progress : 'Claude is deciding the next step'];
+    ai.running ? `AI tuning ${tgt(ai)}${brief(ai)}` : 'Manual test'];
+  if (ai.running) return ['run', `AI tuning ${tgt(ai)}…`, (st.busy && st.progress ? st.progress : 'Claude is deciding the next step') + brief(ai)];
   if (st.busy) return ['run', st.progress || st.phase || 'Working…', ''];
   if (cpu.search?.running) return ['run', 'CPU search running', 'per-core Curve Optimizer search (hours)'];
-  return ['idle', 'Idle', ai.error ? 'Last run: ' + ai.error : ai.summary ? 'Last run finished' : 'No test running'];
+  return ['idle', 'Idle', ai.error ? 'Last run: ' + ai.error : ai.summary ? 'Last run finished' + brief(ai) : 'No test running'];
 }
 
 function renderProgress(st) {

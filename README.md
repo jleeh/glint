@@ -264,7 +264,7 @@ calls it from a terminal, and `Glint.exe mcp` serves every method as an MCP tool
 - `fans.setRule` / `fans.removeRule`: create, update (partial fields merge) or delete a rule by name.
 - `curves.set` / `curves.remove`: named curves (`[[tempC, duty%], ...]`); removing one that is in use is refused.
 - `fans.override`: manual duty for a rule, or `null` for automatic. Clamped to the rule's min/max; the fail-safe still wins.
-- `profiles.create` (copy of a profile) / `profiles.remove` (not the active one), `profile.set`.
+- `profiles.create` (copy of a profile) / `profiles.rename` (its overclock follows) / `profiles.remove` (not the active one), `profile.set`. Names: 1-40 characters, no control characters, unique ignoring case, not "Stock". The dashboard (profile manager in the header) manages the same profiles.
 - `config.schema`: every config field with type, range, default and example. `config.validate` checks a config without saving.
 - `lighting.autoLayout` needs `confirm=true` because it overwrites a hand-tuned layout. The old layout is saved to
   `layout-backups\` in the config folder (last 10); `lighting.layoutBackups` and `lighting.restoreLayout` bring it back.
