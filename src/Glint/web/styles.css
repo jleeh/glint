@@ -681,3 +681,9 @@ textarea:focus { outline: none; border-color: rgba(139,108,255,0.7); box-shadow:
 .man-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
 .man-row label { width: 56px; color: var(--text-2); font-size: 13px; }
 .man-row input[type=range] { flex: 1; min-width: 80px; }
+
+.oc-tag.ai { color: #6fd3ff; border-color: rgba(111,211,255,0.45); }
+.fan-chip { display: inline-block; padding: 0 6px; border-radius: 6px; font-variant-numeric: tabular-nums; }
+.fan-chip.low { color: var(--good); } .fan-chip.mid { color: var(--warn); } .fan-chip.high { color: var(--bad); }
+
+.pm-table td.muted { white-space: nowrap; }

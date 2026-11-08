@@ -144,12 +144,6 @@ public sealed class WebDashboard : Form
         catch (Exception e) { return new { type = "tuning", error = e.Message }; }
     }
 
-    static string AiTarget(JsonObject a)
-    {
-        var t = (string?)a["target"] ?? (string?)a["goal"];
-        return t is "gpu" or "cpu" or "all" ? t : "gpu";
-    }
-
     static object? Open(Action a) { a(); return null; }
 
     /// <summary>One page of the saved test history for the Tuning page's pagination.</summary>
@@ -247,9 +241,10 @@ public sealed class WebDashboard : Form
                         _ = op switch
                         {
                             "status" => null,
-                            // goal = what to optimise for (quiet / balanced / performance / custom) and context = the user's own words are
-                            // being added by the AI tuner; target is gpu / cpu / all (older pages sent it as "goal")
-                            "aiStart" => _svc.Config.Tuning?.Enabled == true ? _svc.Ai.Start(AiTarget(a), (int?)(double?)a["budgetMinutes"] ?? 45) : throw new InvalidOperationException("turn tuning on first"),
+                            // goal = quiet | balanced | performance | custom (goalText for custom), target = gpu | cpu | all, context = the user's wishes
+                            "aiStart" => _svc.Config.Tuning?.Enabled == true ? _svc.Ai.Start((string?)a["goal"] ?? "balanced", (int?)(double?)a["budgetMinutes"] ?? 45, (string?)a["context"], (string?)a["target"], (string?)a["goalText"]) : throw new InvalidOperationException("turn tuning on first"),
+                            // back to the profile that was active before the AI switched to its own
+                            "profileRestore" => _svc.AiFans.Restore(),
                             "aiStop" => _svc.Ai.Stop(),
                             "history" => Open(() => Push(HistoryMessage(Math.Max(0, (int?)(double?)a["offset"] ?? 0), Math.Clamp((int?)(double?)a["limit"] ?? 15, 1, 100)))),
                             "monitor" => Open(() => _openMonitor?.Invoke()),
