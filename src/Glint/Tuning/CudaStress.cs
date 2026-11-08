@@ -14,7 +14,8 @@ public sealed class CudaException(string fn, int code) : Exception($"{fn} -> CUD
 /// toolkit). Kernels are hand-written PTX the driver JIT-compiles.
 /// Core test: 8 chaotic logistic-map chains per thread in FP32 FMA. One flipped bit grows into a completely different
 /// result, so any computation error from an unstable core clock is a checksum mismatch against the golden result taken
-/// at stock clocks. The light mode runs 1 block per SM (a gentle load that still catches errors).
+/// at stock clocks. The light mode runs the same work in short bursts with idle gaps (~1/3 duty): a low average load,
+/// so the card boosts to the top of its voltage/frequency curve, where big core offsets usually fail first.
 /// Memory test: fills VRAM with a hash pattern (128-bit stores), reads it back and counts mismatches, and measures
 /// bandwidth, because GDDR7 retries transfers on errors so an unstable memory clock first shows as LOST bandwidth.
 /// CUDA errors become <see cref="StressResult.Fault"/>; <see cref="TuneAbort"/> from the tick callback propagates.
@@ -150,7 +151,6 @@ public sealed class CudaStress : IGpuStress
         return Convert.ToHexString(SHA256.HashData(_host));
     }
 
-    int LightBlocks => Math.Max(1, _sms);
     static string Key(bool light, uint seed) => $"{(light ? 1 : 0)}:{seed}";
 
     public void Calibrate()
@@ -178,16 +178,13 @@ public sealed class CudaStress : IGpuStress
         lock (_l)
         {
             Ck("cuCtxSetCurrent", C.cuCtxSetCurrent(_ctx));
-            foreach (var light in new[] { false, true })
+            foreach (var s in Seeds)   // light mode runs the same launches (in bursts), so one set of references serves both
             {
-                int blocks = light ? LightBlocks : _blocks;
-                foreach (var s in Seeds)
-                {
-                    Once(blocks, s); var a = Checksum(blocks);
-                    Once(blocks, s); var b = Checksum(blocks);
-                    if (a != b) throw new InvalidOperationException("GPU gave different results at STOCK clocks - not safe to tune (already unstable or a driver problem).");
-                    _ref[Key(light, s)] = a;
-                }
+                Once(_blocks, s); var a = Checksum(_blocks);
+                Once(_blocks, s); var b = Checksum(_blocks);
+                if (a != b) throw new InvalidOperationException("GPU gave different results at STOCK clocks - not safe to tune (already unstable or a driver problem).");
+                _ref[Key(false, s)] = a;
+                _ref[Key(true, s)] = a;
             }
         }
     }
@@ -203,7 +200,7 @@ public sealed class CudaStress : IGpuStress
             {
                 if (_ref.Count == 0) throw new InvalidOperationException("Golden() has not run");
                 Ck("cuCtxSetCurrent", C.cuCtxSetCurrent(_ctx));
-                int blocks = light ? LightBlocks : _blocks;
+                int blocks = _blocks;
                 var t0 = Stopwatch.StartNew(); var last = Stopwatch.StartNew();
                 double busy = 0;
                 for (int i = 0; t0.Elapsed.TotalSeconds < seconds; i++)
@@ -211,10 +208,20 @@ public sealed class CudaStress : IGpuStress
                     var s = Seeds[i % Seeds.Length];
                     var t = Stopwatch.StartNew();
                     Once(blocks, s);
-                    busy += t.Elapsed.TotalSeconds;
+                    double ran = t.Elapsed.TotalSeconds;
+                    busy += ran;
                     launches++;
                     if (Checksum(blocks) != _ref[Key(light, s)]) errors++;
                     if (last.Elapsed >= TickEvery) { tick(); last.Restart(); }
+                    if (light)
+                    {   // idle twice as long as the burst: low average load, top boost clocks during the bursts
+                        var idle = Stopwatch.StartNew();
+                        while (idle.Elapsed.TotalSeconds < ran * 2 && t0.Elapsed.TotalSeconds < seconds)
+                        {
+                            Thread.Sleep(Math.Max(1, Math.Min(50, (int)((ran * 2 - idle.Elapsed.TotalSeconds) * 1000))));
+                            if (last.Elapsed >= TickEvery) { tick(); last.Restart(); }
+                        }
+                    }
                 }
                 double rate = busy > 0 ? launches * (double)blocks * Block * _iters * Chains / busy : 0;
                 return new(errors == 0, launches, errors, rate, null, errors == 0 ? null : $"{errors} of {launches} compute results differ from stock", false);

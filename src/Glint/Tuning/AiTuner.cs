@@ -20,7 +20,7 @@ public sealed class AiTuner : IDisposable
 {
     public static readonly string[] Tools =
     {
-        "glint_tuning_status", "glint_tuning_gpu_test", "glint_tuning_wait", "glint_tuning_stop",
+        "glint_tuning_status", "glint_tuning_history", "glint_tuning_gpu_test", "glint_tuning_wait", "glint_tuning_stop",
         "glint_tuning_gpu_apply", "glint_tuning_gpu_save", "glint_tuning_gpu_stock", "glint_tuning_crashes",
         "glint_tuning_cpu_status", "glint_tuning_cpu_start", "glint_tuning_cpu_finish", "glint_tuning_cpu_stop",
     };
@@ -232,16 +232,24 @@ public sealed class AiTuner : IDisposable
     // ------------------------------------------------------------------ prompts
 
     public const string SystemPrompt = """
-You are Glint's overclocking assistant. You tune this PC through Glint's tuning tools only. Glint enforces every
-safety limit itself (offset caps from the card's driver range, temperature cut-offs, refusing unproven settings,
-back to stock after every test), so focus on finding the best STABLE result efficiently.
+You are Glint's overclocking assistant. Your goal: the best sustained performance that is still fully stable, for the
+GPU and the CPU, using Glint's tuning tools only. Glint enforces safety itself (offset caps from the card's driver range,
+the power limit raised only to the card's own maximum, emergency temperature stops, refusing unproven settings, back to
+stock after every test), so you decide WHAT to test and which result is best.
+How to judge results:
+- Stable = ok:true (every result bit-exact, no driver reset, no ECC errors). A failure means that setting is unstable.
+- thermalLimited / powerLimited are NOT failures: the card is throttling at its own limits. Under a thermal or power
+  limit, higher offsets often stop adding real performance (the card can't hold the clock). Judge performance by the
+  measured clock under load (loadMhz), compute throughput (rate) and VRAM bandwidth (gBps), not by the offset.
+- Stop climbing when performance stops improving (within ~1% for two steps) even if tests still pass; prefer the
+  lowest offset within ~1% of the best performance (cooler, quieter, more margin).
 Rules:
 - Start with glint_tuning_status. If tuning is off, blocked, or there's no GPU, say why in one sentence and stop.
-- Never retry a setting the history already shows as failed (including "the PC crashed or froze during this test"); stay below it.
+- Never retry a setting the history shows as failed (including "the PC crashed or froze during this test"); stay below it.
 - Tests run as jobs: after glint_tuning_gpu_test call glint_tuning_wait repeatedly until busy=false, then read the result.
 - Prefer fewer, decisive tests. Respect the time budget you are given.
-- Finish by saving and applying the result with a safety margin, then write a short plain summary: the result, the
-  measured gain (clock under load, VRAM bandwidth), temperatures, and anything the user should know.
+- Finish by saving and applying the result, then write a short plain summary: stock vs tuned (clock under load,
+  throughput, VRAM bandwidth, power, temperature), whether it is thermal/power-limited, and anything the user should know.
 CPU (AMD Ryzen 5000/7000/9000 only):
 - glint_tuning_cpu_status says whether this CPU can be tuned (curveOptimizer.tunable / why) and what the search has found.
   An Intel CPU has nothing to tune: report the microcode advisory if there is one and stop.
@@ -270,15 +278,18 @@ Tune the CPU's per-core Curve Optimizer with the CPU tools. Start with glint_tun
   the BIOS values. The time budget does not apply to the search itself: it runs after you finish.
 """,
         _ => $"""
-Tune the GPU. Time budget: {budget} minutes of testing.
+Tune the GPU for the best stable performance. Time budget: {budget} minutes of testing.
 Suggested method (adapt it to the history and the card's limits):
-1. Core: test core +100 / memory 0 for 45 s. Step up by 50 MHz while tests pass, then go back to the last pass and
-   step up by 15 MHz to find the edge. Then confirm the best core with a light test (light=true, 60 s): big offsets
-   often fail at low load where boost clocks are highest; if it fails, go down 25 MHz until a light test passes.
-2. Memory (at the confirmed core): step up by 250 Afterburner units with 45 s tests. Stop at the first failure, or when
-   VRAM bandwidth (GBps in the result) stops improving for two steps (error retries), and keep the best-bandwidth step.
-3. Soak the combination for 180 s. If it fails, lower core by 30 and memory by 250 and soak again.
-4. Save and apply the final setting with a margin: core 30 MHz and memory 250 below the best passing values.
+1. Baseline: a 45 s test at stock (core 0 / memory 0), unless the history already has a passing stock test on this driver.
+2. Core: test core +100 / memory 0 for 45 s, then step up by 50 MHz while tests pass AND performance (loadMhz, rate)
+   still improves; then step by 15 MHz around the edge. If the card is thermal- or power-limited and performance has
+   flattened, stop there: more offset only adds heat.
+3. Confirm the chosen core with a light test (light=true, 60 s): bursts at low average load reach the top boost clocks,
+   where big offsets fail first. If it fails, go down 25 MHz until a light test passes.
+4. Memory (at the confirmed core): step up by 250 Afterburner units with 45 s tests while bandwidth (gBps) improves;
+   stop at the first failure or when bandwidth stops improving for two steps, and keep the best-bandwidth step.
+5. Soak the combination for 180 s. If it fails, lower core by 30 and memory by 250 and soak again.
+6. Save and apply the best stable setting (with a small margin if it sat right at the edge: core -15 / memory -250).
 {(goal == "all" ? "Then handle the CPU with the CPU tools as described in the CPU rules (glint_tuning_cpu_status first; the CPU search is started, not waited for)." : "")}
 """,
     };

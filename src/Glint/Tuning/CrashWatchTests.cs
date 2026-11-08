@@ -30,6 +30,9 @@ public static class CrashWatchTests
         public List<string> Calls = [];
         public string Name => "Fake"; public string Driver => "1"; public string Vbios => "1"; public string? SubsystemVendor => null;
         public double VramGiB => 16; public (double Default, double Max) PowerLimitW => (300, 350); public bool IsWorkstation => false;
+ public double? PowerLimitNowW => null;
+ public void SetPowerLimitW(double watts) { }
+ public double? SlowdownC => null;
         public OffsetRange? Range(ClockKind kind) => null;
         public int GetOffset(ClockKind kind) => 0;
         public void SetOffset(ClockKind kind, int mhz) => Calls.Add($"{kind}={mhz}");

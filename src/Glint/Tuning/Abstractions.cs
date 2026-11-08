@@ -22,8 +22,14 @@ public interface IGpuControl : IDisposable
     /// <summary>PCI subsystem vendor (board partner), e.g. "1043" for ASUS.</summary>
     string? SubsystemVendor { get; }
     double VramGiB { get; }
-    /// <summary>Default / max power limit in watts (read only: the tuner never changes power limits).</summary>
+    /// <summary>Default / max power limit in watts (max = the board's firmware ceiling: the tuner never goes past it).</summary>
     (double Default, double Max) PowerLimitW { get; }
+    /// <summary>The power limit in force right now (watts), or null if unreadable.</summary>
+    double? PowerLimitNowW { get; }
+    /// <summary>Set the power limit; refused outside the card's own min..max (firmware-enforced ceiling).</summary>
+    void SetPowerLimitW(double watts);
+    /// <summary>Temperature at which the card starts slowing itself down (NVML slowdown threshold), or null if unknown.</summary>
+    double? SlowdownC { get; }
     /// <summary>Range the driver accepts for this card, or null when it doesn't report one.</summary>
     OffsetRange? Range(ClockKind kind);
     int GetOffset(ClockKind kind);
@@ -31,7 +37,7 @@ public interface IGpuControl : IDisposable
     /// <summary>Lock the core clock range (efficiency mode) / undo it.</summary>
     void LockCoreClocks(int minMhz, int maxMhz);
     void UnlockCoreClocks();
-    /// <summary>Offsets 0, clock locks removed. Returns the errors it hit (it always tries everything).</summary>
+    /// <summary>Offsets 0, clock locks removed, default power limit. Returns the errors it hit (it always tries everything).</summary>
     IReadOnlyList<string> ResetAll();
     GpuSample Sample();
     /// <summary>Total corrected (volatile) ECC errors in VRAM, or null when ECC isn't available or is off.</summary>

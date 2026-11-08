@@ -305,9 +305,12 @@ public sealed class TuningConfig
     public bool AllowWorkstation { get; set; }
     /// <summary>Re-apply the saved GPU result when Glint starts (skipped after a crash, a driver change or repeated crashes).</summary>
     public bool ApplyAtStartup { get; set; }
-    /// <summary>Stress tests stop (back to stock) at these temperatures. Clamped to hard limits.</summary>
-    public double AbortCoreC { get; set; } = 83;
-    public double AbortMemC { get; set; } = 96;
+    /// <summary>Emergency stops (back to stock). Reaching the card's own thermal limit is NOT a failure: it throttles, and
+    /// the tuner picks the best sustained performance under it. Clamped to hard limits and the card's slowdown point + 3 °C.</summary>
+    public double EmergencyCoreC { get; set; } = 90;
+    public double EmergencyMemC { get; set; } = 100;
+    /// <summary>Raise the GPU power limit to the card's own maximum (its firmware ceiling) during tests and while a result is applied.</summary>
+    public bool UnlockPower { get; set; } = true;
     /// <summary>Watch Windows' event log for driver resets, hardware errors and bugchecks while an overclock is applied.</summary>
     public bool CrashWatch { get; set; } = true;
     /// <summary>On a GPU crash with an overclock applied: lower it a step (core first, then memory).</summary>

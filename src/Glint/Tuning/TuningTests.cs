@@ -91,13 +91,45 @@ public static class TuningTests
             C("startup apply skipped after a driver change", s1.OnStartup(false)?.Contains("driver") == true && g1.GetOffset(ClockKind.Core) == 0);
             cfg.Tuning.ApplyAtStartup = false;
 
-            // ---- temperature cut-off, ECC, driver reset
-            cfg.Tuning.AbortCoreC = 70;
-            var (sh, gh) = Make(new SimConfig { AmbientC = 72 }, "hot.json");
+            // ---- temperatures: the card's own throttle point is a performance limit, only an emergency stops a test
+            cfg.Tuning.EmergencyCoreC = 75;
+            var (sh, gh) = Make(new SimConfig { AmbientC = 50, SlowdownC = null }, "hot.json");
             sh.StartGpuTest(50, 0, 20, false);
             var hot = Rec(sh);
-            C("test stops at the core temperature limit", hot is { Ok: false } && hot.Why!.Contains("limit") && gh.GetOffset(ClockKind.Core) == 0, hot?.Why ?? "");
-            cfg.Tuning.AbortCoreC = 83;
+            C("emergency temperature stops the test (back to stock)", hot is { Ok: false } && hot.Why!.Contains("emergency") && gh.GetOffset(ClockKind.Core) == 0, hot?.Why ?? "");
+            cfg.Tuning.EmergencyCoreC = 90;
+            var (sth, _) = Make(new SimConfig { AmbientC = 45, SlowdownC = null }, "thermal.json");
+            sth.StartGpuTest(50, 0, 20, false);
+            var th = Rec(sth);
+            C("reaching the throttle point passes and is flagged thermal-limited", th is { Ok: true, ThermalLimited: true }, th?.Why ?? $"thermal={th?.ThermalLimited}");
+            var (ssd, _) = Make(new SimConfig { AmbientC = 45, SlowdownC = 80 }, "slowdown.json");
+            ssd.StartGpuTest(50, 0, 20, false);
+            var sd = Rec(ssd);
+            C("emergency stop never more than 3 °C past the card's slowdown point", sd is { Ok: false } && sd.Why!.Contains("83"), sd?.Why ?? "");
+            C("compute throughput recorded", th?.Rate is > 0, $"{th?.Rate}");
+
+            // ---- power: unlocked to the card's own maximum during tests and while applied; default at stock
+            var (sp, gp) = Make(new SimConfig { UnstableCore = 300 }, "power.json");
+            sp.StartGpuTest(0, 0, 20, false);
+            var stockRec = Rec(sp);
+            sp.StartGpuTest(150, 0, 20, false);
+            var pr = Rec(sp);
+            C("power limit raised to the card's maximum during the test", pr?.PowerLimitW == 600, $"{pr?.PowerLimitW}");
+            C("power limit back to default after the test", gp.PowerLimitNowW == 575, $"{gp.PowerLimitNowW}");
+            sp.Apply(150, 0);
+            C("power limit stays raised while an overclock is applied", gp.PowerLimitNowW == 600, $"{gp.PowerLimitNowW}");
+            sp.Stock();
+            C("stock restores the default power limit", gp.PowerLimitNowW == 575, $"{gp.PowerLimitNowW}");
+            cfg.Tuning.UnlockPower = false;
+            sp.StartGpuTest(100, 0, 20, false);
+            C("power limit untouched when unlocking is off", Rec(sp)?.PowerLimitW == 575);
+            cfg.Tuning.UnlockPower = true;
+            var compact = new JsonSerializerOptions(GlintConfig.Json) { WriteIndented = false };
+            var cmpJson = JsonSerializer.Serialize(sp.Status(), compact);
+            C("status compares stock with the best tuned test", stockRec is { Ok: true } && cmpJson.Contains("\"compare\":{\"stock\":{") && cmpJson.Contains("\"tuned\":{"), cmpJson.Length > 0 ? cmpJson[..Math.Min(200, cmpJson.Length)] : "");
+            var page = JsonSerializer.Serialize(sp.History(0, 2), compact);
+            C("history pages newest first", page.Contains("\"total\":3") && page.Contains("\"limit\":2") && page.IndexOf("\"core\":100") < page.IndexOf("\"core\":150"), page[..Math.Min(200, page.Length)]);
+            sth.Dispose(); ssd.Dispose(); sp.Dispose();
             var (se, _) = Make(new SimConfig { EccSupported = true, EccAboveMem = 400 }, "ecc.json");
             se.StartGpuTest(0, 600, 20, false);
             var ecc = Rec(se);

@@ -6,8 +6,11 @@ using Glint.Core;
 namespace Glint.Tuning;
 
 /// <summary>A GPU stress test at one setting, as kept in the history the AI (and the dashboard) reads.</summary>
+/// <remarks>Rate = compute throughput (G operations/s, comparable between tests on one card). ThermalLimited / PowerLimited:
+/// the card throttled on temperature or its power limit during the test: a performance limit, not instability.</remarks>
 public sealed record GpuTestRecord(DateTime Time, int Core, int MemAb, double Seconds, bool Light, bool Ok, string? Why,
-    int? LoadMhz, double? PeakCoreC, double? PeakMemC, double? PowerW, double? GBps, string Driver);
+    int? LoadMhz, double? PeakCoreC, double? PeakMemC, double? PowerW, double? GBps, string Driver,
+    double? Rate = null, bool ThermalLimited = false, bool PowerLimited = false, double? PowerLimitW = null);
 
 /// <summary>Everything Glint must remember across restarts and crashes (tuning-state.json next to config.json).</summary>
 public sealed class TuningState
@@ -126,14 +129,16 @@ public sealed class TuningService : IDisposable
             gpu = gpu == null ? null : new
             {
                 name = gpu.Name, driver = gpu.Driver, vbios = gpu.Vbios, vramGiB = Math.Round(gpu.VramGiB, 1),
-                powerLimitW = new { @default = gpu.PowerLimitW.Default, max = gpu.PowerLimitW.Max },
+                powerLimitW = new { @default = gpu.PowerLimitW.Default, max = gpu.PowerLimitW.Max, now = gpu.PowerLimitNowW },
+                slowdownC = gpu.SlowdownC,
                 workstation = gpu.IsWorkstation, tunable = Blocked(gpu) == null, blocked = Blocked(gpu),
                 offsets = new { core = gpu.GetOffset(ClockKind.Core), memAb = ToAb(gpu.GetOffset(ClockKind.Memory)) },
                 eccCorrected = gpu.EccCorrected(),
             },
             gpuError = c.Enabled ? OpenError : null,
-            limits = new { maxCore = ceilCore, maxMemAb = ceilMem, abortCoreC = TuningLimits.ClampAbortCore(c.AbortCoreC),
-                           abortMemC = TuningLimits.ClampAbortMem(c.AbortMemC), maxTestSeconds = MaxTestSeconds },
+            limits = new { maxCore = ceilCore, maxMemAb = ceilMem, emergencyCoreC = TuningLimits.EmergencyCore(c.EmergencyCoreC, gpu?.SlowdownC),
+                           emergencyMemC = TuningLimits.EmergencyMem(c.EmergencyMemC), unlockPower = c.UnlockPower, maxTestSeconds = MaxTestSeconds },
+            compare = Compare(gpu?.Driver),
             memRatio = State.MemRatio,
             // the test in progress (for the monitor window's progress bar) and a live sample while busy
             testing = State.Testing == null ? null : new { core = State.Testing.Core, memAb = State.Testing.MemAb, seconds = State.Testing.Seconds,
@@ -177,31 +182,43 @@ public sealed class TuningService : IDisposable
     GpuTestRecord GpuTest(IGpuControl gpu, int core, int memAb, double seconds, bool light)
     {
         var c = T;
-        double abortCore = TuningLimits.ClampAbortCore(c.AbortCoreC), abortMem = TuningLimits.ClampAbortMem(c.AbortMemC);
+        double? slowdown = gpu.SlowdownC;
+        double abortCore = TuningLimits.EmergencyCore(c.EmergencyCoreC, slowdown), abortMem = TuningLimits.EmergencyMem(c.EmergencyMemC);
+        double hotAt = (slowdown ?? abortCore - 5) - 2;   // at the card's own throttle point: performance-limited, not unstable
         var stress = Stress(gpu);
         double ratio = Ratio(gpu, stress);
         int memNvml = TuningLimits.ClampMemNvml((int)Math.Round(memAb / ratio), ratio);
         var rec = new GpuTestRecord(DateTime.Now, core, memAb, seconds, light, false, null, null, null, null, null, null, gpu.Driver);
         lock (_gate) { State.Testing = rec; Save(); }     // on disk before the card sees the setting
         if (AppliedNow != null) { AppliedNow = null; Applied?.Invoke(0, 0); }   // the test ends at stock
-        double peakCore = 0, peakMem = 0, power = 0; int loadMhz = 0, samples = 0;
+        double peakCore = 0, peakMem = 0, power = 0; int loadMhz = 0, samples = 0; bool thermal = false, powerCap = false;
         void Tick()
         {
             if (_stop) throw new TuneAbort("stopped");
             var s = gpu.Sample();
             var tc = TuningLimits.ValidTemp(s.CoreC);
             var tm = TuningLimits.ValidTemp(_memJunction());
-            if (tc is double a) { peakCore = Math.Max(peakCore, a); if (a >= abortCore) throw new TuneAbort($"GPU core {a:0} °C reached the {abortCore:0} °C limit"); }
-            if (tm is double m) { peakMem = Math.Max(peakMem, m); if (m >= abortMem) throw new TuneAbort($"memory junction {m:0} °C reached the {abortMem:0} °C limit"); }
-            if (s.UtilPct >= 50) { loadMhz = Math.Max(loadMhz, s.CoreMhz); power += s.PowerW; samples++; }
+            if (tc is double a) { peakCore = Math.Max(peakCore, a); if (a >= hotAt) thermal = true; if (a >= abortCore) throw new TuneAbort($"emergency stop: GPU core {a:0} °C reached {abortCore:0} °C"); }
+            if (tm is double m) { peakMem = Math.Max(peakMem, m); if (m >= abortMem) throw new TuneAbort($"emergency stop: memory junction {m:0} °C reached {abortMem:0} °C"); }
+            if (s.UtilPct >= 30)
+            {
+                loadMhz = Math.Max(loadMhz, s.CoreMhz); power += s.PowerW; samples++;
+                foreach (var why in s.Throttle)
+                {
+                    if (why.Contains("thermal", StringComparison.OrdinalIgnoreCase)) thermal = true;
+                    if (why.Contains("power", StringComparison.OrdinalIgnoreCase)) powerCap = true;
+                }
+            }
         }
         var t0 = DateTime.Now;
         long? ecc0 = gpu.EccCorrected();
+        double? powerLimitUsed = null;
         StressResult? r1 = null, r2 = null;
         string? why = null;
         try
         {
             _fanBoost(85);
+            powerLimitUsed = UnlockPower(gpu);
             gpu.SetOffset(ClockKind.Core, TuningLimits.ClampCore(core));
             gpu.SetOffset(ClockKind.Memory, memNvml);
             Thread.Sleep(500);
@@ -223,7 +240,9 @@ public sealed class TuningService : IDisposable
             if (r1?.Fault == true || r2?.Fault == true || (why?.StartsWith("driver reset") ?? false)) { try { stress.Reopen(); } catch { _golden = false; } }
         }
         rec = rec with { Ok = why == null, Why = why, LoadMhz = loadMhz > 0 ? loadMhz : null, PeakCoreC = peakCore > 0 ? peakCore : null,
-                         PeakMemC = peakMem > 0 ? peakMem : null, PowerW = samples > 0 ? Math.Round(power / samples, 1) : null, GBps = r2?.GBps };
+                         PeakMemC = peakMem > 0 ? peakMem : null, PowerW = samples > 0 ? Math.Round(power / samples, 1) : null, GBps = r2?.GBps,
+                         Rate = r1 is { Ok: true, Rate: > 0 } ? Math.Round(r1.Rate / 1e9, 1) : null, ThermalLimited = thermal, PowerLimited = powerCap,
+                         PowerLimitW = powerLimitUsed };
         lock (_gate)
         {
             State.Testing = null;
@@ -231,7 +250,8 @@ public sealed class TuningService : IDisposable
             if (State.History.Count > MaxHistory) State.History.RemoveRange(0, State.History.Count - MaxHistory);
             Save();
         }
-        Say(rec.Ok ? $"PASS core {core:+0;-0} / memory {memAb:+0;-0}: {rec.LoadMhz} MHz under load, {rec.PeakCoreC:0} °C" : $"FAIL core {core:+0;-0} / memory {memAb:+0;-0}: {why}");
+        var limits = string.Join(", ", new[] { rec.ThermalLimited ? "thermal-limited" : null, rec.PowerLimited ? "power-limited" : null }.Where(x => x != null));
+        Say(rec.Ok ? $"PASS core {core:+0;-0} / memory {memAb:+0;-0}: {rec.LoadMhz} MHz under load, {rec.PeakCoreC:0} °C{(limits != "" ? " (" + limits + ")" : "")}" : $"FAIL core {core:+0;-0} / memory {memAb:+0;-0}: {why}");
         return rec;
     }
 
@@ -250,6 +270,7 @@ public sealed class TuningService : IDisposable
         var gpu = Ready(allowWhileBusy: false);
         double ratio = State.MemRatio ?? 0.5;
         int c = TuningLimits.ClampCore(core), m = TuningLimits.ClampMemNvml((int)Math.Round(memAb / ratio), ratio);
+        if (c != 0 || m != 0) UnlockPower(gpu);
         gpu.SetOffset(ClockKind.Core, c);
         gpu.SetOffset(ClockKind.Memory, m);
         AppliedNow = c == 0 && m == 0 ? null : (c, m, ratio);
@@ -321,6 +342,41 @@ public sealed class TuningService : IDisposable
     }
 
     // ------------------------------------------------------------------ helpers
+
+    /// <summary>Power limit to the card's own maximum (its firmware ceiling) when the user wants it unlocked. Returns the limit in force.</summary>
+    double? UnlockPower(IGpuControl gpu)
+    {
+        var (def, max) = gpu.PowerLimitW;
+        if (T.UnlockPower && max > def && max > 0)
+            try { gpu.SetPowerLimitW(max); }
+            catch (Exception e) { Say("power limit not raised: " + e.Message); }
+        return gpu.PowerLimitNowW;
+    }
+
+    /// <summary>Stock vs tuned on this driver, for the dashboard's comparison: the newest passing full test at stock, and the
+    /// passing full test behind the saved result (or the best-performing passing test).</summary>
+    object? Compare(string? driver)
+    {
+        if (driver == null) return null;
+        var ok = State.History.Where(h => h.Ok && !h.Light && h.Driver == driver).ToList();
+        var stock = ok.LastOrDefault(h => h.Core == 0 && h.MemAb == 0);
+        var s = State.Saved;
+        var tuned = s != null && s.Driver == driver
+            ? ok.Where(h => h.Core >= s.Core && h.MemAb >= s.MemAb).OrderBy(h => h.Core + h.MemAb).FirstOrDefault()
+            : ok.Where(h => h.Core > 0 || h.MemAb > 0).OrderByDescending(h => h.Rate ?? h.LoadMhz ?? 0).FirstOrDefault();
+        return stock == null && tuned == null ? null : new { stock, tuned, savedCore = s?.Core, savedMemAb = s?.MemAb };
+    }
+
+    /// <summary>A page of the test history, newest first (the dashboard paginates through all of it).</summary>
+    public object History(int offset, int limit)
+    {
+        limit = Math.Clamp(limit, 1, 100); offset = Math.Max(0, offset);
+        lock (_gate)
+        {
+            var all = Enumerable.Reverse(State.History).ToList();
+            return new { total = all.Count, offset, limit, items = all.Skip(offset).Take(limit).ToList() };
+        }
+    }
 
     bool Proven(int core, int memAb, string driver) =>
         core >= 0 && memAb >= 0 && State.History.Any(h => h.Ok && !h.Light && h.Driver == driver && h.Core >= core && h.MemAb >= memAb);

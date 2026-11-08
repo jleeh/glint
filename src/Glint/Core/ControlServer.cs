@@ -169,6 +169,7 @@ public sealed class ControlServer : IDisposable
         ("overlay.stats", "Live overlay readings: fps, frameTimeMs, low1 (1% low), the target (foreground) process, which present events are used, and whether the ETW session is running.", ""),
         ("tuning.status", "Overclocking status: whether tuning is enabled, the GPU (name, driver, workstation, whether it may be tuned and why not), this card's limits (max core / memory offsets from the driver's range, temperature cut-offs, max test length), the memory-offset ratio, the saved result, whether crash watch reverted it, the last 30 tests (newest first) and the running job. Read this first.", ""),
         ("tuning.gpu.test", "Start a GPU stress test at core / memory offsets (MHz; memory in MSI Afterburner units) for N seconds (10-300). Glint's CUDA test checks every result bit for bit against stock, watches temperatures, driver resets and ECC errors, holds the GPU fans up, and puts the card back to stock when it ends. light=true tests at low load (top boost clocks, where big core offsets fail first). Returns at once: poll tuning.wait. A crash or freeze mid-test is recorded as a failure on the next start.", "{ core, memAb, seconds?, light? }"),
+        ("tuning.history", "A page of the GPU test history, newest first: { total, offset, limit, items }. tuning.status already includes the newest 30.", "{ offset?, limit? }"),
         ("tuning.wait", "Wait up to N seconds (max 25) for the running tuning job; returns { busy, phase, progress, result }. Call again while busy.", "{ seconds? }"),
         ("tuning.stop", "Stop the running tuning job (the card goes back to stock).", ""),
         ("tuning.gpu.apply", "Apply core / memory offsets now (until stock or reboot). Refused unless a full (non-light) test at or above both values passed on this driver.", "{ core, memAb }"),
@@ -498,6 +499,7 @@ public sealed class ControlServer : IDisposable
             case "tuning.gpu.test":
                 return _svc.Tuning.StartGpuTest(Int(p, "core"), Int(p, "memAb"), (double?)p?["seconds"] ?? 60, (bool?)p?["light"] ?? false);
             case "tuning.wait": return _svc.Tuning.Wait((double?)p?["seconds"] ?? 20);
+            case "tuning.history": return _svc.Tuning.History((int?)(double?)p["offset"] ?? 0, (int?)(double?)p["limit"] ?? 30);
             case "tuning.stop": return _svc.Tuning.Stop();
             case "tuning.gpu.apply": return _svc.Tuning.Apply(Int(p, "core"), Int(p, "memAb"));
             case "tuning.gpu.save": return _svc.Tuning.SaveResult(Int(p, "core"), Int(p, "memAb"));

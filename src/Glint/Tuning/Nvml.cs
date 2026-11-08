@@ -57,6 +57,9 @@ public sealed class Nvml : IGpuControl
         [DllImport(L), DefaultDllImportSearchPaths(DllImportSearchPath.System32)] public static extern int nvmlDeviceGetMemoryInfo(IntPtr h, ref MemInfo m);
         [DllImport(L), DefaultDllImportSearchPaths(DllImportSearchPath.System32)] public static extern int nvmlDeviceGetPowerManagementLimitConstraints(IntPtr h, out uint lo, out uint hi);
         [DllImport(L), DefaultDllImportSearchPaths(DllImportSearchPath.System32)] public static extern int nvmlDeviceGetPowerManagementDefaultLimit(IntPtr h, out uint v);
+        [DllImport(L), DefaultDllImportSearchPaths(DllImportSearchPath.System32)] public static extern int nvmlDeviceSetPowerManagementLimit(IntPtr h, uint mw);
+        [DllImport(L), DefaultDllImportSearchPaths(DllImportSearchPath.System32)] public static extern int nvmlDeviceGetEnforcedPowerLimit(IntPtr h, out uint mw);
+        [DllImport(L), DefaultDllImportSearchPaths(DllImportSearchPath.System32)] public static extern int nvmlDeviceGetTemperatureThreshold(IntPtr h, int threshold, out uint c);
         [DllImport(L), DefaultDllImportSearchPaths(DllImportSearchPath.System32)] public static extern int nvmlDeviceGetClockInfo(IntPtr h, int kind, out uint v);
         [DllImport(L), DefaultDllImportSearchPaths(DllImportSearchPath.System32)] public static extern int nvmlDeviceGetTemperature(IntPtr h, int sensor, out uint v);
         [DllImport(L), DefaultDllImportSearchPaths(DllImportSearchPath.System32)] public static extern int nvmlDeviceGetPowerUsage(IntPtr h, out uint mw);
@@ -94,6 +97,19 @@ public sealed class Nvml : IGpuControl
     public string? SubsystemVendor { get; }
     public double VramGiB { get; }
     public (double Default, double Max) PowerLimitW { get; }
+    double _powerMinW;
+
+    public double? PowerLimitNowW { get { lock (_l) return N.nvmlDeviceGetEnforcedPowerLimit(_h, out var mw) == 0 ? mw / 1000.0 : null; } }
+
+    /// <summary>Within the card's own constraints only (the board firmware's ceiling); no voltage control exists.</summary>
+    public void SetPowerLimitW(double watts)
+    {
+        if (!(watts >= _powerMinW && watts <= PowerLimitW.Max) || PowerLimitW.Max <= 0)
+            throw new ArgumentOutOfRangeException(nameof(watts), $"power limit {watts:0} W is outside this card's {_powerMinW:0}..{PowerLimitW.Max:0} W");
+        lock (_l) Chk("nvmlDeviceSetPowerManagementLimit", N.nvmlDeviceSetPowerManagementLimit(_h, (uint)Math.Round(watts * 1000)));
+    }
+
+    public double? SlowdownC { get { lock (_l) return N.nvmlDeviceGetTemperatureThreshold(_h, 1, out var c) == 0 ? TuningLimits.ValidTemp(c) : null; } }   // NVML_TEMPERATURE_THRESHOLD_SLOWDOWN
     public bool IsWorkstation { get; }
 
     public Nvml()
@@ -112,7 +128,7 @@ public sealed class Nvml : IGpuControl
             VramGiB = m.Total / (double)(1L << 30);
             double def = 0, max = 0;
             if (N.nvmlDeviceGetPowerManagementDefaultLimit(_h, out var d) == 0) def = d / 1000.0;
-            if (N.nvmlDeviceGetPowerManagementLimitConstraints(_h, out _, out var hi) == 0) max = hi / 1000.0;
+            if (N.nvmlDeviceGetPowerManagementLimitConstraints(_h, out var lo, out var hi) == 0) { max = hi / 1000.0; _powerMinW = lo / 1000.0; }
             PowerLimitW = (def, max);
             IsWorkstation = IsWorkstationName(Name);
             _api = DetectApi();
@@ -240,6 +256,9 @@ public sealed class Nvml : IGpuControl
         foreach (var k in new[] { ClockKind.Core, ClockKind.Memory })
             try { SetOffset(k, 0); } catch (NvmlException e) { errs.Add(e.Message); }
         try { UnlockCoreClocks(); } catch (NvmlException e) when (e.Code == 3) { } catch (NvmlException e) { errs.Add(e.Message); }
+        // back to the card's default power limit (NOT_SUPPORTED on cards without power control is fine)
+        if (PowerLimitW.Default > 0 && PowerLimitNowW is double now && Math.Abs(now - PowerLimitW.Default) > 0.5)
+            try { SetPowerLimitW(PowerLimitW.Default); } catch (NvmlException e) when (e.Code == 3) { } catch (Exception e) { errs.Add(e.Message); }
         return errs;
     }
 

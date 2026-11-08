@@ -14,6 +14,7 @@ public sealed record SimConfig
     public int? EccAboveMem { get; init; }
     public bool EccSupported { get; init; }
     public double AmbientC { get; init; } = 35;
+    public double? SlowdownC { get; init; } = 88;
 }
 
 /// <summary>
@@ -41,6 +42,14 @@ public sealed class SimulatedGpu(SimConfig? config = null) : IGpuControl
     public string? SubsystemVendor => "1043";
     public double VramGiB => 32;
     public (double Default, double Max) PowerLimitW => (575, 600);
+    double _power = 575;
+    public double? PowerLimitNowW { get { lock (_l) return _power; } }
+    public void SetPowerLimitW(double watts)
+    {
+        if (!(watts >= 300 && watts <= PowerLimitW.Max)) throw new ArgumentOutOfRangeException(nameof(watts), $"power limit {watts:0} W is outside 300..600 W");
+        lock (_l) _power = watts;
+    }
+    public double? SlowdownC => Config.SlowdownC;
     public bool IsWorkstation => Nvml.IsWorkstationName(Name);
 
     public OffsetRange? Range(ClockKind kind) => kind == ClockKind.Core ? Config.CoreRange : Config.MemRange;
@@ -59,7 +68,7 @@ public sealed class SimulatedGpu(SimConfig? config = null) : IGpuControl
 
     public IReadOnlyList<string> ResetAll()
     {
-        lock (_l) { _off[ClockKind.Core] = 0; _off[ClockKind.Memory] = 0; _lock = null; ResetCalls++; }
+        lock (_l) { _off[ClockKind.Core] = 0; _off[ClockKind.Memory] = 0; _lock = null; _power = PowerLimitW.Default; ResetCalls++; }
         return [];
     }
 
