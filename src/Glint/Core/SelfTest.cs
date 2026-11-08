@@ -629,6 +629,27 @@ public static class SelfTest
         SelfTestV02.Run(C);
         SelfTestSecurity.Run(C);
         SelfTestUpdater.Run(C);
+        // ---- fan input state follows the input, not its position (removing / adding an input must not hand its
+        // smoothed temperature to a neighbour: once made "liquid" read the CPU's 70 °C and a new case-air input read 100%)
+        {
+            var cfg = GlintConfig.Defaults();
+            cfg.Curves["hot"] = new() { new[] { 40.0, 20 }, new[] { 80.0, 100 } };
+            cfg.Curves["cool"] = new() { new[] { 30.0, 20 }, new[] { 50.0, 100 } };
+            var rule = new FanRule { Name = "r", Fans = new() { "f" }, Inputs = new() {
+                new FanInput { Sensor = "cpu", Curve = "hot", SmoothingSec = 20 }, new FanInput { Sensor = "liquid", Curve = "cool", SmoothingSec = 20 } } };
+            cfg.Profiles[cfg.ActiveProfile] = new() { rule };
+            var e = new FanEngine();
+            var sens = new Dictionary<string, double> { ["cpu"] = 78, ["liquid"] = 31, ["probe"] = 29 };
+            for (int i = 0; i < 30; i++) e.Compute(cfg, sens, 1);
+            rule.Inputs.RemoveAt(0);                                   // liquid moves to index 0
+            e.Compute(cfg, sens, 1);
+            string ex = e.LastExplain.GetValueOrDefault("f") ?? "";
+            C("fans: removing an input doesn't hand its temperature to the next one", ex.Contains("liquid=31.0°→24%"), ex);
+            rule.Inputs.Insert(0, new FanInput { Sensor = "probe", Curve = "cool", SmoothingSec = 20 });   // new input at a used index
+            e.Compute(cfg, sens, 1);
+            ex = e.LastExplain.GetValueOrDefault("f") ?? "";
+            C("fans: a new input starts from its own reading", ex.Contains("probe=29.0°→20%") && ex.Contains("liquid=31.0°→24%"), ex);
+        }
         try { Glint.Tuning.GpuTuningTests.Run(C); Glint.Tuning.TuningTests.Run(C); Glint.Tuning.CrashWatchTests.Run(C); Glint.Tuning.CpuTuningTests.Run(C); }
         catch (Exception e) { C("tuning: suite ran", false, e.ToString()); }
 

@@ -150,5 +150,6 @@ public sealed class SimulatedStress(SimulatedGpu gpu) : IGpuStress
         finally { gpu.Load = 0; }
     }
 
-    public void Dispose() { }
+    public bool Disposed { get; private set; }
+    public void Dispose() => Disposed = true;
 }

@@ -410,6 +410,15 @@ public sealed class TuningService : IDisposable
         }
     }
 
+    /// <summary>The stress test holds a CUDA context and most of the VRAM: never keep it between jobs (a game needs that memory).
+    /// The next test records its stock reference again, which costs a few seconds.</summary>
+    void ReleaseStress()
+    {
+        var s = _stress;
+        _stress = null; _golden = false;
+        try { s?.Dispose(); } catch { }
+    }
+
     IGpuStress Stress(IGpuControl gpu)
     {
         _stress ??= _openStress(gpu);
@@ -456,7 +465,7 @@ public sealed class TuningService : IDisposable
             {
                 try { LastResult = work(); }
                 catch (Exception e) { LastResult = new { ok = false, error = e.Message }; Say("Failed: " + e.Message); }
-                finally { Phase = "idle"; }
+                finally { ReleaseStress(); Phase = "idle"; }
             }) { IsBackground = true, Name = "Glint tuning" };
             _job.Start();
         }

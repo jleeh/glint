@@ -18,10 +18,11 @@ public static class TuningTests
             var procs = new List<string>();
             var resets = new List<string>();
             int? boost = -1; var boosts = new List<int?>();
+            var stresses = new List<SimulatedStress>();
             (TuningService svc, SimulatedGpu gpu) Make(SimConfig sim, string state = "state.json")
             {
                 var g = new SimulatedGpu(sim);
-                var s = new TuningService(() => cfg, () => g, x => new SimulatedStress((SimulatedGpu)x), () => null,
+                var s = new TuningService(() => cfg, () => g, x => { var st = new SimulatedStress((SimulatedGpu)x); stresses.Add(st); return st; }, () => null,
                     b => { boost = b; boosts.Add(b); }, _ => resets.ToList(), () => procs, Path.Combine(dir, state));
                 return (s, g);
             }
@@ -59,6 +60,7 @@ public static class TuningTests
             C("stable setting passes", pass is { Ok: true }, pass?.Why ?? "no result");
             C("card back at stock after a test", g0.GetOffset(ClockKind.Core) == 0 && g0.GetOffset(ClockKind.Memory) == 0);
             C("fans boosted during the test, released after", boosts.Contains(85) && boost == null, string.Join(",", boosts));
+            C("stress test (CUDA context + VRAM) released after the job", stresses.Count > 0 && stresses.All(x => x.Disposed), $"{stresses.Count(x => x.Disposed)}/{stresses.Count} released");
             s0.StartGpuTest(250, 0, 20, false);
             var fail = Rec(s0);
             C("unstable setting fails", fail is { Ok: false }, fail?.Why ?? "no result");

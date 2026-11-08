@@ -45,10 +45,14 @@ public sealed class FanEngine
     }
 
     /// <summary>Compute duties for all fans in the profile.</summary>
+    static string InputKey(FanRule rule, FanInput inp) =>
+        $"{rule.Name}|{inp.Sensor}|{inp.Curve}|{(inp.Points == null ? "" : string.Join(";", inp.Points.Select(p => string.Join(",", p))))}";
+
     public Dictionary<string, int> Compute(GlintConfig cfg, IReadOnlyDictionary<string, double> sensors, double dtSec)
     {
         var result = new Dictionary<string, int>();
         LastExplain.Clear();
+        var seen = new HashSet<string>();
         foreach (var (rule, ri) in cfg.Active.Select((r, i) => (r, i)))
         {
             double target;
@@ -68,7 +72,10 @@ public sealed class FanEngine
                 for (int ii = 0; ii < rule.Inputs.Count; ii++)
                 {
                     var inp = rule.Inputs[ii];
-                    string key = $"{ri}:{ii}";
+                    // State belongs to the input itself (rule + sensor + curve), not to its position: removing or adding an
+                    // input must not hand another input's smoothed / held temperature to its neighbour.
+                    string key = InputKey(rule, inp);
+                    seen.Add(key);
                     double raw = Resolve(inp.Sensor, sensors);
                     if (double.IsNaN(raw) || raw < -20 || raw > 150)
                     {
@@ -124,6 +131,9 @@ public sealed class FanEngine
                 LastExplain[fan] = boosted ? $"{result[fan]}% ← tuning test boost" : $"{result[fan]}% ← {why}";
             }
         }
+        // forget inputs that no longer exist (renamed / removed rules and inputs)
+        foreach (var k in _smoothed.Keys.Where(k => !seen.Contains(k)).ToList()) _smoothed.Remove(k);
+        foreach (var k in _held.Keys.Where(k => !seen.Contains(k)).ToList()) _held.Remove(k);
         return result;
     }
 }
