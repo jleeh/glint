@@ -46,7 +46,9 @@ public sealed class WebDashboard : Form
         };
         _preview.Tick += (_, _) => Push(PreviewMessage());
         Plugins.PluginHost.EffectsChanged += OnPluginsChanged;
-        FormClosed += (_, _) => { _svc.Lighting.StopTestPattern(); Plugins.PluginHost.EffectsChanged -= OnPluginsChanged; _state.Dispose(); _preview.Dispose(); _web.Dispose(); };
+        // config changed elsewhere (MCP, CLI, tray, Home Assistant, a file edit): show it without reopening the window
+        _svc.ConfigApplied += OnConfigApplied;
+        FormClosed += (_, _) => { _svc.ConfigApplied -= OnConfigApplied; _svc.Lighting.StopTestPattern(); Plugins.PluginHost.EffectsChanged -= OnPluginsChanged; _state.Dispose(); _preview.Dispose(); _web.Dispose(); };
         _ = InitAsync();
     }
 
@@ -124,6 +126,11 @@ public sealed class WebDashboard : Form
     {
         if (!_ready || _web.CoreWebView2 == null) return;
         try { _web.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(msg, GlintConfig.Json)); } catch { }
+    }
+
+    void OnConfigApplied(GlintConfig c)
+    {
+        try { BeginInvoke(() => { if (_ready) Push(new { type = "configChanged", config = PageConfig(c) }); }); } catch { }
     }
 
     long _tuningUntil;
@@ -233,7 +240,10 @@ public sealed class WebDashboard : Form
                             "monitor" => Open(() => _openMonitor?.Invoke()),
                             "stop" => _svc.Tuning.Stop(),
                             "stock" => _svc.Tuning.Stock(),
-                            "applySaved" => _svc.Tuning.State.Saved is { } sv ? _svc.Tuning.Apply(sv.Core, sv.MemAb) : throw new InvalidOperationException("no saved result yet"),
+                            "applySaved" => _svc.Tuning.ActiveSaved is { } sv ? _svc.Tuning.Apply(sv.Core, sv.MemAb) : throw new InvalidOperationException("no saved result for this profile yet"),
+                            // manual overclocking: force = the user confirmed an untested setting in the dashboard (never from the AI / MCP)
+                            "manualApply" => _svc.Tuning.Apply(I("core"), I("memAb"), (bool?)a["force"] ?? false),
+                            "manualSave" => _svc.Tuning.SaveResult(I("core"), I("memAb"), (string?)a["profile"], (bool?)a["force"] ?? false),
                             "test" => _svc.Tuning.StartGpuTest(I("core"), I("memAb"), (double?)a["seconds"] ?? 60, (bool?)a["light"] ?? false),
                             "clearRevert" => _svc.Tuning.ClearRevert(),
                             "cpuFinish" => _svc.Cpu.Finish((bool?)a["force"] ?? false),

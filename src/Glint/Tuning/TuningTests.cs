@@ -71,7 +71,7 @@ public static class TuningTests
             C("apply refused above a proven setting", Err(() => s0.Apply(200, 0)).Contains("test it first"));
             C("apply allowed at or below a proven setting", Err(() => s0.Apply(120, 0)) == "" && g0.GetOffset(ClockKind.Core) == 120);
             C("save refused for an unproven setting", Err(() => s0.SaveResult(300, 0)) != "");
-            C("save allowed for a proven setting", Err(() => s0.SaveResult(150, 0)) == "" && s0.State.Saved?.Core == 150);
+            C("save allowed for a proven setting", Err(() => s0.SaveResult(150, 0)) == "" && s0.ActiveSaved?.Core == 150);
             s0.Stock();
             C("stock resets the card", g0.GetOffset(ClockKind.Core) == 0);
 
@@ -89,7 +89,7 @@ public static class TuningTests
             C("startup apply when safe", s1.OnStartup(false) == null && g1.GetOffset(ClockKind.Core) == 150);
             s1.Stock("3 GPU crashes in 7 days");
             C("startup apply skipped after crash watch reverted it", s1.OnStartup(false)?.Contains("crashes") == true && g1.GetOffset(ClockKind.Core) == 0);
-            var st2 = s1.State; st2.RevertedReason = null; st2.Saved = st2.Saved! with { Driver = "111.11" };
+            var st2 = s1.State; st2.RevertedReason = null; st2.Profiles["Default"] = st2.Profiles["Default"] with { Driver = "111.11" };
             C("startup apply skipped after a driver change", s1.OnStartup(false)?.Contains("driver") == true && g1.GetOffset(ClockKind.Core) == 0);
             cfg.Tuning.ApplyAtStartup = false;
 
@@ -132,6 +132,30 @@ public static class TuningTests
             var page = JsonSerializer.Serialize(sp.History(0, 2), compact);
             C("history pages newest first", page.Contains("\"total\":3") && page.Contains("\"limit\":2") && page.IndexOf("\"core\":100") < page.IndexOf("\"core\":150"), page[..Math.Min(200, page.Length)]);
             sth.Dispose(); ssd.Dispose(); sp.Dispose();
+
+            // ---- per-profile overclocks, manual overclocking
+            string active = "Quiet";
+            var (sq, gq) = Make(new SimConfig { UnstableCore = 300 }, "profiles.json");
+            sq.ActiveProfile = () => active;
+            sq.StartGpuTest(200, 0, 20, false); Rec(sq);
+            sq.SaveResult(120, 0);                                    // Quiet
+            sq.SaveResult(200, 0, "Performance");
+            active = "Performance"; sq.OnProfileChanged("Performance");
+            C("switching profile applies that profile's overclock", gq.GetOffset(ClockKind.Core) == 200, $"{gq.GetOffset(ClockKind.Core)}");
+            active = "Quiet"; sq.OnProfileChanged("Quiet");
+            C("...and each profile keeps its own", gq.GetOffset(ClockKind.Core) == 120, $"{gq.GetOffset(ClockKind.Core)}");
+            active = "Balanced"; sq.OnProfileChanged("Balanced");
+            C("a profile without an overclock runs at stock", gq.GetOffset(ClockKind.Core) == 0);
+            C("untested manual apply refused without the user's confirmation", Err(() => sq.Apply(260, 0)).Contains("test it first"));
+            C("confirmed manual apply works (hard caps still apply)", Err(() => sq.Apply(260, 0, force: true)) == "" && gq.GetOffset(ClockKind.Core) == 260);
+            C("manual apply past the card's limits refused even when confirmed", Err(() => sq.Apply(9999, 0, force: true)).Contains("limits"));
+            sq.Stock(); sq.Dispose();
+            var legacy = new TuningState { Saved = new GpuSaved(90, 250, DateTime.Now, "999.99", "SIM.00.00", 90, 250) };
+            File.WriteAllText(Path.Combine(dir, "legacy.json"), JsonSerializer.Serialize(legacy, GlintConfig.Json));
+            var (sl, _) = Make(new SimConfig(), "legacy.json");
+            sl.OnStartup(false);
+            C("an old single saved result moves into the active profile", sl.ActiveSaved?.Core == 90 && sl.State.Profiles.ContainsKey("Default"));
+            sl.Dispose();
             var (se, _) = Make(new SimConfig { EccSupported = true, EccAboveMem = 400 }, "ecc.json");
             se.StartGpuTest(0, 600, 20, false);
             var ecc = Rec(se);

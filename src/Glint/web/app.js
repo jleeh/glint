@@ -187,6 +187,17 @@ bridge?.addEventListener('message', e => {
   } else if (m.type === 'updater') {
     if (S.state) S.state.install = m.install;
     liveUpdate();
+  } else if (m.type === 'configChanged') {
+    // a change made elsewhere (MCP, CLI, tray, Home Assistant). The page's own edits echo back too: keep local edits
+    // for a moment, and never re-render under the user's typing (apply once they leave the field).
+    if (Date.now() < (S.ovrLocalUntil ?? 0)) return;
+    if (JSON.stringify(m.config) === JSON.stringify(S.cfg)) return;
+    const apply = () => { S.cfg = m.config; if (!own(S.cfg.profiles, S.profile)) S.profile = S.cfg.activeProfile; renderProfiles(); renderPage(S.page); };
+    const f = document.activeElement;
+    if (f && f.closest?.('#content') && /^(INPUT|TEXTAREA|SELECT)$/.test(f.tagName)) {
+      S.pendingCfg = apply;
+      f.addEventListener('blur', () => { const fn = S.pendingCfg; S.pendingCfg = null; fn?.(); }, { once: true });
+    } else apply();
   } else if (m.type === 'tuning') {
     S.tuning = m;
     if (S.page === 'tuning') liveTuning();

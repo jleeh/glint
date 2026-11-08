@@ -17,8 +17,11 @@ public sealed class TuningState
 {
     /// <summary>The setting being tested, written to disk BEFORE it is applied: if the PC dies, the next start knows what killed it.</summary>
     public GpuTestRecord? Testing { get; set; }
-    /// <summary>Offsets the user (or the AI) saved as the result: what "apply at startup" and crash back-off work on.</summary>
+    /// <summary>Offsets the user (or the AI) saved, before results became per profile (migrated into the active profile).</summary>
     public GpuSaved? Saved { get; set; }
+    /// <summary>The overclock that belongs to each Glint profile (by profile name): switching profile applies it; a profile
+    /// without one runs at stock. Startup apply and crash back-off work on the active profile's entry.</summary>
+    public Dictionary<string, GpuSaved> Profiles { get; set; } = new();
     /// <summary>NVML memory offset → reported clock delta (Afterburner units = NVML x ratio). Measured once per card.</summary>
     public double? MemRatio { get; set; }
     public string? RatioFor { get; set; }
@@ -68,6 +71,11 @@ public sealed class TuningService : IDisposable
     public IGpuControl? OpenedGpu => _gpu;
     /// <summary>Raised on every phase / progress change (the dashboard and the AI transcript listen).</summary>
     public event Action<string>? Log;
+    /// <summary>The active Glint profile's name (set by the owner; tests set it directly).</summary>
+    public Func<string> ActiveProfile { get; set; } = () => "Default";
+
+    /// <summary>The active profile's overclock (null = stock).</summary>
+    public GpuSaved? ActiveSaved { get { lock (_gate) return State.Profiles.GetValueOrDefault(ActiveProfile()); } }
     /// <summary>Raised (on the job's caller thread) when a background job such as a GPU test starts; the tuning monitor window opens on it.</summary>
     public event Action<string>? JobStarted;
 
@@ -83,6 +91,7 @@ public sealed class TuningService : IDisposable
         _processes = processes ?? (() => Process.GetProcesses().Select(p => { try { return p.ProcessName; } finally { p.Dispose(); } }));
         _statePath = statePath ?? StatePath;
         State = LoadState(_statePath);
+        State.Profiles ??= new();
     }
 
     bool Busy => _job is { IsAlive: true };
@@ -105,8 +114,10 @@ public sealed class TuningService : IDisposable
                 note = $"A test at core {t.Core:+0;-0} / memory {t.MemAb:+0;-0} didn't finish (crash or freeze): recorded as unstable.";
             }
         }
+        lock (_gate)
+            if (State.Saved is { } legacy && State.Profiles.Count == 0) { State.Profiles[ActiveProfile()] = legacy; Save(); }
         var c = T;
-        if (!c.Enabled || !c.ApplyAtStartup || State.Saved is not { } s) return note;
+        if (!c.Enabled || !c.ApplyAtStartup || ActiveSaved is not { } s) return note;
         if (lastShutdownWasCrash) return Say("Saved overclock not applied: the last shutdown was a crash.");
         if (State.RevertedReason != null) return Say("Saved overclock not applied: " + State.RevertedReason);
         var gpu = Gpu();
@@ -146,7 +157,7 @@ public sealed class TuningService : IDisposable
             testing = State.Testing == null ? null : new { core = State.Testing.Core, memAb = State.Testing.MemAb, seconds = State.Testing.Seconds,
                                                            light = State.Testing.Light, startedAt = State.Testing.Time },
             live = Busy && gpu != null ? Live(gpu) : null,
-            saved = State.Saved, reverted = State.RevertedReason,
+            saved = ActiveSaved, activeProfile = ActiveProfile(), profiles = State.Profiles, reverted = State.RevertedReason,
             history = State.History.TakeLast(30).Reverse(),
             last = LastResult,
         };
@@ -260,11 +271,31 @@ public sealed class TuningService : IDisposable
     // ------------------------------------------------------------------ apply / save / stock
 
     /// <summary>Apply offsets now (until reboot or stock). Never above what a passing test proved on this driver.</summary>
-    public object Apply(int core, int memAb)
+    /// <param name="force">Manual overclocking from the dashboard only (the user confirmed applying an untested setting):
+    /// the hard caps still apply, and crash watch still backs it off. Never set by the AI or the MCP tools.</param>
+    public object Apply(int core, int memAb, bool force = false)
     {
         var gpu = Ready();
-        if (!Proven(core, memAb, gpu.Driver)) throw new InvalidOperationException($"core {core:+0;-0} / memory {memAb:+0;-0} hasn't passed a full test on this driver: test it first");
-        return ApplyNow(core, memAb, "user");
+        var (ceilCore, ceilMem) = TuningLimits.Ceilings(gpu.Range(ClockKind.Core), gpu.Range(ClockKind.Memory));
+        if (core < 0 || core > ceilCore || memAb < 0 || memAb > ceilMem) throw new InvalidOperationException($"outside this card's limits (core 0..{ceilCore}, memory 0..{ceilMem})");
+        bool proven = Proven(core, memAb, gpu.Driver);
+        if (!proven && !force) throw new InvalidOperationException($"core {core:+0;-0} / memory {memAb:+0;-0} hasn't passed a full test on this driver: test it first");
+        return ApplyNow(core, memAb, proven ? "user" : "manual, untested");
+    }
+
+    /// <summary>The active Glint profile changed: apply that profile's overclock, or go to stock if it has none (only if
+    /// Glint applied one). Same safety as startup: not after a revert, not on another driver, not while a test runs.</summary>
+    public string? OnProfileChanged(string profile)
+    {
+        if (!T.Enabled || Busy) return null;
+        GpuSaved? s; lock (_gate) s = State.Profiles.GetValueOrDefault(profile);
+        if (s == null) { if (AppliedNow != null) Stock(); return null; }
+        if (State.RevertedReason != null) return Say($"Profile {profile}: overclock not applied ({State.RevertedReason})");
+        var gpu = Gpu();
+        if (gpu == null) return null;
+        if (gpu.Driver != s.Driver) return Say($"Profile {profile}: overclock not applied, the GPU driver changed ({s.Driver} → {gpu.Driver}). Re-test first.");
+        ApplyNow(s.Core, s.MemAb, "profile " + profile);
+        return null;
     }
 
     object ApplyNow(int core, int memAb, string by)
@@ -285,19 +316,24 @@ public sealed class TuningService : IDisposable
     public event Action<int, int>? Applied;
 
     /// <summary>Save offsets as the result (what startup and crash back-off use). Must be proven by a passing full test.</summary>
-    public object SaveResult(int core, int memAb)
+    /// <param name="profile">Which Glint profile the result belongs to (default: the active one).</param>
+    /// <param name="force">Manual save of an untested setting (dashboard only, after the user confirmed).</param>
+    public object SaveResult(int core, int memAb, string? profile = null, bool force = false)
     {
         var gpu = Ready();
-        if (!Proven(core, memAb, gpu.Driver)) throw new InvalidOperationException("only a setting at or below one that passed a full test on this driver can be saved");
-        var best = State.History.Where(h => h.Ok && !h.Light && h.Driver == gpu.Driver && h.Core >= core && h.MemAb >= memAb).OrderBy(h => h.Core + h.MemAb).First();
+        profile ??= ActiveProfile();
+        bool proven = Proven(core, memAb, gpu.Driver);
+        if (!proven && !force) throw new InvalidOperationException("only a setting at or below one that passed a full test on this driver can be saved");
+        var best = State.History.Where(h => h.Ok && !h.Light && h.Driver == gpu.Driver && h.Core >= core && h.MemAb >= memAb).OrderBy(h => h.Core + h.MemAb).FirstOrDefault();
+        var saved = new GpuSaved(core, memAb, DateTime.Now, gpu.Driver, gpu.Vbios, best?.Core ?? 0, best?.MemAb ?? 0);
         lock (_gate)
         {
-            State.Saved = new GpuSaved(core, memAb, DateTime.Now, gpu.Driver, gpu.Vbios, best.Core, best.MemAb);
+            State.Profiles[profile] = saved;
             State.RevertedReason = null;
             Save();
         }
-        Say($"Saved result: core {core:+0;-0} / memory {memAb:+0;-0}");
-        return new { saved = State.Saved };
+        Say($"Saved for profile {profile}: core {core:+0;-0} / memory {memAb:+0;-0}{(proven ? "" : " (untested)")}");
+        return new { saved, profile };
     }
 
     /// <summary>Lower the saved result after a crash (called by crash watch) and apply it if an overclock is active.</summary>
@@ -305,8 +341,9 @@ public sealed class TuningService : IDisposable
     {
         lock (_gate)
         {
-            if (State.Saved is not { } s) return;
-            State.Saved = s with { Core = Math.Max(0, core), MemAb = Math.Max(0, memAb), When = DateTime.Now };
+            var p = ActiveProfile();
+            if (!State.Profiles.TryGetValue(p, out var s)) return;
+            State.Profiles[p] = s with { Core = Math.Max(0, core), MemAb = Math.Max(0, memAb), When = DateTime.Now };
             Save();
         }
         Say($"Backed off to core {core:+0;-0} / memory {memAb:+0;-0}: {reason}");
@@ -362,7 +399,7 @@ public sealed class TuningService : IDisposable
         if (driver == null) return null;
         var ok = State.History.Where(h => h.Ok && !h.Light && h.Driver == driver).ToList();
         var stock = ok.LastOrDefault(h => h.Core == 0 && h.MemAb == 0);
-        var s = State.Saved;
+        var s = ActiveSaved;
         var tuned = s != null && s.Driver == driver
             ? ok.Where(h => h.Core >= s.Core && h.MemAb >= s.MemAb).OrderBy(h => h.Core + h.MemAb).FirstOrDefault()
             : ok.Where(h => h.Core > 0 || h.MemAb > 0).OrderByDescending(h => h.Rate ?? h.LoadMhz ?? 0).FirstOrDefault();

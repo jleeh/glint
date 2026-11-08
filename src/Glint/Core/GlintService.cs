@@ -58,6 +58,7 @@ public sealed class GlintService : IDisposable
             (core, memNvml) => Tuning.BackOff(core, (int)Math.Round(memNvml * (Tuning.AppliedNow?.MemRatio ?? Tuning.State.MemRatio ?? 0.5)), "crash watch"),
             () => Tuning.Stock($"{Config.Tuning?.MaxCrashes} GPU crashes within {Config.Tuning?.CrashWindowDays} days: back to stock until you re-tune"));
         Cpu = new Glint.Tuning.CpuTuning(() => Config, () => Sensors.TryGetValue("cpu", out var c) ? c : null);
+        Tuning.ActiveProfile = () => Config.ActiveProfile;
         Ai = new Glint.Tuning.AiTuner(Environment.ProcessPath ?? "Glint.exe");
         Ai.Ended += () => Tuning.Stop();   // a run that ends mid-test leaves the card at stock
         // watch only while Glint has an overclock applied (no event-log subscriptions otherwise)
@@ -92,7 +93,14 @@ public sealed class GlintService : IDisposable
     public void Apply(GlintConfig cfg, bool save = true)
     {
         (cfg.HomeAssistant ??= new()).Normalize(); // never keep a plain-text MQTT password around
+        var oldProfile = Config?.ActiveProfile;
         Config = cfg;
+        // each profile carries its own overclock: switching profile applies it (or stock), off the caller's thread
+        if (oldProfile != null && oldProfile != cfg.ActiveProfile && cfg.Tuning?.Enabled == true)
+        {
+            var p = cfg.ActiveProfile;
+            _ = Task.Run(() => { try { Tuning?.OnProfileChanged(p); } catch (Exception e) { LastError = "tuning: " + e.Message; } });
+        }
         Lighting.Apply(cfg);
         if (save && !NoSave) { _selfWrite = DateTime.UtcNow; cfg.Save(); }
         HomeAssistant.Configure(cfg.HomeAssistant); // reconnects only if that section changed
