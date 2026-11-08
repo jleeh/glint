@@ -75,6 +75,7 @@ function fontEnv() {
   await shot('devices');
   await nav('setup'); await wait(600);                          // fictional report: one failing plugin, a few warnings
   await shot('setup-check');
+  await nav('tuning'); await wait(400); await p.click('#tn-ai-start'); await wait(500); await shot('tuning');
   await nav('plugins'); await shot('plugins');
 
   await nav('overlay');

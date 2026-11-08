@@ -13,6 +13,12 @@ these open-source projects; each plugin names the reference it follows:
 | [liquidctl](https://github.com/liquidctl/liquidctl) | GPL-3.0 | Corsair Commander Pro, Hydro Platinum, NZXT Smart Device / Kraken |
 | [OpenLinkHub](https://github.com/jurkovic-nikola/OpenLinkHub) | GPL-3.0 | Corsair Commander Core / Core XT / ST, iCUE LINK |
 
+## Ported code
+
+| Project | License | Used for |
+|---|---|---|
+| [Headroom](https://github.com/eviljarv89-ctrl/Headroom) (Copyright (c) 2026 Headroom contributors) | MIT | GPU tuning: NVML offsets, the CUDA stress test and its PTX kernels, crash classification (ported to C# in `src/Glint/Tuning/`) |
+
 ## Bundled binaries and libraries
 
 | Component | License |

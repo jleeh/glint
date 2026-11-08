@@ -125,6 +125,26 @@ device before writing, and can never touch the SPD EEPROM (0x50–0x57).
 - Automatic install: `config.patch path=updates.autoInstall value=true` (needs `updates.check`); it only runs when the
   PC is idle for 10 minutes, no game is in front and it's not on battery.
 
+## Recipe: overclocking (only when the user asks)
+
+Tuning is off by default (`tuning.enabled`); only turn it on when the user asks for overclocking. Every limit is
+enforced by Glint, so a wrong request fails instead of crossing a limit.
+
+1. `tuning.status`: the GPU, whether it may be tuned (`gpu.blocked` says why not: tuning off, a workstation card
+   without `tuning.allowWorkstation`, no offsets in the driver), this card's limits, the saved result and the last 30 tests.
+2. `tuning.gpu.test { core, memAb, seconds, light? }` starts a stress test (memory in MSI Afterburner units) and returns
+   at once. Call `tuning.wait` until `busy` is false and read `result`: `ok`, `why`, clock under load, peak
+   temperatures, VRAM bandwidth (`gBps`). The card is back at stock after every test.
+3. Never retry a setting the history shows as failed, including "the PC crashed or froze during this test".
+   Find the core edge first (steps of 50, then 15 MHz), confirm it with a `light` test, then memory in steps of 250
+   while bandwidth still improves, then a 180 s soak of the combination.
+4. `tuning.gpu.save` + `tuning.gpu.apply` with a margin (core −30, memory −250). Both refuse anything a full test
+   didn't prove on this driver.
+5. `tuning.crashes` shows what crash watch saw and did (back-off, revert to stock) and CPU cores to loosen.
+
+The dashboard's **Tune with AI** button runs exactly this with Claude Code and a tuning-only MCP server
+(`Glint.exe mcp --only tuning`).
+
 ## Troubleshooting
 
 - **Start with `setup.check`.** It returns one report: admin rights, the PawnIO driver, WebView2, whether the CPU

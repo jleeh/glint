@@ -1,10 +1,10 @@
 <p align="center">
-  <img src="docs/brand/social-preview.png" alt="Glint: free, lightweight RGB and fan control" width="820">
+  <img src="docs/brand/social-preview.png" alt="Glint: free RGB, fan control and AI overclocking" width="820">
 </p>
 
 <p align="center">
-  <b>Free, open-source RGB lighting, fan control and hardware monitoring for Windows.</b><br>
-  Tiny footprint. AI-ready. Add support for your own hardware with a single JavaScript file.
+  <b>Free, open-source RGB lighting, fan control, hardware monitoring and AI overclocking for Windows.</b><br>
+  Tiny footprint. AI-native. Add support for your own hardware with a single JavaScript file.
 </p>
 
 <p align="center">
@@ -26,6 +26,11 @@
   open. Effects are rendered once per frame and devices are only written when their colours change.
 - **Fans that think about the whole PC.** Every fan curve can take several sensors at once: CPU, GPU, liquid,
   drives, anything. The hottest one wins (or average / weighted). Radiators can follow the GPU and the CPU.
+- **AI overclocking, only if you want it.** Off by default. Turn it on and press **Tune with AI**: Claude (your own
+  Claude Code login, on Windows or in WSL) finds the fastest stable GPU core/memory offsets with Glint's own CUDA stress
+  test, and guides the Ryzen Curve Optimizer. Glint enforces every limit itself: offsets only (never voltage or power
+  limits), temperature cut-offs, back to stock after every test, and **crash watch** backs the overclock off on its own
+  after a driver reset or bluescreen.
 - **Lighting like a pro suite.** 18 built-in effects painted across a 2D layout of your PC, per-device and
   per-fan overrides, presets, audio-reactive and temperature-reactive effects, and effect plugins.
 - **AI-native.** A built-in **MCP server** and CLI let an AI agent read sensors, tune fan curves, change lighting
@@ -47,8 +52,31 @@
 | **Sensors**: every sensor with min/max, HWMonitor-style | **Plugins**: search, enable, approve, write your own |
 | ![Per-device lighting](docs/screenshots/lighting-scoped.png) | ![Game overlay settings](docs/screenshots/settings-overlay.png) |
 | **Per-device effects** on the layout canvas | **Game overlay**: pick any sensor, position, hotkey |
+| ![Tuning](docs/screenshots/tuning.png) | |
+| **Tuning** (opt-in): Tune with AI, results, crash watch, test history | |
 | ![Setup check](docs/screenshots/setup-check.png) | ![Devices](docs/screenshots/devices.png) |
 | **Setup check**: drivers, admin rights, conflicting apps, with fixes | **Devices**: names, LED counts and a test pattern |
+
+## Overclocking (opt-in)
+
+Tuning is **off until you turn it on** (Tuning page). Then:
+
+- **Tune with AI** runs Claude Code headless with your own login. It gets no shell, file or web tools: only Glint's
+  tuning tools (read the hardware, run a stress test, apply/save a result), over a restricted MCP server.
+- **GPU** (NVIDIA): core and memory clock offsets through NVIDIA's NVML. Every test checks the GPU's results bit for bit
+  against a stock run, watches temperatures, driver resets and (on workstation cards) ECC-corrected memory errors,
+  holds the GPU fans up, and puts the card back to stock when it ends. The setting under test is written to disk first,
+  so a test that crashes the PC is recorded as unstable on the next start. Limits come from the card's own driver range,
+  capped at +500 MHz core / +3000 memory. Workstation cards (RTX PRO, RTX A, Quadro) need an extra opt-in.
+- **CPU** (AMD Ryzen 5000/7000/9000): per-core Curve Optimizer search with a bundled CoreCycler; Glint writes the BIOS
+  values to enter. Power limits and voltages are never raised.
+- **Crash watch**: while an overclock is applied, Glint subscribes to Windows' event log (driver resets, WHEA hardware
+  errors, bluescreens, game crashes in the NVIDIA driver). A GPU crash backs the overclock off a step; repeated crashes
+  put it back to stock. CPU errors name the core whose Curve Optimizer value needs loosening.
+- **Apply at startup** (optional) re-applies the saved result, except after a crash or a driver update.
+
+Overclocking runs hardware beyond its factory settings: crashes during tests are expected, and some manufacturers
+don't cover overclocking under warranty. The tuning code is ported from [Headroom](https://github.com/eviljarv89-ctrl/Headroom) (MIT).
 
 ## Install
 
