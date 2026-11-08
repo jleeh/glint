@@ -22,7 +22,7 @@ public sealed class AiTuner : IDisposable
     {
         "glint_tuning_status", "glint_tuning_gpu_test", "glint_tuning_wait", "glint_tuning_stop",
         "glint_tuning_gpu_apply", "glint_tuning_gpu_save", "glint_tuning_gpu_stock", "glint_tuning_crashes",
-        "glint_tuning_cpu_status", "glint_tuning_cpu_test", "glint_tuning_cpu_save",
+        "glint_tuning_cpu_status", "glint_tuning_cpu_start", "glint_tuning_cpu_finish", "glint_tuning_cpu_stop",
     };
     const int MaxTranscript = 300;
 
@@ -242,11 +242,33 @@ Rules:
 - Prefer fewer, decisive tests. Respect the time budget you are given.
 - Finish by saving and applying the result with a safety margin, then write a short plain summary: the result, the
   measured gain (clock under load, VRAM bandwidth), temperatures, and anything the user should know.
+CPU (AMD Ryzen 5000/7000/9000 only):
+- glint_tuning_cpu_status says whether this CPU can be tuned (curveOptimizer.tunable / why) and what the search has found.
+  An Intel CPU has nothing to tune: report the microcode advisory if there is one and stop.
+- The CPU search is not a short test: CoreCycler stress-tests each core alone for HOURS and raises a core's Curve Optimizer
+  value by 1 on every error; it resumes by itself after a freeze (the user must press reset) or a reboot. Glint stops the
+  stress test at the CPU temperature limit. Start it once with glint_tuning_cpu_start and then END YOUR RUN: do not wait for it
+  or poll in a loop. Tell the user plainly that it takes hours, that they can keep using the PC lightly, what to do after a
+  freeze, and to ask you again (or press Tune with AI again) when it is done.
+- When called again: read glint_tuning_cpu_status. If phase is "searching" and summaryFound is false, report progress (values,
+  adjustments, failed cores, WHEA count) and stop. If summaryFound is true (or phase is "stopped" with values the user wants
+  to use), call glint_tuning_cpu_finish and present the BIOS sheet it returns exactly as given, plus: Curve Optimizer can't
+  be set permanently from Windows, so these values must be typed into the BIOS, then checked for stability under a long load.
+- Never call glint_tuning_cpu_finish with force=true unless the user asked for it.
 """;
 
     static string Prompt(string goal, int budget) => goal switch
     {
-        "cpu" => $"Tune the CPU's per-core Curve Optimizer with the CPU tools (start with glint_tuning_cpu_status; if CPU tuning isn't available here, say why and stop). Time budget: {budget} minutes.",
+        "cpu" => """
+Tune the CPU's per-core Curve Optimizer with the CPU tools. Start with glint_tuning_cpu_status.
+- If curveOptimizer.tunable is false, say why in one sentence (include the microcode advisory for Intel 13th/14th gen) and stop.
+- If a search is already running or finished (phase searching / stopped / done), follow the "when called again" rules.
+- Otherwise pick a start value for this CPU family from what you know (curveOptimizer.startHint is a sensible default: it
+  is only where each core STARTS, errors raise it, so a little too aggressive just costs time; never below minStart),
+  call glint_tuning_cpu_start, and explain in a few sentences: it takes several hours, resumes by itself after a freeze
+  (press the reset button), Glint stops the test at the temperature limit, and to run Tune with AI again afterwards to get
+  the BIOS values. The time budget does not apply to the search itself: it runs after you finish.
+""",
         _ => $"""
 Tune the GPU. Time budget: {budget} minutes of testing.
 Suggested method (adapt it to the history and the card's limits):
@@ -257,7 +279,7 @@ Suggested method (adapt it to the history and the card's limits):
    VRAM bandwidth (GBps in the result) stops improving for two steps (error retries), and keep the best-bandwidth step.
 3. Soak the combination for 180 s. If it fails, lower core by 30 and memory by 250 and soak again.
 4. Save and apply the final setting with a margin: core 30 MHz and memory 250 below the best passing values.
-{(goal == "all" ? "Then tune the CPU the same way with the CPU tools (glint_tuning_cpu_status first)." : "")}
+{(goal == "all" ? "Then handle the CPU with the CPU tools as described in the CPU rules (glint_tuning_cpu_status first; the CPU search is started, not waited for)." : "")}
 """,
     };
 

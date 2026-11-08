@@ -17,6 +17,8 @@ public sealed class GlintService : IDisposable
     public Glint.Tuning.TuningService Tuning { get; }
     /// <summary>Crash watch: event-log subscriptions that exist only while an overclock is applied and crash watch is on.</summary>
     public Glint.Tuning.CrashWatch Crashes { get; }
+    /// <summary>CPU Curve Optimizer search (CoreCycler): its thermal watchdog exists only while a search runs.</summary>
+    public Glint.Tuning.CpuTuning Cpu { get; }
     /// <summary>"Tune with AI": Claude Code (the user's own login) driving the tuning tools over Glint's MCP server.</summary>
     public Glint.Tuning.AiTuner Ai { get; }
 
@@ -55,6 +57,7 @@ public sealed class GlintService : IDisposable
         Crashes = new Glint.Tuning.CrashWatch(() => Config.Tuning ?? new(), () => Tuning.OpenedGpu, () => Tuning.AppliedNow,
             (core, memNvml) => Tuning.BackOff(core, (int)Math.Round(memNvml * (Tuning.AppliedNow?.MemRatio ?? Tuning.State.MemRatio ?? 0.5)), "crash watch"),
             () => Tuning.Stock($"{Config.Tuning?.MaxCrashes} GPU crashes within {Config.Tuning?.CrashWindowDays} days: back to stock until you re-tune"));
+        Cpu = new Glint.Tuning.CpuTuning(() => Config, () => Sensors.TryGetValue("cpu", out var c) ? c : null);
         Ai = new Glint.Tuning.AiTuner(Environment.ProcessPath ?? "Glint.exe");
         Ai.Ended += () => Tuning.Stop();   // a run that ends mid-test leaves the card at stock
         // watch only while Glint has an overclock applied (no event-log subscriptions otherwise)
@@ -198,6 +201,7 @@ public sealed class GlintService : IDisposable
         Overlay?.Dispose(); // stops the ETW session
         Ai.Dispose();
         Crashes.Dispose();
+        Cpu.Dispose();
         Tuning.Dispose();   // stops a running test (the test itself puts the card back to stock)
         HomeAssistant.Dispose(); // publishes "offline" while the broker link is still up
         _stop = true;

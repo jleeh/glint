@@ -41,4 +41,9 @@
     <None Include="plugin-templates\**" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
+  <!-- CoreCycler (CPU Curve Optimizer search), fetched by tools/fetch-corecycler.ps1: bundled only when present, so a plain build still works -->
+  <ItemGroup Condition="Exists('third_party\CoreCycler\script-corecycler.ps1')">
+    <None Include="third_party\CoreCycler\**" Link="tools\CoreCycler\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>
