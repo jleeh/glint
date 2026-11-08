@@ -169,6 +169,7 @@ public sealed class ControlServer : IDisposable
         ("overlay.stats", "Live overlay readings: fps, frameTimeMs, low1 (1% low), the target (foreground) process, which present events are used, and whether the ETW session is running.", ""),
         ("setup.check", "Setup check: is this PC set up right for Glint? Admin rights, PawnIO driver, WebView2, CPU temperature, conflicting RGB/fan apps (running or starting with Windows), GPU fan tools while Glint drives GPU fans, fans another program has taken over, plugins needing approval or failing, devices that declined, the startup task, version + update, OpenRGB bridge. Each item: status ok/warn/fail, plain-language detail, and the fix. Start here when something doesn't work.", ""),
         ("update.status", "Updates: this version, the latest release, whether it can be installed from here (canInstall / cannotInstall), autoInstall, and the install progress (install.state idle|downloading|verifying|installing|failed, install.message).", ""),
+        ("update.check", "Ask GitHub for the latest release now (the background check runs every 6 h) and return update.status. Use when the user says Glint shows an old version as latest.", ""),
         ("update.install", "Install the newer release: downloads the setup from Glint's GitHub releases, checks it against SHA256SUMS.txt and GitHub's build attestation for the release workflow, then runs it silently (Glint closes and restarts). Only with the user's consent; requires confirm=true. Poll update.status for progress.", "{ confirm: true }"),
         ("log", "Recent device / plugin log lines.", "{ lines?: number }"),
         ("app.restart", "Restart Glint (needed after adding or changing device plugins).", ""),
@@ -474,6 +475,9 @@ public sealed class ControlServer : IDisposable
             case "ha.status": return _svc.HomeAssistant.Status();
             case "setup.check": return SetupCheck.Run(_svc);
             case "update.status": return _svc.Updater.Describe();
+            case "update.check":
+                _svc.Updates.CheckRequested().GetAwaiter().GetResult();
+                return _svc.Updater.Describe();
             case "update.install":
                 {
                     if ((bool?)p["confirm"] != true)

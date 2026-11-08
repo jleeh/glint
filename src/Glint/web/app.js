@@ -180,6 +180,10 @@ bridge?.addEventListener('message', e => {
     setupBadge();
     if (S.page === 'setup') renderSetup();
     else if (S.page === 'overview') setupBanner();
+  } else if (m.type === 'updateInfo') {
+    S.updChecking = false;
+    if (S.state) S.state.update = m.update;
+    liveUpdate();
   } else if (m.type === 'updater') {
     if (S.state) S.state.install = m.install;
     liveUpdate();
@@ -451,7 +455,11 @@ function renderCooling() {
   const curveNames = Object.keys(S.cfg.curves);
 
   $('#page-cooling').innerHTML = `
-  ${S.cfg.fanControl === false ? fanOffNote(true) : ''}
+  <div class="card card-pad row between" style="margin-bottom:14px;gap:12px">
+    <div><div class="card-title">Fan control</div><div class="card-sub">On: Glint drives every fan below from your curves. Off: fans go back to the BIOS, GPU driver and device firmware.</div></div>
+    <div class="toggle ${S.cfg.fanControl !== false ? 'on' : ''}" id="c-fancontrol" title="${S.cfg.fanControl !== false ? 'Turn fan control off' : 'Turn fan control on'}"></div>
+  </div>
+  ${S.cfg.fanControl === false ? fanOffNote() : ''}
   <div class="cool-layout">
     <div>
       <div class="field" style="margin-bottom:14px">
@@ -576,7 +584,7 @@ function bindSlider(id, fmt, onInput) {
 
 function bindCooling(r, rules) {
   const pg = $('#page-cooling');
-  pg.querySelector('[data-fancontrol-on]')?.addEventListener('click', () => { S.cfg.fanControl = true; commit(true); toast('Fan control on'); });
+  $('#c-fancontrol').onclick = () => { S.cfg.fanControl = S.cfg.fanControl === false; commit(true); toast(S.cfg.fanControl ? 'Fan control on' : 'Fan control off: fans are back on their own control'); };
   $('#c-profile').onchange = e => { S.profile = e.target.value; S.rule = 0; S.curve = null; renderCooling(); };
   $('#c-activate')?.addEventListener('click', () => { S.cfg.activeProfile = S.profile; renderProfiles(); commit(true); });
   $('#c-dup').onclick = () => {
@@ -1606,8 +1614,8 @@ function renderSettings() {
         <div class="muted" style="font-size:12px;margin-top:12px">Needs an MQTT broker, such as Home Assistant's Mosquitto add-on (Settings → Add-ons), with the MQTT integration enabled. Glint's entities then appear automatically; no YAML needed.</div>
       </div>
       <div class="card card-pad" id="upd-card">
-        <div class="row between card-head"><div><div class="card-title">Updates</div><div class="card-sub">One request to GitHub at startup and once a day. Nothing is installed unless you click Install or switch on automatic install.</div></div><div class="toggle ${UPD().check !== false ? 'on' : ''}" id="upd-check" title="Check for updates"></div></div>
-        <div class="ha-status" id="upd-status"><span class="pdot off"></span><span>–</span><span class="spacer" style="flex:1"></span><button class="btn small primary" id="upd-install" style="display:none">Install update</button><button class="btn small" id="upd-open" style="display:none">Open release page</button></div>
+        <div class="row between card-head"><div><div class="card-title">Updates</div><div class="card-sub">One request to GitHub at startup and every 6 hours. Nothing is installed unless you click Install or switch on automatic install.</div></div><div class="toggle ${UPD().check !== false ? 'on' : ''}" id="upd-check" title="Check for updates"></div></div>
+        <div class="ha-status" id="upd-status"><span class="pdot off"></span><span>–</span><span class="spacer" style="flex:1"></span><button class="btn small primary" id="upd-install" style="display:none">Install update</button><button class="btn small" id="upd-open" style="display:none">Open release page</button><button class="btn small" id="upd-recheck" title="Ask GitHub for the latest release now">Check now</button></div>
         <div class="muted upd-progress" id="upd-progress" role="status" aria-live="polite"></div>
         <div class="row between" style="gap:12px"><div><div style="font-size:13px">Install updates automatically</div><div class="muted" style="font-size:12px">Only after 10 minutes without input, with no game in front and not on battery. Every setup is checked against its SHA-256 and GitHub build attestation first.</div></div><div class="toggle ${UPD().autoInstall ? 'on' : ''}" id="upd-auto" title="Install updates automatically"></div></div>
       </div>
@@ -1649,6 +1657,7 @@ function bindUpdates() {
   };
   $('#upd-open').onclick = () => { const url = S.state?.update?.url ?? S.init.releasesUrl; if (/^https:\/\//i.test(url ?? '')) send({ type: 'openUrl', url }); };
   $('#upd-install').onclick = () => installUpdate();
+  $('#upd-recheck').onclick = () => { S.updChecking = true; liveUpdate(); send({ type: 'checkUpdate' }); };
   liveUpdate();
 }
 const UPD_BUSY = ['downloading', 'verifying', 'installing'];
@@ -1664,11 +1673,17 @@ function installText(i) {
   const head = { downloading: 'Downloading', verifying: 'Verifying', installing: 'Installing', failed: 'Failed' }[i.state] ?? i.state;
   return `${head}: ${i.message ?? ''}${pct}`;
 }
+function ago(t) {
+  const m = t ? Math.round((Date.now() - Date.parse(t)) / 60000) : NaN;
+  if (!(m >= 0)) return '';
+  return ' · checked ' + (m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 2880 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} days ago`);
+}
 function updateText() {
+  if (S.updChecking) return ['off', 'Checking GitHub for the latest release…'];
   const u = S.state?.update, cur = u?.current ?? S.init.version;
   if (UPD().check === false) return ['off', `Glint ${cur} · update check is off`];
   if (u?.available) return ['warn', `Update available: v${u.latest} (you have ${cur})`];
-  if (u?.latest) return ['ok', `Glint ${cur} is the latest version`];
+  if (u?.latest) return ['ok', `Glint ${cur} is the latest version${ago(u.checkedAt)}`];
   return ['off', u?.checkedAt ? `Glint ${cur} · couldn't check (${u.note ?? 'offline'})` : `Glint ${cur} · not checked yet`];
 }
 function liveUpdate() {
@@ -1681,6 +1696,8 @@ function liveUpdate() {
   $('#upd-open').style.display = avail ? '' : 'none';
   $('#upd-install').style.display = canInstall ? '' : 'none';
   $('#upd-install').disabled = busy;
+  $('#upd-recheck').disabled = !!S.updChecking || busy;
+  $('#upd-recheck').style.display = avail ? 'none' : '';
   $('#upd-install').textContent = busy ? 'Installing…' : inst?.state === 'failed' ? 'Try again' : 'Install update';
   const pr = $('#upd-progress'), t = avail && S.init.cannotInstall ? `Install it from the release page: ${S.init.cannotInstall}.` : installText(inst);
   if (pr.textContent !== t) pr.textContent = t;

@@ -108,6 +108,14 @@ public sealed class WebDashboard : Form
     /// <summary>Notepad by absolute path, for a plugin file / the config.</summary>
     public static void OpenInNotepad(string file) => Process.Start(new ProcessStartInfo(Sys32("notepad.exe"), $"\"{file}\"") { UseShellExecute = false });
 
+    /// <summary>After an update check: push the fresh answer (the dashboard's "Check now" waits for this).</summary>
+    async Task RefreshUpdate(Task<UpdateInfo> check)
+    {
+        UpdateInfo info;
+        try { info = await check; } catch { info = _svc.Updates.Info; }
+        try { if (!IsDisposed) BeginInvoke(() => Push(new { type = "updateInfo", update = info })); } catch { }
+    }
+
     void Push(object msg)
     {
         if (!_ready || _web.CoreWebView2 == null) return;
@@ -126,6 +134,10 @@ public sealed class WebDashboard : Form
                 Push(StateMessage());
                 _state.Start();
                 RunSetupCheck(); // once per dashboard open, for the sidebar badge and the Overview banner
+                _ = RefreshUpdate(_svc.Updates.CheckIfStale(UpdateChecker.StaleOnOpen));
+                break;
+            case "checkUpdate":
+                _ = RefreshUpdate(_svc.Updates.CheckRequested());
                 break;
             case "setupCheck":
                 RunSetupCheck();

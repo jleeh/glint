@@ -44,10 +44,19 @@ const fs = require('fs');
   check('fan control toggle off → fanControl:false sent, notice shown', c?.fanControl === false && !!(await p.$('[data-fanoff]')) && !(await p.$('[data-fancontrol].on')), String(c?.fanControl));
   await nav('cooling');
   check('cooling page shows the fan-control-off notice', !!(await p.$('#page-cooling [data-fanoff]')));
-  await p.click('#page-cooling [data-fancontrol-on]');
+  check('cooling page has its own fan-control toggle, showing off', !!(await p.$('#c-fancontrol')) && !(await p.$('#c-fancontrol.on')));
+  await p.click('#c-fancontrol');
   c = await cfg();
   await wait(100);
-  check('cooling "turn fan control on" → fanControl:true, notice gone', c?.fanControl === true && !(await p.$('#page-cooling [data-fanoff]')), String(c?.fanControl));
+  check('cooling toggle on → fanControl:true, notice gone, toggle on', c?.fanControl === true && !(await p.$('#page-cooling [data-fanoff]')) && !!(await p.$('#c-fancontrol.on')), String(c?.fanControl));
+  await p.click('#c-fancontrol');
+  c = await cfg();
+  await wait(100);
+  check('cooling toggle off → fanControl:false, notice shown', c?.fanControl === false && !!(await p.$('#page-cooling [data-fanoff]')) && !(await p.$('#c-fancontrol.on')), String(c?.fanControl));
+  await p.click('#c-fancontrol');
+  c = await cfg();
+  await wait(100);
+  check('cooling toggle back on', c?.fanControl === true && !!(await p.$('#c-fancontrol.on')), String(c?.fanControl));
   await nav('overview');
 
   // --- cooling
@@ -341,6 +350,14 @@ const fs = require('fs');
   // automatic install toggle
   await p.click('#upd-auto'); c = await cfg();
   check('settings: automatic install toggle saves updates.autoInstall', c.updates?.autoInstall === true && c.updates.check === true, JSON.stringify(c.updates));
+  check('settings: "Check now" hidden while an update is on offer', await p.$eval('#upd-recheck', e => e.style.display === 'none'));
+  await p.evaluate(() => { window.__mockInstallIdle(); window.__mockNoUpdate = true; window.__mockChecks = 0; document.querySelector('#upd-recheck').style.display = ''; });
+  await p.click('#upd-recheck'); await wait(30);
+  check('settings: "Check now" shows it is checking and disables itself', (await p.$eval('#upd-status', e => e.textContent)).includes('Checking') && await p.$eval('#upd-recheck', e => e.disabled));
+  await wait(250);
+  const upTxt = await p.$eval('#upd-status', e => e.textContent);
+  check('settings: "Check now" sends one checkUpdate and shows the fresh answer with its age', await p.evaluate(() => window.__mockChecks) === 1 && upTxt.includes('is the latest version') && upTxt.includes('checked just now')
+    && await p.$eval('#upd-recheck', e => !e.disabled && e.style.display !== 'none'), upTxt);
   await p.click('#upd-check'); c = await cfg();
   check('settings: update check toggle saves updates.check (and switches automatic install off)', c.updates?.check === false && c.updates.autoInstall === false, JSON.stringify(c.updates));
   await p.click('#upd-auto'); c = await cfg();

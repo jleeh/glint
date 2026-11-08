@@ -179,6 +179,31 @@ static class SelfTestV02
         }
         using (var u = new UpdateChecker(() => cfg, new FakeHttp(_ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("<html>not json") }), "0.2.0"))
             C("update check: garbage response handled", u.CheckNow().Result is { Available: false, Latest: null }, $"{u.Info}");
+        {
+            // the reported bug: checked at 20:11, release published at 20:22 → "latest" stayed stale for a whole day
+            var tag = "v0.3.0";
+            var hs = new FakeHttp(_ => Json(tag, UpdateChecker.ReleasesUrl));
+            using var u = new UpdateChecker(() => cfg, hs, "0.3.0");
+            C("update check: no answer yet counts as stale", u.IsStale(UpdateChecker.Interval), "");
+            var first = u.CheckIfStale(UpdateChecker.Interval).Result;
+            C("update check: CheckIfStale checks when there's no answer", hs.Requests.Count == 1 && first is { Available: false, Latest: "0.3.0" }, $"{first}");
+            tag = "v0.4.0";
+            u.CheckIfStale(UpdateChecker.StaleOnOpen).Wait();
+            C("update check: a fresh answer is reused (no request)", hs.Requests.Count == 1 && !u.Info.Available, $"{hs.Requests.Count}");
+            C("update check: stale by the wall clock after the interval (sleep can't stretch it)", u.IsStale(UpdateChecker.Interval, u.Info.CheckedAt!.Value + UpdateChecker.Interval)
+                && !u.IsStale(UpdateChecker.Interval, u.Info.CheckedAt!.Value + UpdateChecker.Interval - TimeSpan.FromMinutes(1)), "");
+            C("update check: background interval is at most 6 h and the loop looks at the clock often", UpdateChecker.Interval <= TimeSpan.FromHours(6) && UpdateChecker.Tick <= TimeSpan.FromMinutes(15)
+                && UpdateChecker.StaleOnOpen <= TimeSpan.FromHours(1), "");
+            var rapid = u.CheckRequested().Result;
+            C("update check: \"Check now\" right after a check doesn't spam GitHub", hs.Requests.Count == 1 && rapid == u.Info, $"{hs.Requests.Count}");
+            var off = GlintConfig.Defaults(); off.Updates.Check = false;
+            var h2 = new FakeHttp(_ => Json("v0.4.0", UpdateChecker.ReleasesUrl));
+            using var u2 = new UpdateChecker(() => off, h2, "0.3.0");
+            u2.CheckIfStale(TimeSpan.Zero).Wait();
+            C("update check: background/open checks send nothing while the check is off", h2.Requests.Count == 0, $"{h2.Requests.Count}");
+            var asked = u2.CheckRequested().Result;
+            C("update check: \"Check now\" finds a release published after the last check", h2.Requests.Count == 1 && asked is { Available: true, Latest: "0.4.0" }, $"{asked}");
+        }
         C("update check: version parsing (v-prefix, pre-release, two parts)", UpdateChecker.Parse("v1.2.3-beta.1") == new Version(1, 2, 3) && UpdateChecker.Parse("0.3") == new Version(0, 3, 0) && UpdateChecker.Parse("nightly") == null, "");
         C("update check: this build has a real version (not 1.0.0 / 0.0.0)", UpdateChecker.Parse(UpdateChecker.CurrentVersion) is { } v && v < new Version(1, 0, 0) && v > new Version(0, 0, 0), UpdateChecker.CurrentVersion);
     }
