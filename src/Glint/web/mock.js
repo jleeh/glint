@@ -185,6 +185,7 @@
   // one-click update: walks through the real states; window.__mockUpdateFail = 'reason' makes verification fail
   let install = { state: 'idle', version: null, message: null, bytes: 0, total: 0, at: new Date().toISOString() };
   const setInstall = (state, message, bytes = 0, total = 0) => { install = { state, version: '0.3.0', message, bytes, total, at: new Date().toISOString() }; emit({ type: 'updater', install }); };
+  window.__mockInstallIdle = () => setInstall('idle', null);
   const runInstall = () => {
     if (['downloading', 'verifying', 'installing'].includes(install.state)) return;
     const T = 62914560;
@@ -403,6 +404,7 @@
       if (m.type === 'config') window.__lastConfig = m.config;
       (window.__msgs ??= []).push(m);
       if (m.type === 'ready' || m.type === 'setupCheck') setTimeout(() => emit({ type: 'setup', report: setupReport() }), m.type === 'ready' ? 40 : 120);
+      if (m.type === 'checkUpdate') { window.__mockChecks = (window.__mockChecks ?? 0) + 1; setTimeout(() => { UPDATE.checkedAt = new Date().toISOString(); if (window.__mockNoUpdate) Object.assign(UPDATE, { latest: '0.2.0', available: false }); emit({ type: 'updateInfo', update: UPDATE }); }, 120); }
       if (m.type === 'installUpdate' || (m.type === 'setupFix' && m.fix === 'installUpdate')) runInstall();
       if (m.type === 'tuning') setTimeout(() => emit(mockTuning(m)), 15);
       if (m.type === 'testPattern') testPattern = m.on ? { zone: m.zone, count: m.count } : (testPattern?.zone === m.zone ? null : testPattern);

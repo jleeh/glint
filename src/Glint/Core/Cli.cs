@@ -178,6 +178,7 @@ public static class Cli
         T("tuning.crashes", Obj());
         T("tuning.ai.status", Obj());
         T("update.status", Obj());
+        T("update.check", Obj());
         T("update.install", Obj(("confirm", "boolean", "Must be true, and only after the user agreed: installs the newer verified release and restarts Glint", true)));
         T("log", Obj(("lines", "number", "How many recent lines (default 100)", false)));
         T("app.restart", Obj());
