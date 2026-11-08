@@ -654,7 +654,7 @@ public static class SelfTest
             ex = e.LastExplain.GetValueOrDefault("f") ?? "";
             C("fans: explain shows the held value the duty came from when it differs from the reading", ex.Contains("liquid=25.0° (held") && ex.Contains("→"), ex);
         }
-        try { Glint.Tuning.GpuTuningTests.Run(C); Glint.Tuning.TuningTests.Run(C); Glint.Tuning.CrashWatchTests.Run(C); Glint.Tuning.CpuTuningTests.Run(C); }
+        try { Glint.Tuning.GpuTuningTests.Run(C); Glint.Tuning.TuningTests.Run(C); Glint.Tuning.CrashWatchTests.Run(C); Glint.Tuning.CpuTuningTests.Run(C); Glint.Tuning.AiGoalTests.Run(C); }
         catch (Exception e) { C("tuning: suite ran", false, e.ToString()); }
 
         // ---------------- Home Assistant over MQTT (in-process fake broker on 127.0.0.1)

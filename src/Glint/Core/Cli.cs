@@ -177,6 +177,15 @@ public static class Cli
         T("tuning.cpu.finish", Obj(("force", "boolean", "Use the values found so far even though the search hasn't finished (untested cores keep the start value). Default false", false)));
         T("tuning.cpu.stop", Obj());
         T("tuning.crashes", Obj());
+        var curvePts = JsonNode.Parse("""{"type":"array","description":"[[tempC, duty%], ...]: 2-10 points, temperatures strictly increasing within 20-110, duty never decreasing 0-100 (inside the rule's min/max duty), 100% reached at or below the emergency temperature minus 5 C, at least 30% from 60 C up","items":{"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2}}""")!.AsObject();
+        var sc = Obj(("profile", "string", "The AI's profile name, e.g. 'AI · Quiet'", true), ("rule", "string", "Rule name from tuning.fans.status (must be editable)", true),
+                     ("input", "string", "Input index (0, 1, ...) or sensor, needed when the rule has several inputs", false));
+        sc["properties"]!["points"] = curvePts; ((JsonArray)sc["required"]!).Add("points");
+        T("tuning.fans.status", Obj(("profile", "string", "Profile to read (default: the active one)", false)));
+        T("tuning.fans.setCurve", sc);
+        T("tuning.profile.prepare", Obj(("goal", "string", "quiet | balanced | performance | custom", true), ("goalText", "string", "For custom: the user's description of the goal", false),
+                                         ("from", "string", "Profile to copy the first time (default: the active one)", false)));
+        T("tuning.profile.restore", Obj());
         T("tuning.ai.status", Obj());
         T("update.status", Obj());
         T("update.check", Obj());

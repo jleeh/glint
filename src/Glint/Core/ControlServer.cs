@@ -180,7 +180,11 @@ public sealed class ControlServer : IDisposable
         ("tuning.cpu.finish", "End the search: stops CoreCycler, final values = found + 3 margin (never positive), and the BIOS sheet to type in (Curve Optimizer can't be set permanently from Windows). Refused while the search is still working unless force=true (cores it hasn't reached would be untested).", "{ force? }"),
         ("tuning.cpu.stop", "Stop the CPU search and its stress test now. What was found so far is kept (tuning.cpu.finish still works).", ""),
         ("tuning.crashes", "Crash watch: recent GPU driver resets, hardware (WHEA) errors, bluescreens and game crashes in the NVIDIA driver, what Glint did about each (back-off, revert to stock, recorded only), and CPU cores whose errors suggest loosening their Curve Optimizer value.", ""),
-        ("tuning.ai.start", "Start 'Tune with AI': Claude Code (the user's own login; Windows or WSL install) tunes through the tuning tools only. goal: gpu | cpu | all. Only start it when the user asked.", "{ goal?, budgetMinutes? }"),
+        ("tuning.fans.status", "The fan rules that matter for tuning the GPU (rules driving graphics-card fans or reading a GPU sensor) and the CPU (reading a CPU / liquid sensor) in a profile (default: the active one): their curves, live duty and rpm, whether the AI may change each (editable / whyNot; pumps are flagged untouchable) and the curve rules Glint enforces.", "{ profile? }"),
+        ("tuning.fans.setCurve", "Replace one input's fan curve on an AI-owned profile (\"AI · Quiet\" ...), only for rules of the running goal's device (GPU or CPU), never a pump. points: 2-10 [tempC, duty%] pairs, temperatures strictly increasing within 20-110, duty never decreasing, within the rule's min/max duty, reaching 100% at or below the emergency temperature minus 5 C, at least 30% from 60 C up. Validated like every config write, copy-on-write (a curve of its own), limited to one write per 5 s.", "{ profile, rule, input?, points }"),
+        ("tuning.profile.prepare", "Create (first use) or reuse the AI's profile for a goal (quiet | balanced | performance | custom): a copy of the base profile (default: the active one), owned by the AI, and switch Glint to it so tests and fan curves apply there. Returns previousProfile: restoring it is the user's choice (tuning.profile.restore).", "{ goal, goalText?, from? }"),
+        ("tuning.profile.restore", "Switch back to the profile that was active before tuning.profile.prepare.", ""),
+        ("tuning.ai.start", "Start 'Tune with AI': Claude Code (the user's own login; Windows or WSL install) tunes the overclock AND the fan curves together for a goal, through the tuning tools only, in its own profile (never the user's). goal: quiet | balanced | performance | custom (custom needs goalText, max 300 chars); the old gpu | cpu | all still works (no goal: fixed fan boost). target: gpu | cpu | all (default gpu). context: the user's free-text wishes for the end result (max 1000 chars, sanitised; guidance only, never overrides safety limits). Only start it when the user asked.", "{ goal?, target?, goalText?, context?, budgetMinutes? }"),
         ("tuning.ai.stop", "Stop the AI tuning run (the card goes back to stock if a test was running).", ""),
         ("tuning.ai.status", "AI tuning run: running, goal, which Claude Code install, error, final summary and the transcript.", ""),
         ("setup.check", "Setup check: is this PC set up right for Glint? Admin rights, PawnIO driver, WebView2, CPU temperature, conflicting RGB/fan apps (running or starting with Windows), GPU fan tools while Glint drives GPU fans, fans another program has taken over, plugins needing approval or failing, devices that declined, the startup task, version + update, OpenRGB bridge. Each item: status ok/warn/fail, plain-language detail, and the fix. Start here when something doesn't work.", ""),
@@ -510,9 +514,21 @@ public sealed class ControlServer : IDisposable
             case "tuning.cpu.stop": return _svc.Cpu.Stop();
             case "tuning.crashes":
                 return new { watching = _svc.Crashes.Running, error = _svc.Crashes.LastError, events = _svc.Crashes.Records.TakeLast(50).Reverse(), cpuCoresToLoosen = _svc.Crashes.CoresToLoosen() };
+            case "tuning.fans.status": return _svc.AiFans.Status((string?)p?["profile"]);
+            case "tuning.fans.setCurve":
+                {
+                    if (_svc.Config.Tuning?.Enabled != true) return Fail("tuning is off (Settings → Tuning)");
+                    List<double[]>? pts = null;
+                    try { pts = p?["points"]?.Deserialize<List<double[]>>(); } catch (JsonException) { return Fail("points must be [[tempC, duty%], ...]"); }
+                    return _svc.AiFans.SetCurve((string?)p?["profile"], (string?)p?["rule"], p?["input"]?.ToString(), pts);
+                }
+            case "tuning.profile.prepare":
+                if (_svc.Config.Tuning?.Enabled != true) return Fail("tuning is off (Settings → Tuning)");
+                return _svc.AiFans.Prepare((string?)p?["goal"], (string?)p?["goalText"], (string?)p?["from"]);
+            case "tuning.profile.restore": return _svc.AiFans.Restore();
             case "tuning.ai.start":
                 if (_svc.Config.Tuning?.Enabled != true) return Fail("tuning is off (Settings → Tuning)");
-                return _svc.Ai.Start((string?)p["goal"] ?? "gpu", (int?)(double?)p["budgetMinutes"] ?? 45);
+                return _svc.Ai.Start((string?)p["goal"] ?? "gpu", (int?)(double?)p["budgetMinutes"] ?? 45, (string?)p["context"], (string?)p["target"], (string?)p["goalText"]);
             case "tuning.ai.stop": return _svc.Ai.Stop();
             case "tuning.ai.status": return _svc.Ai.Status();
             case "update.status": return _svc.Updater.Describe();
