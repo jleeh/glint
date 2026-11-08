@@ -384,7 +384,12 @@
     return { type: 'tuning', status: { enabled: true, busy: TN.ai.running, phase: TN.ai.running ? 'gpu test' : 'idle', progress: TN.ai.running ? 'Testing core +100 / memory +0 for 45 s' : '',
       gpu: { name: 'Demo GeForce RTX 4080', driver: '999.99', vbios: 'DEMO.00', vramGiB: 16, powerLimitW: { default: 320, max: 340 }, workstation: false, tunable: true, blocked: null, offsets: { core: 0, memAb: 0 }, eccCorrected: null },
       limits: { maxCore: 500, maxMemAb: 3000, abortCoreC: 83, abortMemC: 96, maxTestSeconds: 300 }, memRatio: 0.5, saved: { core: 120, memAb: 750, when: new Date().toISOString() }, reverted: null, history: h },
-      ai: TN.ai, crashes: { watching: false, events: [], cpuCoresToLoosen: {} } };
+      ai: TN.ai, crashes: { watching: false, events: [], cpuCoresToLoosen: {} },
+      cpu: { enabled: true, phase: 'searching', stoppedReason: null,
+        cpu: { name: 'Demo Ryzen 7 9700X', family: 'amd-zen5', label: 'AMD Ryzen 9000 (Zen 5)', vendor: 'amd', cores: 8, microcode: null, advisory: null, tempC: 71 },
+        curveOptimizer: { supported: true, tunable: true, why: null, startHint: -25, abortC: 90, expect: 'takes several hours' },
+        search: { startValue: -25, running: true, summaryFound: true, cores: 8, values: [-22, -25, -19, -25, -24, -21, -25, -23], adjustments: 9, failedCores: {}, wheaSinceStart: 0, peakC: 78,
+          final: [-19, -22, -16, -22, -21, -18, -22, -20], margin: 3, biosSheet: 'Demo board - enter these in the BIOS (Del):\n  Advanced > AMD Overclocking > Precision Boost Overdrive\n  Core 0 Curve Optimizer ........... Negative 19\n  Core 7 Curve Optimizer ........... Negative 20' } } };
   }
   window.mockBridge = {
     addEventListener: (n, f) => et.addEventListener(n, f),

@@ -752,6 +752,7 @@ const fs = require('fs');
   check('tuning: page shows the AI card and the GPU', await p.$eval('#page-tuning', el => el.textContent.includes('Tune with AI') && el.textContent.includes('Demo GeForce RTX 4080')));
   check('tuning: history table lists tests (pass and fail)', await p.$$eval('#tn-history tbody tr', r => r.length) === 3 && await p.$eval('#tn-history', el => el.textContent.includes('fail') && el.textContent.includes('pass')));
   check('tuning: saved result shown', await p.$eval('#tn-gpu', el => el.textContent.includes('+120') && el.textContent.includes('+750')));
+  check('tuning: CPU card shows per-core values and the BIOS sheet', await p.$eval('#tn-cpu', el => el.textContent.includes('Negative 19') && el.querySelectorAll('.tn-cores span').length === 8));
   await p.click('#tn-ai-start'); await wait(400);
   check('tuning: Tune with AI shows the live transcript', await p.$eval('#tn-log', el => el.textContent.includes('tuning.gpu.test') && el.textContent.includes('Starting Claude Code')));
   check('tuning: start disabled while a run is going', await p.$eval('#tn-ai-start', el => el.disabled));

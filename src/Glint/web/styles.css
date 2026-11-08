@@ -573,3 +573,5 @@ input[type=color].ov-color.unset { border-style: dashed; opacity: .55; }
 .tn-table td { padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
 .tn-pass { color: var(--good); }
 .tn-fail { color: var(--bad); }
+.tn-cores { display: flex; flex-wrap: wrap; gap: 4px 10px; font-weight: 500; }
+.tn-sheet { margin: 6px 0 0; padding: 10px 12px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; font: 12px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace; white-space: pre-wrap; color: var(--text); }

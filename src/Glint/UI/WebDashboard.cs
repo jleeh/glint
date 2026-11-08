@@ -121,7 +121,7 @@ public sealed class WebDashboard : Form
     {
         try
         {
-            return new { type = "tuning", status = _svc.Tuning.Status(), ai = _svc.Ai.Status(),
+            return new { type = "tuning", status = _svc.Tuning.Status(), ai = _svc.Ai.Status(), cpu = _svc.Cpu.Status(),
                          crashes = new { watching = _svc.Crashes.Running, events = _svc.Crashes.Records.TakeLast(20).Reverse(), cpuCoresToLoosen = _svc.Crashes.CoresToLoosen() } };
         }
         catch (Exception e) { return new { type = "tuning", error = e.Message }; }
@@ -211,6 +211,8 @@ public sealed class WebDashboard : Form
                             "applySaved" => _svc.Tuning.State.Saved is { } sv ? _svc.Tuning.Apply(sv.Core, sv.MemAb) : throw new InvalidOperationException("no saved result yet"),
                             "test" => _svc.Tuning.StartGpuTest(I("core"), I("memAb"), (double?)a["seconds"] ?? 60, (bool?)a["light"] ?? false),
                             "clearRevert" => _svc.Tuning.ClearRevert(),
+                            "cpuFinish" => _svc.Cpu.Finish((bool?)a["force"] ?? false),
+                            "cpuStop" => _svc.Cpu.Stop(),
                             _ => throw new InvalidOperationException("unknown tuning action " + op),
                         };
                     }

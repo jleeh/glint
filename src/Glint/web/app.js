@@ -1796,6 +1796,10 @@ function renderTuning() {
         <div class="row tn-sw"><div class="toggle ${c.applyAtStartup ? 'on' : ''}" id="tn-startup"></div><label>Apply the saved result when Glint starts <span class="muted">(skipped after a crash or a driver update)</span></label></div>
         <div class="row tn-sw" id="tn-ws-row"><div class="toggle ${c.allowWorkstation ? 'on' : ''}" id="tn-ws"></div><label>Allow tuning a workstation GPU <span class="muted">(RTX PRO, RTX A, Quadro: validated at stock clocks)</span></label></div>
       </div>
+      <div class="card card-pad"><div class="card-title" id="tn-cpu-name">CPU</div><div class="card-sub" id="tn-cpu-sub"></div>
+        <div id="tn-cpu"></div>
+        <div class="row" style="gap:8px;margin-top:12px;flex-wrap:wrap"><button class="btn" id="tn-cpu-finish">Finish search</button><button class="btn" id="tn-cpu-stop">Stop search</button></div>
+      </div>
       <div class="card card-pad"><div class="card-title">Crash watch</div><div class="card-sub" id="tn-crash-sub"></div>
         <div class="row tn-sw"><div class="toggle ${c.crashWatch ? 'on' : ''}" id="tn-cw"></div><label>Watch for driver resets, hardware errors and bluescreens while an overclock is applied</label></div>
         <div class="row tn-sw"><div class="toggle ${c.autoBackoff ? 'on' : ''}" id="tn-bo"></div><label>Back off automatically (core −15 MHz, then memory −250)</label></div>
@@ -1820,6 +1824,13 @@ function renderTuning() {
   $('#tn-ai-stop').onclick = () => tuningAsk('aiStop');
   $('#tn-apply').onclick = () => tuningAsk('applySaved');
   $('#tn-stock').onclick = () => tuningAsk('stock');
+  $('#tn-cpu-stop').onclick = () => tuningAsk('cpuStop');
+  $('#tn-cpu-finish').onclick = () => {
+    const sr = S.tuning?.cpu?.search;
+    const force = sr && !sr.summaryFound;
+    if (force && !confirm('The search hasn\'t finished every core. Finish anyway? Untested cores keep the start value.')) return;
+    tuningAsk('cpuFinish', { force });
+  };
   liveTuning();
 }
 function liveTuning() {
@@ -1848,6 +1859,17 @@ function liveTuning() {
       ${g.eccCorrected != null ? `<span>ECC corrected errors</span><b>${num(g.eccCorrected)}</b>` : ''}</div>`;
   $('#tn-clear')?.addEventListener('click', () => tuningAsk('clearRevert'));
   $('#tn-apply').disabled = !sv || !!st.busy; 
+  const cp = m.cpu ?? {}, ci = cp.cpu ?? {}, co = cp.curveOptimizer ?? {}, sr = cp.search;
+  $('#tn-cpu-name').textContent = ci.name ?? 'CPU';
+  $('#tn-cpu-sub').textContent = co.supported ? `${ci.label ?? ''} · per-core Curve Optimizer${ci.tempC != null ? ` · ${num(ci.tempC).toFixed(0)} °C now` : ''}` : (ci.label ?? '');
+  const vals = sr?.values ?? [];
+  $('#tn-cpu').innerHTML = (ci.advisory ? `<div class="tn-warn">${esc(ci.advisory)}</div>` : '')
+    + (co.why ? `<div class="muted" style="font-size:13px;margin-top:10px">${esc(co.why)}</div>` : '')
+    + (cp.stoppedReason ? `<div class="tn-warn">Stopped: ${esc(cp.stoppedReason)}</div>` : '')
+    + (sr ? `<div class="tn-kv"><span>Search</span><b>${sr.running ? 'running' : esc(cp.phase ?? '')} · started at ${num(sr.startValue)} · ${num(sr.adjustments)} adjustment${sr.adjustments === 1 ? '' : 's'}${num(sr.wheaSinceStart) ? ` · ${num(sr.wheaSinceStart)} hardware errors` : ''}${sr.peakC ? ` · peak ${num(sr.peakC).toFixed(0)} °C` : ''}</b>
+        <span>Per core</span><b class="tn-cores">${vals.map((v, i) => `<span title="core ${i}">${i}: ${num(v)}</span>`).join('')}</b></div>` : co.supported && !co.why ? `<div class="muted" style="font-size:13px;margin-top:10px">Not started. Tune with AI → CPU starts the per-core search (${esc(co.expect ?? 'takes hours')}).</div>` : '')
+    + (sr?.biosSheet ? `<div class="label" style="margin-top:12px">Enter these in the BIOS</div><pre class="tn-sheet">${esc(sr.biosSheet)}</pre>` : '');
+  $('#tn-cpu-finish').disabled = !sr || cp.phase === 'done'; $('#tn-cpu-stop').disabled = !sr?.running;
   const ev = cr.events ?? [], cores = Object.entries(cr.cpuCoresToLoosen ?? {});
   $('#tn-crash-sub').textContent = cr.watching ? 'Watching (an overclock is applied)' : 'Idle: only watches while an overclock is applied';
   const KIND = { gpu_tdr: 'GPU driver reset', gpu_app_crash: 'Game crash in the NVIDIA driver', whea_corrected: 'CPU hardware error (corrected)', whea_fatal: 'CPU hardware error', unexpected_shutdown: 'Unexpected shutdown', bugcheck: 'Bluescreen' };
