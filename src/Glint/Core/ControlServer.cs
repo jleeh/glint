@@ -174,6 +174,10 @@ public sealed class ControlServer : IDisposable
         ("tuning.gpu.apply", "Apply core / memory offsets now (until stock or reboot). Refused unless a full (non-light) test at or above both values passed on this driver.", "{ core, memAb }"),
         ("tuning.gpu.save", "Save core / memory offsets as the result: what 'apply at startup' re-applies and what crash watch backs off from. Same proof rule as tuning.gpu.apply.", "{ core, memAb }"),
         ("tuning.gpu.stock", "GPU back to stock clocks now (stops a running test first).", ""),
+        ("tuning.cpu.status", "CPU Curve Optimizer tuning (Ryzen 5000/7000/9000 only): CPU name and family, whether it can be tuned here and why not, microcode advisory (Intel 13th/14th gen), whether CoreCycler is bundled, the search (phase idle/searching/stopped/done, running, per-core values found so far, adjustments, failed cores, WHEA errors since it started, final values with margin, the BIOS sheet) and a sensible start value (startHint).", ""),
+        ("tuning.cpu.start", "Start the automatic per-core Curve Optimizer search with CoreCycler (y-cruncher, one core at a time, +1 on every error): startValue -50..0 is where each core starts (Ryzen 5000 allows -30 at most). Takes SEVERAL HOURS and resumes by itself after a freeze (the user presses reset) or reboot. Glint stops the stress test at the CPU temperature limit or if the temperature sensor fails. Only start it when the user asked for CPU tuning. Poll tuning.cpu.status.", "{ startValue }"),
+        ("tuning.cpu.finish", "End the search: stops CoreCycler, final values = found + 3 margin (never positive), and the BIOS sheet to type in (Curve Optimizer can't be set permanently from Windows). Refused while the search is still working unless force=true (cores it hasn't reached would be untested).", "{ force? }"),
+        ("tuning.cpu.stop", "Stop the CPU search and its stress test now. What was found so far is kept (tuning.cpu.finish still works).", ""),
         ("tuning.crashes", "Crash watch: recent GPU driver resets, hardware (WHEA) errors, bluescreens and game crashes in the NVIDIA driver, what Glint did about each (back-off, revert to stock, recorded only), and CPU cores whose errors suggest loosening their Curve Optimizer value.", ""),
         ("tuning.ai.start", "Start 'Tune with AI': Claude Code (the user's own login; Windows or WSL install) tunes through the tuning tools only. goal: gpu | cpu | all. Only start it when the user asked.", "{ goal?, budgetMinutes? }"),
         ("tuning.ai.stop", "Stop the AI tuning run (the card goes back to stock if a test was running).", ""),
@@ -497,6 +501,10 @@ public sealed class ControlServer : IDisposable
             case "tuning.gpu.apply": return _svc.Tuning.Apply(Int(p, "core"), Int(p, "memAb"));
             case "tuning.gpu.save": return _svc.Tuning.SaveResult(Int(p, "core"), Int(p, "memAb"));
             case "tuning.gpu.stock": return _svc.Tuning.Stock();
+            case "tuning.cpu.status": return _svc.Cpu.Status();
+            case "tuning.cpu.start": return _svc.Cpu.StartSearch(Int(p, "startValue"));
+            case "tuning.cpu.finish": return _svc.Cpu.Finish((bool?)p?["force"] ?? false);
+            case "tuning.cpu.stop": return _svc.Cpu.Stop();
             case "tuning.crashes":
                 return new { watching = _svc.Crashes.Running, error = _svc.Crashes.LastError, events = _svc.Crashes.Records.TakeLast(50).Reverse(), cpuCoresToLoosen = _svc.Crashes.CoresToLoosen() };
             case "tuning.ai.start":

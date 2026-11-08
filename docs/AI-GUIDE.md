@@ -142,6 +142,17 @@ enforced by Glint, so a wrong request fails instead of crossing a limit.
    didn't prove on this driver.
 5. `tuning.crashes` shows what crash watch saw and did (back-off, revert to stock) and CPU cores to loosen.
 
+CPU (AMD Ryzen 5000/7000/9000 only; Intel CPUs have nothing to tune, `tuning.cpu.status` shows the 13th/14th gen microcode advisory):
+
+6. `tuning.cpu.status`: whether this CPU can be tuned (`curveOptimizer.tunable` / `why`), a sensible `startHint`, and the
+   search so far (per-core `values`, `adjustments`, `failedCores`, `wheaSinceStart`, `summaryFound`, the BIOS sheet).
+7. `tuning.cpu.start { startValue }` (-50..0; Ryzen 5000 allows -30 at most) starts CoreCycler's automatic per-core search
+   with y-cruncher. It takes **hours** and resumes by itself after a freeze (the user presses reset) or reboot; Glint stops
+   the stress test at the CPU temperature limit or when the temperature sensor fails. Start it and end the run; don't poll.
+8. When `summaryFound` is true: `tuning.cpu.finish` stops CoreCycler and returns the final values (found + 3, never
+   positive) and a BIOS sheet for the board maker. Curve Optimizer can't be set permanently from Windows: the user types
+   the values into the BIOS. `tuning.cpu.stop` ends the search early (progress is kept).
+
 The dashboard's **Tune with AI** button runs exactly this with Claude Code and a tuning-only MCP server
 (`Glint.exe mcp --only tuning`).
 

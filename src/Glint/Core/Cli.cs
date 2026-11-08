@@ -62,6 +62,9 @@ public static class Cli
 
     static readonly Dictionary<string, (string method, JsonObject schema)> Tools = Build();
 
+    /// <summary>Is there an MCP tool of this name (tests check the AI tuner only asks for tools that exist).</summary>
+    public static bool HasTool(string name) => Tools.ContainsKey(name);
+
     static Dictionary<string, (string, JsonObject)> Build()
     {
         JsonObject Obj(params (string name, string type, string desc, bool req)[] props)
@@ -168,6 +171,10 @@ public static class Cli
         T("tuning.gpu.apply", Obj(("core", "integer", "Core offset MHz", true), ("memAb", "integer", "Memory offset, Afterburner units", true)));
         T("tuning.gpu.save", Obj(("core", "integer", "Core offset MHz", true), ("memAb", "integer", "Memory offset, Afterburner units", true)));
         T("tuning.gpu.stock", Obj());
+        T("tuning.cpu.status", Obj());
+        T("tuning.cpu.start", Obj(("startValue", "integer", "Curve Optimizer value every core starts at, -50..0 (Ryzen 5000: -30 at most); see tuning.cpu.status curveOptimizer.startHint", true)));
+        T("tuning.cpu.finish", Obj(("force", "boolean", "Use the values found so far even though the search hasn't finished (untested cores keep the start value). Default false", false)));
+        T("tuning.cpu.stop", Obj());
         T("tuning.crashes", Obj());
         T("tuning.ai.status", Obj());
         T("update.status", Obj());

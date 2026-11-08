@@ -656,6 +656,8 @@ static class Program
         // one-click updates: removes old download folders after a short delay; automatic install only if switched on
         svc.Updater.StartBackground();
         // overclocking (off by default): record a test that died with the PC, re-apply the saved result only if it's safe
+        if (svc.Config.Tuning?.Enabled == true && File.Exists(Glint.Tuning.CpuTuning.StatePath))
+            _ = Task.Run(() => { try { svc.Cpu.OnStartup(); } catch (Exception e) { svc.Rig.Log.Add("cpu tuning: " + e.Message); } });
         if (svc.Config.Tuning?.Enabled == true || File.Exists(Glint.Tuning.TuningService.StatePath))
             _ = Task.Run(() => { try { var n = svc.Tuning.OnStartup(Glint.Tuning.TuningService.LastShutdownWasCrash()); if (n != null) svc.Rig.Log.Add("tuning: " + n); } catch (Exception e) { svc.Rig.Log.Add("tuning: " + e.Message); } });
         Plugins.PluginHost.EffectsChanged += () => svc.Lighting.Apply(svc.Config);
