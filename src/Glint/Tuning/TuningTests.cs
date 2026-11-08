@@ -108,6 +108,29 @@ public static class TuningTests
             C("a driver reset during the test fails it", tdr is { Ok: false } && tdr.Why!.Contains("driver reset"), tdr?.Why ?? "");
             resets.Clear();
             s0.Dispose(); s1.Dispose(); sw.Dispose(); sr.Dispose(); sh.Dispose(); se.Dispose();
+
+            // ---- AI tuner: what Claude Code is allowed to do
+            var ai = new AiTuner(@"C:\Program Files\Glint\Glint.exe", () => new ClaudeCli("windows", @"C:\Users\x\.local\bin\claude.exe"));
+            Environment.SetEnvironmentVariable("ANTHROPIC_API_KEY", "sk-test-should-not-leak");
+            var psi = ai.BuildStart(new ClaudeCli("windows", @"C:\claude.exe"), "gpu", 30);
+            Environment.SetEnvironmentVariable("ANTHROPIC_API_KEY", null);
+            var a = psi.ArgumentList.ToList();
+            int ti = a.IndexOf("--tools");
+            C("AI: no built-in tools (--tools \"\")", ti >= 0 && ti + 1 < a.Count && a[ti + 1] == "", string.Join(" ", a.Take(12)));
+            C("AI: only Glint's MCP server", a.Contains("--strict-mcp-config") && a.Contains("--no-session-persistence") && a[a.IndexOf("--setting-sources") + 1] == "");
+            var mcpJson = a[a.IndexOf("--mcp-config") + 1];
+            C("AI: Glint MCP server restricted to tuning tools", mcpJson.Contains("\"--only\"") && mcpJson.Contains("\"tuning\""), mcpJson);
+            var allowed = a[a.IndexOf("--allowedTools") + 1].Split(',');
+            C("AI: allowed tools are tuning tools only", allowed.Length > 0 && allowed.All(t => t.StartsWith("mcp__glint__glint_tuning_")) && !allowed.Any(t => t.Contains("_ai_")), string.Join(",", allowed));
+            C("AI: the user's own login (no API key passed on)", !psi.Environment.ContainsKey("ANTHROPIC_API_KEY"));
+            C("MCP tuning filter excludes everything else", Cli.IsTuningTool("tuning.gpu.test") && !Cli.IsTuningTool("tuning.ai.start") && !Cli.IsTuningTool("config.set") && !Cli.IsTuningTool("app.restart"));
+            var wslPsi = ai.BuildStart(new ClaudeCli("wsl", "/home/x/.local/bin/claude"), "gpu", 30);
+            C("AI: WSL install runs through wsl.exe", wslPsi.FileName.EndsWith("wsl.exe", StringComparison.OrdinalIgnoreCase) && wslPsi.ArgumentList[0] == "-e" && wslPsi.ArgumentList[1] == "/home/x/.local/bin/claude");
+            ai.OnStream("{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"Testing core +100\"},{\"type\":\"tool_use\",\"name\":\"mcp__glint__glint_tuning_gpu_test\",\"input\":{\"core\":100,\"memAb\":0}}]}}");
+            ai.OnStream("{\"type\":\"result\",\"is_error\":false,\"result\":\"Saved core +135 / memory +750\"}");
+            ai.OnStream("not json");
+            var st3 = JsonSerializer.Serialize(ai.Status());
+            C("AI: transcript shows text and tool calls; summary from the result", st3.Contains("Testing core") && st3.Contains("gpu.test") && st3.Contains("Saved core"), st3[..Math.Min(300, st3.Length)]);
         }
         finally { try { Directory.Delete(dir, true); } catch { } }
     }

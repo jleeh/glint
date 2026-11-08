@@ -17,6 +17,8 @@ public sealed class GlintService : IDisposable
     public Glint.Tuning.TuningService Tuning { get; }
     /// <summary>Crash watch: event-log subscriptions that exist only while an overclock is applied and crash watch is on.</summary>
     public Glint.Tuning.CrashWatch Crashes { get; }
+    /// <summary>"Tune with AI": Claude Code (the user's own login) driving the tuning tools over Glint's MCP server.</summary>
+    public Glint.Tuning.AiTuner Ai { get; }
 
     public IReadOnlyDictionary<string, double> Sensors { get; private set; } = new Dictionary<string, double>();
     public IReadOnlyDictionary<string, int> Rpm { get; private set; } = new Dictionary<string, int>();
@@ -53,6 +55,8 @@ public sealed class GlintService : IDisposable
         Crashes = new Glint.Tuning.CrashWatch(() => Config.Tuning ?? new(), () => Tuning.OpenedGpu, () => Tuning.AppliedNow,
             (core, memNvml) => Tuning.BackOff(core, (int)Math.Round(memNvml * (Tuning.AppliedNow?.MemRatio ?? Tuning.State.MemRatio ?? 0.5)), "crash watch"),
             () => Tuning.Stock($"{Config.Tuning?.MaxCrashes} GPU crashes within {Config.Tuning?.CrashWindowDays} days: back to stock until you re-tune"));
+        Ai = new Glint.Tuning.AiTuner(Environment.ProcessPath ?? "Glint.exe");
+        Ai.Ended += () => Tuning.Stop();   // a run that ends mid-test leaves the card at stock
         // watch only while Glint has an overclock applied (no event-log subscriptions otherwise)
         Tuning.Applied += (core, mem) => { if (core == 0 && mem == 0) Crashes.Stop(); else Crashes.Start(); };
         _thread = new Thread(Loop) { IsBackground = true, Name = "Glint fans", Priority = ThreadPriority.AboveNormal };
@@ -192,6 +196,7 @@ public sealed class GlintService : IDisposable
     public void Dispose()
     {
         Overlay?.Dispose(); // stops the ETW session
+        Ai.Dispose();
         Crashes.Dispose();
         Tuning.Dispose();   // stops a running test (the test itself puts the card back to stock)
         HomeAssistant.Dispose(); // publishes "offline" while the broker link is still up

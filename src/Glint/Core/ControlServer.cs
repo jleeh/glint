@@ -174,6 +174,10 @@ public sealed class ControlServer : IDisposable
         ("tuning.gpu.apply", "Apply core / memory offsets now (until stock or reboot). Refused unless a full (non-light) test at or above both values passed on this driver.", "{ core, memAb }"),
         ("tuning.gpu.save", "Save core / memory offsets as the result: what 'apply at startup' re-applies and what crash watch backs off from. Same proof rule as tuning.gpu.apply.", "{ core, memAb }"),
         ("tuning.gpu.stock", "GPU back to stock clocks now (stops a running test first).", ""),
+        ("tuning.crashes", "Crash watch: recent GPU driver resets, hardware (WHEA) errors, bluescreens and game crashes in the NVIDIA driver, what Glint did about each (back-off, revert to stock, recorded only), and CPU cores whose errors suggest loosening their Curve Optimizer value.", ""),
+        ("tuning.ai.start", "Start 'Tune with AI': Claude Code (the user's own login; Windows or WSL install) tunes through the tuning tools only. goal: gpu | cpu | all. Only start it when the user asked.", "{ goal?, budgetMinutes? }"),
+        ("tuning.ai.stop", "Stop the AI tuning run (the card goes back to stock if a test was running).", ""),
+        ("tuning.ai.status", "AI tuning run: running, goal, which Claude Code install, error, final summary and the transcript.", ""),
         ("setup.check", "Setup check: is this PC set up right for Glint? Admin rights, PawnIO driver, WebView2, CPU temperature, conflicting RGB/fan apps (running or starting with Windows), GPU fan tools while Glint drives GPU fans, fans another program has taken over, plugins needing approval or failing, devices that declined, the startup task, version + update, OpenRGB bridge. Each item: status ok/warn/fail, plain-language detail, and the fix. Start here when something doesn't work.", ""),
         ("update.status", "Updates: this version, the latest release, whether it can be installed from here (canInstall / cannotInstall), autoInstall, and the install progress (install.state idle|downloading|verifying|installing|failed, install.message).", ""),
         ("update.install", "Install the newer release: downloads the setup from Glint's GitHub releases, checks it against SHA256SUMS.txt and GitHub's build attestation for the release workflow, then runs it silently (Glint closes and restarts). Only with the user's consent; requires confirm=true. Poll update.status for progress.", "{ confirm: true }"),
@@ -493,6 +497,13 @@ public sealed class ControlServer : IDisposable
             case "tuning.gpu.apply": return _svc.Tuning.Apply(Int(p, "core"), Int(p, "memAb"));
             case "tuning.gpu.save": return _svc.Tuning.SaveResult(Int(p, "core"), Int(p, "memAb"));
             case "tuning.gpu.stock": return _svc.Tuning.Stock();
+            case "tuning.crashes":
+                return new { watching = _svc.Crashes.Running, error = _svc.Crashes.LastError, events = _svc.Crashes.Records.TakeLast(50).Reverse(), cpuCoresToLoosen = _svc.Crashes.CoresToLoosen() };
+            case "tuning.ai.start":
+                if (_svc.Config.Tuning?.Enabled != true) return Fail("tuning is off (Settings → Tuning)");
+                return _svc.Ai.Start((string?)p["goal"] ?? "gpu", (int?)(double?)p["budgetMinutes"] ?? 45);
+            case "tuning.ai.stop": return _svc.Ai.Stop();
+            case "tuning.ai.status": return _svc.Ai.Status();
             case "update.status": return _svc.Updater.Describe();
             case "update.install":
                 {

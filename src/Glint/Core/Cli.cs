@@ -168,6 +168,8 @@ public static class Cli
         T("tuning.gpu.apply", Obj(("core", "integer", "Core offset MHz", true), ("memAb", "integer", "Memory offset, Afterburner units", true)));
         T("tuning.gpu.save", Obj(("core", "integer", "Core offset MHz", true), ("memAb", "integer", "Memory offset, Afterburner units", true)));
         T("tuning.gpu.stock", Obj());
+        T("tuning.crashes", Obj());
+        T("tuning.ai.status", Obj());
         T("update.status", Obj());
         T("update.install", Obj(("confirm", "boolean", "Must be true, and only after the user agreed: installs the newer verified release and restarts Glint", true)));
         T("log", Obj(("lines", "number", "How many recent lines (default 100)", false)));
@@ -182,8 +184,13 @@ public static class Cli
         o.WriteLine(text);
     }
 
-    public static int Mcp()
+    /// <summary>Tool names the restricted "tuning" MCP server offers (the AI tuner's whole world).</summary>
+    public static bool IsTuningTool(string method) => method.StartsWith("tuning.", StringComparison.Ordinal) && !method.StartsWith("tuning.ai.", StringComparison.Ordinal);
+
+    /// <param name="only">"tuning" = offer and accept only the tuning tools (what "Tune with AI" runs), null = everything.</param>
+    public static int Mcp(string? only = null)
     {
+        var tools = only == "tuning" ? Tools.Where(t => IsTuningTool(t.Value.method)).ToDictionary(t => t.Key, t => t.Value) : Tools;
         var input = new StreamReader(Console.OpenStandardInput(), new UTF8Encoding(false));
         var output = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true };
         void Send(object o) => output.WriteLine(JsonSerializer.Serialize(o));
@@ -216,13 +223,13 @@ public static class Cli
                 case "ping": result = new { }; break;
                 case "tools/list":
                     var help = ControlServer.Methods.ToDictionary(m => m.Method, m => m.Help);
-                    result = new { tools = Tools.Select(t => new { name = t.Key, description = help.GetValueOrDefault(t.Value.method, ""), inputSchema = t.Value.schema }) };
+                    result = new { tools = tools.Select(t => new { name = t.Key, description = help.GetValueOrDefault(t.Value.method, ""), inputSchema = t.Value.schema }) };
                     break;
                 case "tools/call":
                     {
                         var name = (string?)msg!["params"]?["name"] ?? "";
                         var args = msg["params"]?["arguments"]?.DeepClone();
-                        if (!Tools.TryGetValue(name, out var tool)) { error = new { code = -32602, message = "unknown tool " + name }; break; }
+                        if (!tools.TryGetValue(name, out var tool)) { error = new { code = -32602, message = "unknown tool " + name }; break; }
                         var resp = ControlServer.Call(tool.method, args, tool.method == "app.restart" ? 5000 : 30000);
                         if (resp == null) { result = new { content = new[] { new { type = "text", text = "Glint is not running (start it from the Start menu or the 'Glint' scheduled task)." } }, isError = true }; break; }
                         var node = JsonNode.Parse(resp)!;
