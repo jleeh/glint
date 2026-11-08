@@ -10,7 +10,8 @@ namespace Glint.Tuning;
 /// the card throttled on temperature or its power limit during the test: a performance limit, not instability.</remarks>
 public sealed record GpuTestRecord(DateTime Time, int Core, int MemAb, double Seconds, bool Light, bool Ok, string? Why,
     int? LoadMhz, double? PeakCoreC, double? PeakMemC, double? PowerW, double? GBps, string Driver,
-    double? Rate = null, bool ThermalLimited = false, bool PowerLimited = false, double? PowerLimitW = null);
+    double? Rate = null, bool ThermalLimited = false, bool PowerLimited = false, double? PowerLimitW = null,
+    double? AvgFanPct = null, double? PeakFanPct = null, double? AvgFanRpm = null, string? Goal = null);
 
 /// <summary>Everything Glint must remember across restarts and crashes (tuning-state.json next to config.json).</summary>
 public sealed class TuningState
@@ -28,6 +29,10 @@ public sealed class TuningState
     public List<GpuTestRecord> History { get; set; } = new();
     /// <summary>Set when crash watch put the GPU back to stock after repeated crashes; blocks apply-at-startup until cleared.</summary>
     public string? RevertedReason { get; set; }
+    /// <summary>Glint profiles the AI owns (name → goal kind). The AI's fan tools only ever touch these, never the user's own profiles.</summary>
+    public Dictionary<string, string> AiProfiles { get; set; } = new();
+    /// <summary>The profile that was active before the AI switched to its own (restoring it is the user's choice).</summary>
+    public string? AiPreviousProfile { get; set; }
 }
 
 public sealed record GpuSaved(int Core, int MemAb, DateTime When, string Driver, string Vbios, int TestedCore, int TestedMemAb);
@@ -74,6 +79,32 @@ public sealed class TuningService : IDisposable
     /// <summary>The active Glint profile's name (set by the owner; tests set it directly).</summary>
     public Func<string> ActiveProfile { get; set; } = () => "Default";
 
+    /// <summary>The goal of the running AI tuning run (null = none: tests then use the old fixed fan boost). Set by the owner.</summary>
+    public TuningGoal? CurrentGoal { get; set; }
+    /// <summary>Live duty / rpm of the GPU fans while a goal-based test runs (set by the owner; falls back to the card's own fan reading).</summary>
+    public Func<(double? Duty, double? Rpm)?>? FanProbe { get; set; }
+
+    public bool IsAiProfile(string? name) { lock (_gate) return name != null && State.AiProfiles.ContainsKey(name); }
+    public string? AiGoalOf(string name) { lock (_gate) return State.AiProfiles.GetValueOrDefault(name); }
+    public void MarkAiProfile(string name, string goalKind, string? previous = null)
+    {
+        lock (_gate) { State.AiProfiles[name] = goalKind; if (previous != null) State.AiPreviousProfile = previous; Save(); }
+    }
+    /// <summary>A profile that no longer exists can't stay AI-owned (a user profile created later under that name must not inherit it).</summary>
+    public void PruneAiProfiles(IEnumerable<string> existing)
+    {
+        var have = existing.ToHashSet();
+        lock (_gate)
+        {
+            var gone = State.AiProfiles.Keys.Where(k => !have.Contains(k)).ToList();
+            if (gone.Count == 0) return;
+            foreach (var k in gone) State.AiProfiles.Remove(k);
+            Save();
+        }
+    }
+    public string? PreviousProfile { get { lock (_gate) return State.AiPreviousProfile; } }
+    public void ClearPreviousProfile() { lock (_gate) { State.AiPreviousProfile = null; Save(); } }
+
     /// <summary>The active profile's overclock (null = stock).</summary>
     public GpuSaved? ActiveSaved { get { lock (_gate) return State.Profiles.GetValueOrDefault(ActiveProfile()); } }
     /// <summary>Raised (on the job's caller thread) when a background job such as a GPU test starts; the tuning monitor window opens on it.</summary>
@@ -92,6 +123,7 @@ public sealed class TuningService : IDisposable
         _statePath = statePath ?? StatePath;
         State = LoadState(_statePath);
         State.Profiles ??= new();
+        State.AiProfiles ??= new();
     }
 
     bool Busy => _job is { IsAlive: true };
@@ -157,7 +189,9 @@ public sealed class TuningService : IDisposable
             testing = State.Testing == null ? null : new { core = State.Testing.Core, memAb = State.Testing.MemAb, seconds = State.Testing.Seconds,
                                                            light = State.Testing.Light, startedAt = State.Testing.Time },
             live = Busy && gpu != null ? Live(gpu) : null,
-            saved = ActiveSaved, activeProfile = ActiveProfile(), profiles = State.Profiles, reverted = State.RevertedReason,
+            saved = ActiveSaved, activeProfile = ActiveProfile(), profiles = State.Profiles,
+            goal = CurrentGoal == null ? null : new { kind = CurrentGoal.Kind, text = CurrentGoal.Text, target = CurrentGoal.Target, profile = CurrentGoal.ProfileName, objective = CurrentGoal.Objective },
+            aiProfiles = State.AiProfiles, previousProfile = State.AiPreviousProfile, activeIsAi = State.AiProfiles.ContainsKey(ActiveProfile()), reverted = State.RevertedReason,
             history = State.History.TakeLast(30).Reverse(),
             last = LastResult,
         };
@@ -174,6 +208,8 @@ public sealed class TuningService : IDisposable
         if (core < 0 || core > ceilCore) throw new InvalidOperationException($"core must be 0..{ceilCore} MHz on this card");
         if (memAb < 0 || memAb > ceilMem) throw new InvalidOperationException($"memAb must be 0..{ceilMem} (Afterburner units) on this card");
         seconds = Math.Clamp(seconds, 10, MaxTestSeconds);
+        if (CurrentGoal is { } g0 && !IsAiProfile(ActiveProfile()))
+            throw new InvalidOperationException($"a {g0.Kind} goal run needs Glint on the AI's own profile (\"{g0.ProfileName}\") so the fans follow its curve: call tuning.profile.prepare first");
         Run("gpu test", () => GpuTest(gpu, core, memAb, seconds, light));
         return new { started = true, core, memAb, seconds, light, note = "poll tuning.wait until busy=false" };
     }
@@ -205,6 +241,8 @@ public sealed class TuningService : IDisposable
         lock (_gate) { State.Testing = rec; Save(); }     // on disk before the card sees the setting
         if (AppliedNow != null) { AppliedNow = null; Applied?.Invoke(0, 0); }   // the test ends at stock
         double peakCore = 0, peakMem = 0, power = 0; int loadMhz = 0, samples = 0; bool thermal = false, powerCap = false;
+        var goal = CurrentGoal;   // goal run: the fans follow the AI profile's curve and their duty is the noise proxy
+        double fanSum = 0, fanPeak = 0, rpmSum = 0; int fanN = 0, rpmN = 0;
         void Tick()
         {
             if (_stop) throw new TuneAbort("stopped");
@@ -213,6 +251,13 @@ public sealed class TuningService : IDisposable
             var tm = TuningLimits.ValidTemp(_memJunction());
             if (tc is double a) { peakCore = Math.Max(peakCore, a); if (a >= hotAt) thermal = true; if (a >= abortCore) throw new TuneAbort($"emergency stop: GPU core {a:0} °C reached {abortCore:0} °C"); }
             if (tm is double m) { peakMem = Math.Max(peakMem, m); if (m >= abortMem) throw new TuneAbort($"emergency stop: memory junction {m:0} °C reached {abortMem:0} °C"); }
+            if (goal != null)
+            {
+                var fp = SafeProbe();
+                double? duty = fp?.Duty ?? (s.FanPct > 0 ? s.FanPct : null);
+                if (duty is double fd) { fanSum += fd; fanPeak = Math.Max(fanPeak, fd); fanN++; }
+                if (fp?.Rpm is double fr and > 0) { rpmSum += fr; rpmN++; }
+            }
             if (s.UtilPct >= 30)
             {
                 loadMhz = Math.Max(loadMhz, s.CoreMhz); power += s.PowerW; samples++;
@@ -230,7 +275,7 @@ public sealed class TuningService : IDisposable
         string? why = null;
         try
         {
-            _fanBoost(85);
+            if (goal == null) _fanBoost(85);   // no goal: the old fixed boost. A goal run lets the AI profile's curve drive the fans
             powerLimitUsed = UnlockPower(gpu);
             gpu.SetOffset(ClockKind.Core, TuningLimits.ClampCore(core));
             gpu.SetOffset(ClockKind.Memory, memNvml);
@@ -255,7 +300,9 @@ public sealed class TuningService : IDisposable
         rec = rec with { Ok = why == null, Why = why, LoadMhz = loadMhz > 0 ? loadMhz : null, PeakCoreC = peakCore > 0 ? peakCore : null,
                          PeakMemC = peakMem > 0 ? peakMem : null, PowerW = samples > 0 ? Math.Round(power / samples, 1) : null, GBps = r2?.GBps,
                          Rate = r1 is { Ok: true, Rate: > 0 } ? Math.Round(r1.Rate / 1e9, 1) : null, ThermalLimited = thermal, PowerLimited = powerCap,
-                         PowerLimitW = powerLimitUsed };
+                         PowerLimitW = powerLimitUsed,
+                         AvgFanPct = fanN > 0 ? Math.Round(fanSum / fanN, 1) : null, PeakFanPct = fanN > 0 ? Math.Round(fanPeak, 1) : null,
+                         AvgFanRpm = rpmN > 0 ? Math.Round(rpmSum / rpmN) : null, Goal = goal?.Kind };
         lock (_gate)
         {
             State.Testing = null;
@@ -264,7 +311,7 @@ public sealed class TuningService : IDisposable
             Save();
         }
         var limits = string.Join(", ", new[] { rec.ThermalLimited ? "thermal-limited" : null, rec.PowerLimited ? "power-limited" : null }.Where(x => x != null));
-        Say(rec.Ok ? $"PASS core {core:+0;-0} / memory {memAb:+0;-0}: {rec.LoadMhz} MHz under load, {rec.PeakCoreC:0} °C{(limits != "" ? " (" + limits + ")" : "")}" : $"FAIL core {core:+0;-0} / memory {memAb:+0;-0}: {why}");
+        Say(rec.Ok ? $"PASS core {core:+0;-0} / memory {memAb:+0;-0}: {rec.LoadMhz} MHz under load, {rec.PeakCoreC:0} °C{(rec.AvgFanPct is double af ? $", fans {af:0}% avg" : "")}{(limits != "" ? " (" + limits + ")" : "")}" : $"FAIL core {core:+0;-0} / memory {memAb:+0;-0}: {why}");
         return rec;
     }
 
@@ -322,6 +369,8 @@ public sealed class TuningService : IDisposable
     {
         var gpu = Ready();
         profile ??= ActiveProfile();
+        if (CurrentGoal != null && !force && !IsAiProfile(profile))
+            throw new InvalidOperationException($"the AI only saves into its own profile (\"{CurrentGoal.ProfileName}\"), never into \"{profile}\": call tuning.profile.prepare first");
         bool proven = Proven(core, memAb, gpu.Driver);
         if (!proven && !force) throw new InvalidOperationException("only a setting at or below one that passed a full test on this driver can be saved");
         var best = State.History.Where(h => h.Ok && !h.Light && h.Driver == gpu.Driver && h.Core >= core && h.MemAb >= memAb).OrderBy(h => h.Core + h.MemAb).FirstOrDefault();
@@ -386,6 +435,8 @@ public sealed class TuningService : IDisposable
         Applied?.Invoke(0, 0);
         return new { stock = true, errors = errs };
     }
+
+    (double? Duty, double? Rpm)? SafeProbe() { try { return FanProbe?.Invoke(); } catch { return null; } }
 
     object? Live(IGpuControl gpu)
     {

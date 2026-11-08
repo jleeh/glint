@@ -462,6 +462,22 @@ static class Program
         var onlyTools = only.FirstOrDefault(m => (int?)m["id"] == 2)?["result"]?["tools"]?.AsArray().Select(t => (string?)t!["name"] ?? "").ToList() ?? new();
         C("MCP --only tuning lists only tuning tools (no ai.*)", onlyTools.Count >= 6 && onlyTools.All(t => t.StartsWith("glint_tuning_") && !t.Contains("_ai_start")), string.Join(",", onlyTools));
         C("MCP --only tuning refuses other tools", only.Any(m => (int?)m["id"] == 3 && m["error"] != null));
+        var newTools = new[] { "glint_tuning_fans_status", "glint_tuning_fans_setCurve", "glint_tuning_profile_prepare", "glint_tuning_profile_restore" };
+        C("MCP --only tuning lists the AI fan / profile tools", newTools.All(onlyTools.Contains), string.Join(",", onlyTools));
+        var setCurveSchema = only.FirstOrDefault(m => (int?)m["id"] == 2)?["result"]?["tools"]?.AsArray().FirstOrDefault(t => (string?)t!["name"] == "glint_tuning_fans_setCurve");
+        C("fans.setCurve's schema requires profile, rule and points", new[] { "profile", "rule", "points" }.All(k => setCurveSchema?["inputSchema"]?["required"]?.AsArray().Any(r => (string?)r == k) == true), setCurveSchema?.ToJsonString() ?? "null");
+        C("fans.setCurve is documented with its rules", ((string?)setCurveSchema?["description"])?.Contains("AI-owned profile") == true && ((string?)setCurveSchema?["description"])?.Contains("never a pump") == true);
+        var aiStartHelp = Glint.Core.ControlServer.Methods.First(m => m.Method == "tuning.ai.start").Help;
+        C("tuning.ai.start documents goal, target, goalText and context", new[] { "goal", "target", "goalText", "context" }.All(aiStartHelp.Contains));
+        var fsTune = Call("tuning.fans.setCurve", new { profile = "Balanced", rule = "x", points = new[] { new[] { 40, 30 }, new[] { 80, 100 } } })?.ToJsonString();
+        C("tuning.fans.setCurve refused while tuning is off", fsTune?.Contains("error") == true && fsTune.Contains("tuning is off"), fsTune ?? "null");
+        var prepOff = Call("tuning.profile.prepare", new { goal = "quiet" })?.ToJsonString();
+        C("tuning.profile.prepare refused while tuning is off", prepOff?.Contains("error") == true && prepOff.Contains("tuning is off"), prepOff ?? "null");
+        var fstat = Call("tuning.fans.status", new { })?["result"];
+        C("tuning.fans.status works over the pipe (rules, curve rules)", fstat?["rules"] != null && fstat["curveRules"] != null && fstat["aiOwned"]?.GetValue<bool>() == false, fstat?.ToJsonString()[..Math.Min(200, fstat.ToJsonString().Length)] ?? "null");
+        var userProfile = svc.Config.ActiveProfile;
+        var fsUser = Call("tuning.fans.status", new { profile = userProfile })?["result"];
+        C("tuning.fans.status marks every rule of a user profile as not editable", fsUser?["rules"]?.AsArray().All(r => r!["editable"]?.GetValue<bool>() == false) == true);
         // setup.check: the same report as the dashboard's Setup check page
         var sc = Call("setup.check");
         var scItems = sc?["result"]?["items"]?.AsArray();

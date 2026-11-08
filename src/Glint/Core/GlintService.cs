@@ -21,6 +21,8 @@ public sealed class GlintService : IDisposable
     public Glint.Tuning.CpuTuning Cpu { get; }
     /// <summary>"Tune with AI": Claude Code (the user's own login) driving the tuning tools over Glint's MCP server.</summary>
     public Glint.Tuning.AiTuner Ai { get; }
+    /// <summary>The AI's fan tools (its own profile + curve edits on it only); every change goes through ConfigValidator then <see cref="Apply"/>.</summary>
+    public Glint.Tuning.AiFans AiFans { get; }
 
     public IReadOnlyDictionary<string, double> Sensors { get; private set; } = new Dictionary<string, double>();
     public IReadOnlyDictionary<string, int> Rpm { get; private set; } = new Dictionary<string, int>();
@@ -60,7 +62,20 @@ public sealed class GlintService : IDisposable
         Cpu = new Glint.Tuning.CpuTuning(() => Config, () => Sensors.TryGetValue("cpu", out var c) ? c : null);
         Tuning.ActiveProfile = () => Config.ActiveProfile;
         Ai = new Glint.Tuning.AiTuner(Environment.ProcessPath ?? "Glint.exe");
-        Ai.Ended += () => Tuning.Stop();   // a run that ends mid-test leaves the card at stock
+        Ai.Ended += () => { Tuning.CurrentGoal = null; Cpu.Goal = null; Tuning.Stop(); };   // a run that ends mid-test leaves the card at stock
+        Ai.GoalChanged += g => { Tuning.CurrentGoal = g; Cpu.Goal = g; };
+        AiFans = new Glint.Tuning.AiFans(() => Config, c => Apply(c),
+            () => new ValidationContext { Sensors = Sensors.Keys.ToList(), Fans = Rig.Fans.Select(f => f.Id).ToList(), PluginEffects = Plugins.PluginHost.Effects.Select(e => e.Name).ToList(), Previous = Config },
+            Tuning, () => Duty, () => Rpm, () => { var a = Glint.Tuning.CpuFamilies.For(Glint.Tuning.CpuHardware.CpuName()).AbortC; return a > 0 ? a : 85; },
+            () => { var d = new Dictionary<string, string>(); foreach (var f in Rig.Fans) d[f.Id] = f.Name; return d; });
+        // goal-based tests read the real GPU fan duty / rpm (the AI profile's curve drives them)
+        Tuning.FanProbe = () =>
+        {
+            var ids = Duty.Keys.Where(k => k.StartsWith("gpu", StringComparison.Ordinal)).ToList();
+            if (ids.Count == 0) return null;
+            var rp = ids.Where(Rpm.ContainsKey).Select(k => (double)Rpm[k]).ToList();
+            return (ids.Average(k => (double)Duty[k]), rp.Count > 0 ? rp.Average() : null);
+        };
         // watch only while Glint has an overclock applied (no event-log subscriptions otherwise)
         Tuning.Applied += (core, mem) => { if (core == 0 && mem == 0) Crashes.Stop(); else Crashes.Start(); };
         _thread = new Thread(Loop) { IsBackground = true, Name = "Glint fans", Priority = ThreadPriority.AboveNormal };
@@ -126,6 +141,7 @@ public sealed class GlintService : IDisposable
             var p = cfg.ActiveProfile;
             _ = Task.Run(() => { try { Tuning?.OnProfileChanged(p); } catch (Exception e) { LastError = "tuning: " + e.Message; } });
         }
+        Tuning?.PruneAiProfiles(cfg.Profiles.Keys);
         Lighting.Apply(cfg);
         if (save && !NoSave) { _selfWrite = DateTime.UtcNow; cfg.Save(); }
         HomeAssistant.Configure(cfg.HomeAssistant); // reconnects only if that section changed

@@ -201,30 +201,59 @@ public static class CpuSearchTools
         return "other";
     }
 
-    /// <summary>The settings to type into the BIOS for this board maker and CPU family; <paramref name="co"/> null = still searching (zeros).</summary>
-    public static string BiosSheet(string? boardName, string vendor, CpuFamily fam, IReadOnlyList<int>? co, int coresIfUnknown = 8)
+    /// <summary>What each goal means for the CPU: the BIOS values besides the Curve Optimizer undervolt (null/balanced = stock power behaviour).</summary>
+    public static object GoalPlan(string? goal, CpuFamily fam)
+    {
+        var g = goal is "quiet" or "performance" ? goal : "balanced";
+        string boost = fam.BoostOverrideMhz > 0 ? $"CPU Boost Clock Override Enabled (Positive), +{fam.BoostOverrideMhz} MHz" : "no boost override on this CPU";
+        if (!fam.Supported)
+            return new { goal = goal ?? "balanced", advisoryOnly = true, note = "Undervolting is locked on Intel CPUs and unsupported on this one: advisory only, Glint changes nothing." };
+        return g switch
+        {
+            "quiet" => new { goal = "quiet", undervolt = "deepest stable Curve Optimizer undervolt per core", pbo = $"Manual: PPT, TDC and EDC about {QuietLimitPct}% of the CPU's default (all three together)", boostOverride = "not used (Auto)",
+                             platformLimitC = fam.PlatformLimitC, fans = "CPU / radiator / case fan curves tuned for the lowest duty under the temperature target; the pump is never touched" },
+            "performance" => new { goal = "performance", undervolt = "deepest stable Curve Optimizer undervolt per core (more headroom for boost)", pbo = "PBO Limits = Motherboard (the board's own PPT/TDC/EDC limits)", boostOverride = boost,
+                                   platformLimitC = fam.PlatformLimitC, fans = "CPU / radiator / case fans ramp harder to hold boost; the pump is never touched" },
+            _ => new { goal = "balanced", undervolt = "deepest stable Curve Optimizer undervolt per core", pbo = "PBO Limits = Auto (stock power behaviour, do not raise)", boostOverride = boost,
+                       platformLimitC = fam.PlatformLimitC, fans = "tuned for the best performance per unit of fan noise; the pump is never touched" },
+        };
+    }
+
+    public const int QuietLimitPct = 75;
+
+    /// <summary>The settings to type into the BIOS for this board maker and CPU family; <paramref name="co"/> null = still searching (zeros).
+    /// <paramref name="goal"/>: quiet | balanced | performance (custom and null = balanced).</summary>
+    public static string BiosSheet(string? boardName, string vendor, CpuFamily fam, IReadOnlyList<int>? co, int coresIfUnknown = 8, string? goal = null)
     {
         var b = Boards.GetValueOrDefault(vendor) ?? Boards["other"];
+        bool quiet = goal == "quiet", perf = goal == "performance";
         var rows = new List<string>
         {
-            $"{(string.IsNullOrWhiteSpace(boardName) ? "Your motherboard" : boardName)} - enter these in the BIOS ({b.BiosKey}):",
+            $"{(string.IsNullOrWhiteSpace(boardName) ? "Your motherboard" : boardName)} - enter these in the BIOS ({b.BiosKey}){(goal != null ? ", goal: " + (quiet || perf ? goal : "balanced") : "")}:",
             "  " + b.PboPath, "",
             "  Precision Boost Overdrive ........ Advanced",
-            "  PBO Limits ....................... Auto   (do NOT raise)",
         };
-        if (fam.BoostOverrideMhz > 0)
+        if (quiet)
+        {
+            rows.Add("  PBO Limits ....................... Manual");
+            rows.Add($"  PPT / TDC / EDC Limit ............ about {QuietLimitPct}% of the CPU's default each (lower heat and fan noise)");
+        }
+        else if (perf) rows.Add("  PBO Limits ....................... Motherboard   (the board's own PPT / TDC / EDC limits)");
+        else rows.Add("  PBO Limits ....................... Auto   (do NOT raise)");
+        if (fam.BoostOverrideMhz > 0 && !quiet)
         {
             rows.Add("  CPU Boost Clock Override ......... Enabled (Positive)");
             rows.Add($"  Max CPU Boost Clock Override(+) .. {fam.BoostOverrideMhz}");
         }
+        else if (perf) rows.Add("  CPU Boost Clock Override ......... not available on this CPU (leave Auto)");
         if (fam.PlatformLimitC > 0) rows.Add($"  {b.ThermalName} {new string('.', Math.Max(2, 34 - b.ThermalName.Length))} {fam.PlatformLimitC} C");
-        rows.Add("  Curve Optimizer .................. Per Core");
+        rows.Add("  Curve Optimizer .................. Per Core   (each Negative value is a per-core UNDERVOLT)");
         if (co == null) rows.Add("  Curve Optimizer, every core ...... Negative 0  (the search finds these)");
         else
             for (int i = 0; i < co.Count; i++)
                 rows.Add($"  Core {i} Curve Optimizer {new string('.', i < 10 ? 11 : 10)} Negative {Math.Abs(co[i])}");
         rows.Add("");
-        rows.Add("  Save and exit (usually F10). Then check it is stable under a long all-core load before relying on it;");
+        rows.Add("  Never raise any voltage (no positive Curve Optimizer, no Vcore offset). Save and exit (usually F10). Then check it is stable under a long all-core load before relying on it;");
         rows.Add("  if a core crashes later, lower its Negative value by 2-3.");
         return string.Join("\n", rows);
     }
@@ -306,6 +335,8 @@ public sealed class CpuSearchInfo
     public string Dir { get; set; } = "";
     public int Cores { get; set; }
     public string Family { get; set; } = "";
+    /// <summary>The goal kind the search was started for (quiet | balanced | performance | custom); null = none.</summary>
+    public string? Goal { get; set; }
 }
 
 /// <summary>What survives restarts and freezes (cpu-state.json next to config.json).</summary>
@@ -350,6 +381,8 @@ public sealed class CpuTuning : IDisposable
     double _peakC;
     public CpuState State { get; private set; }
     public event Action<string>? Log;
+    /// <summary>The AI run's goal (set by the owner for the run): the BIOS sheet and status list its values.</summary>
+    public TuningGoal? Goal { get; set; }
 
     /// <param name="coreCyclerDir">Where CoreCycler is bundled (null / missing = not in this build).</param>
     /// <param name="cpuTemp">Glint's "cpu" sensor. 0 / 150+ count as unreadable.</param>
@@ -385,6 +418,8 @@ public sealed class CpuTuning : IDisposable
         return null;
     }
 
+    string? SheetGoal(CpuSearchInfo? s) => Goal?.Kind ?? s?.Goal;
+
     public object Status()
     {
         var name = SafeName();
@@ -407,7 +442,7 @@ public sealed class CpuTuning : IDisposable
                 values = res.Values, adjustments = res.Adjustments, failedCores = res.FailedCores.ToDictionary(k => k.Key.ToString(), k => k.Value),
                 wheaSinceStart = whea, peakC = _peakC > 0 ? _peakC : (double?)null,
                 found = st.Found, final, margin = CpuSearchTools.Margin,
-                biosSheet = final == null ? null : CpuSearchTools.BiosSheet(BoardName(), vendor, fam, final),
+                biosSheet = final == null ? null : CpuSearchTools.BiosSheet(BoardName(), vendor, fam, final, 8, SheetGoal(st.Search)),
             };
         }
         return new
@@ -427,6 +462,9 @@ public sealed class CpuTuning : IDisposable
                 expect = fam.Supported ? "the search takes several hours (each core is stress-tested alone, errors raise that core's value by 1); it resumes by itself after a freeze or reboot" : null,
             },
             coreCycler = new { bundled = CcPath != null, path = CcPath },
+            goal = SheetGoal(st.Search) is { } gk ? new { kind = gk, text = Goal?.Text, target = Goal?.Target } : null,
+            goalPlan = CpuSearchTools.GoalPlan(SheetGoal(st.Search), fam),
+            curveOptimizerNote = "Curve Optimizer negative values ARE per-core undervolts (less voltage than stock). Voltages are never raised.",
             board = new { name = BoardName(), vendor },
             search,
         };
@@ -459,7 +497,7 @@ public sealed class CpuTuning : IDisposable
         lock (_gate)
         {
             // on disk before CoreCycler runs: a freeze must find the search recorded
-            State = new CpuState { Phase = "searching", Search = new CpuSearchInfo { StartValue = startValue, Since = _now(), Dir = dir, Cores = cores, Family = fam.Id } };
+            State = new CpuState { Phase = "searching", Search = new CpuSearchInfo { StartValue = startValue, Since = _now(), Dir = dir, Cores = cores, Family = fam.Id, Goal = Goal?.Kind } };
             _peakC = now0;
             Save();
         }
@@ -477,7 +515,7 @@ public sealed class CpuTuning : IDisposable
         var fam = CpuFamilies.Describe(s.Family);
         var vendor = CpuSearchTools.BoardVendor(_board().Maker, _board().Model);
         if (st.Phase == "done" && st.Final != null)
-            return new { final = st.Final, found = st.Found, margin = CpuSearchTools.Margin, complete = true, biosSheet = CpuSearchTools.BiosSheet(BoardName(), vendor, fam, st.Final) };
+            return new { final = st.Final, found = st.Found, margin = CpuSearchTools.Margin, complete = true, biosSheet = CpuSearchTools.BiosSheet(BoardName(), vendor, fam, st.Final, 8, SheetGoal(s)) };
         var res = CpuSearchTools.Parse(SafeLines(s), s.StartValue, s.Cores);
         if (!res.SummaryFound && !force && st.Phase == "searching" && SafeRunning())
             throw new InvalidOperationException("the search hasn't finished yet (summaryFound is false and CoreCycler is still working). Wait for it, or call again with force=true to use the values found so far: cores it hasn't reached keep the start value and are untested");
@@ -494,7 +532,7 @@ public sealed class CpuTuning : IDisposable
         {
             final, found = res.Values, margin = CpuSearchTools.Margin, complete = res.SummaryFound, failedCores = res.FailedCores.ToDictionary(k => k.Key.ToString(), k => k.Value),
             warning = res.SummaryFound ? null : "the search hadn't printed its final table: cores not reached keep the start value, untested",
-            biosSheet = CpuSearchTools.BiosSheet(BoardName(), vendor, fam, final),
+            biosSheet = CpuSearchTools.BiosSheet(BoardName(), vendor, fam, final, 8, SheetGoal(st.Search)),
         };
     }
 
