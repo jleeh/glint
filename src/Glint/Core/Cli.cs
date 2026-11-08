@@ -160,6 +160,14 @@ public static class Cli
         T("overlay.stats", Obj());
         T("ha.status", Obj());
         T("setup.check", Obj());
+        T("tuning.status", Obj());
+        T("tuning.gpu.test", Obj(("core", "integer", "Core clock offset, MHz (0..tuning.status limits.maxCore)", true), ("memAb", "integer", "Memory offset in MSI Afterburner units (0..limits.maxMemAb)", true),
+                                 ("seconds", "number", "Test length 10-300 (default 60)", false), ("light", "boolean", "Low-load test at top boost clocks (default false)", false)));
+        T("tuning.wait", Obj(("seconds", "number", "Max seconds to wait (default 20, max 25)", false)));
+        T("tuning.stop", Obj());
+        T("tuning.gpu.apply", Obj(("core", "integer", "Core offset MHz", true), ("memAb", "integer", "Memory offset, Afterburner units", true)));
+        T("tuning.gpu.save", Obj(("core", "integer", "Core offset MHz", true), ("memAb", "integer", "Memory offset, Afterburner units", true)));
+        T("tuning.gpu.stock", Obj());
         T("update.status", Obj());
         T("update.install", Obj(("confirm", "boolean", "Must be true, and only after the user agreed: installs the newer verified release and restarts Glint", true)));
         T("log", Obj(("lines", "number", "How many recent lines (default 100)", false)));

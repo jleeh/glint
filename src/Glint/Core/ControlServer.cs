@@ -167,12 +167,24 @@ public sealed class ControlServer : IDisposable
         ("overlay.set", "Change overlay settings (partial: only the fields given change; 'items' replaces the list). Item sources: fps, frametime, low1, time, glint.cpu, fan:<id>, duty:<id>, or a sensor id. Validated; invalid → {ok:false, errors} and nothing saved.", "{ enabled?, hotkey?, position?: 'top-left'|'top-right'|'bottom-left'|'bottom-right', offsetX?, offsetY?, scale?, opacity?, backgroundOpacity?, accent?: '#rrggbb'|null, layout?: 'compact'|'detailed', onlyWhenGame?, items? }"),
         ("overlay.toggle", "Show / hide the in-game overlay (enabled given → set it, else flip).", "{ enabled?: boolean }"),
         ("overlay.stats", "Live overlay readings: fps, frameTimeMs, low1 (1% low), the target (foreground) process, which present events are used, and whether the ETW session is running.", ""),
+        ("tuning.status", "Overclocking status: whether tuning is enabled, the GPU (name, driver, workstation, whether it may be tuned and why not), this card's limits (max core / memory offsets from the driver's range, temperature cut-offs, max test length), the memory-offset ratio, the saved result, whether crash watch reverted it, the last 30 tests (newest first) and the running job. Read this first.", ""),
+        ("tuning.gpu.test", "Start a GPU stress test at core / memory offsets (MHz; memory in MSI Afterburner units) for N seconds (10-300). Glint's CUDA test checks every result bit for bit against stock, watches temperatures, driver resets and ECC errors, holds the GPU fans up, and puts the card back to stock when it ends. light=true tests at low load (top boost clocks, where big core offsets fail first). Returns at once: poll tuning.wait. A crash or freeze mid-test is recorded as a failure on the next start.", "{ core, memAb, seconds?, light? }"),
+        ("tuning.wait", "Wait up to N seconds (max 25) for the running tuning job; returns { busy, phase, progress, result }. Call again while busy.", "{ seconds? }"),
+        ("tuning.stop", "Stop the running tuning job (the card goes back to stock).", ""),
+        ("tuning.gpu.apply", "Apply core / memory offsets now (until stock or reboot). Refused unless a full (non-light) test at or above both values passed on this driver.", "{ core, memAb }"),
+        ("tuning.gpu.save", "Save core / memory offsets as the result: what 'apply at startup' re-applies and what crash watch backs off from. Same proof rule as tuning.gpu.apply.", "{ core, memAb }"),
+        ("tuning.gpu.stock", "GPU back to stock clocks now (stops a running test first).", ""),
         ("setup.check", "Setup check: is this PC set up right for Glint? Admin rights, PawnIO driver, WebView2, CPU temperature, conflicting RGB/fan apps (running or starting with Windows), GPU fan tools while Glint drives GPU fans, fans another program has taken over, plugins needing approval or failing, devices that declined, the startup task, version + update, OpenRGB bridge. Each item: status ok/warn/fail, plain-language detail, and the fix. Start here when something doesn't work.", ""),
         ("update.status", "Updates: this version, the latest release, whether it can be installed from here (canInstall / cannotInstall), autoInstall, and the install progress (install.state idle|downloading|verifying|installing|failed, install.message).", ""),
         ("update.install", "Install the newer release: downloads the setup from Glint's GitHub releases, checks it against SHA256SUMS.txt and GitHub's build attestation for the release workflow, then runs it silently (Glint closes and restarts). Only with the user's consent; requires confirm=true. Poll update.status for progress.", "{ confirm: true }"),
         ("log", "Recent device / plugin log lines.", "{ lines?: number }"),
         ("app.restart", "Restart Glint (needed after adding or changing device plugins).", ""),
     };
+
+    /// <summary>A required whole-number parameter (no silent 0 for a missing or mistyped value: offsets go to hardware).</summary>
+    static int Int(JsonObject p, string key) =>
+        p[key] is JsonValue v && v.TryGetValue<double>(out var d) && double.IsFinite(d) && Math.Abs(d) < 100000 ? (int)Math.Round(d)
+        : throw new ArgumentException($"{key} must be a number");
 
     object Handle(string method, JsonObject p)
     {
@@ -473,6 +485,14 @@ public sealed class ControlServer : IDisposable
                 return _svc.Overlay?.Stats() ?? (object)new { enabled = _svc.Config.Overlay?.Enabled ?? false, visible = false, note = "no overlay in this process" };
             case "ha.status": return _svc.HomeAssistant.Status();
             case "setup.check": return SetupCheck.Run(_svc);
+            case "tuning.status": return _svc.Tuning.Status();
+            case "tuning.gpu.test":
+                return _svc.Tuning.StartGpuTest(Int(p, "core"), Int(p, "memAb"), (double?)p?["seconds"] ?? 60, (bool?)p?["light"] ?? false);
+            case "tuning.wait": return _svc.Tuning.Wait((double?)p?["seconds"] ?? 20);
+            case "tuning.stop": return _svc.Tuning.Stop();
+            case "tuning.gpu.apply": return _svc.Tuning.Apply(Int(p, "core"), Int(p, "memAb"));
+            case "tuning.gpu.save": return _svc.Tuning.SaveResult(Int(p, "core"), Int(p, "memAb"));
+            case "tuning.gpu.stock": return _svc.Tuning.Stock();
             case "update.status": return _svc.Updater.Describe();
             case "update.install":
                 {

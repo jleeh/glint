@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Glint.Devices;
@@ -629,6 +629,8 @@ public static class SelfTest
         SelfTestV02.Run(C);
         SelfTestSecurity.Run(C);
         SelfTestUpdater.Run(C);
+        try { Glint.Tuning.GpuTuningTests.Run(C); Glint.Tuning.TuningTests.Run(C); }
+        catch (Exception e) { C("tuning: suite ran", false, e.ToString()); }
 
         // ---------------- Home Assistant over MQTT (in-process fake broker on 127.0.0.1)
         try { HomeAssistantChecks(C); }

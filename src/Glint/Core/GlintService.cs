@@ -13,6 +13,8 @@ public sealed class GlintService : IDisposable
     public UpdateChecker Updates { get; }
     /// <summary>One-click / automatic install of a verified release (idle until asked; the tray app starts its background part).</summary>
     public Updater Updater { get; }
+    /// <summary>Overclocking (off by default): opens nothing until tuning is enabled and something asks.</summary>
+    public Glint.Tuning.TuningService Tuning { get; }
 
     public IReadOnlyDictionary<string, double> Sensors { get; private set; } = new Dictionary<string, double>();
     public IReadOnlyDictionary<string, int> Rpm { get; private set; } = new Dictionary<string, int>();
@@ -44,6 +46,8 @@ public sealed class GlintService : IDisposable
         HomeAssistant.Configure(cfg.HomeAssistant);
         Updates = new UpdateChecker(() => Config);
         Updater = new Updater(Updates, () => Config);
+        Tuning = new Glint.Tuning.TuningService(() => Config, Glint.Tuning.TuningHardware.OpenGpu, Glint.Tuning.TuningHardware.OpenStress,
+            () => Sensors.TryGetValue("gpu.memjunction", out var mj) ? mj : null, boost => Engine.GpuBoost = boost ?? 0);
         _thread = new Thread(Loop) { IsBackground = true, Name = "Glint fans", Priority = ThreadPriority.AboveNormal };
         _thread.Start();
         try
@@ -181,6 +185,7 @@ public sealed class GlintService : IDisposable
     public void Dispose()
     {
         Overlay?.Dispose(); // stops the ETW session
+        Tuning.Dispose();   // stops a running test (the test itself puts the card back to stock)
         HomeAssistant.Dispose(); // publishes "offline" while the broker link is still up
         _stop = true;
         _thread.Join(3000);

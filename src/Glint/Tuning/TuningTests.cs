@@ -1,0 +1,114 @@
+using System.Text.Json;
+using Glint.Core;
+
+namespace Glint.Tuning;
+
+/// <summary>Offline checks for <see cref="TuningService"/> on a <see cref="SimulatedGpu"/>: the safety rails, the crash
+/// record, the proof rule and startup behaviour. No hardware, no real config folder.</summary>
+public static class TuningTests
+{
+    public static void Run(Action<string, bool, string> check)
+    {
+        void C(string n, bool p, string d = "") => check("tuning.service: " + n, p, d);
+        var dir = Path.Combine(Path.GetTempPath(), "GlintTuningTest_" + Environment.ProcessId + "_" + Guid.NewGuid().ToString("N")[..6]);
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var cfg = GlintConfig.Defaults();
+            var procs = new List<string>();
+            var resets = new List<string>();
+            int? boost = -1; var boosts = new List<int?>();
+            (TuningService svc, SimulatedGpu gpu) Make(SimConfig sim, string state = "state.json")
+            {
+                var g = new SimulatedGpu(sim);
+                var s = new TuningService(() => cfg, () => g, x => new SimulatedStress((SimulatedGpu)x), () => null,
+                    b => { boost = b; boosts.Add(b); }, _ => resets.ToList(), () => procs, Path.Combine(dir, state));
+                return (s, g);
+            }
+            object? Result(TuningService s) { s.Wait(25); return s.LastResult; }
+            GpuTestRecord? Rec(TuningService s) => Result(s) as GpuTestRecord;
+            string Err(Action a) { try { a(); return ""; } catch (Exception e) { return e.Message; } }
+
+            // ---- off by default: nothing may run
+            var (s0, g0) = Make(new SimConfig { UnstableCore = 200 });
+            C("tuning off by default", !cfg.Tuning.Enabled);
+            C("tests refused while tuning is off", Err(() => s0.StartGpuTest(50, 0, 10, false)).Contains("tuning is off") && g0.SetCalls == 0);
+            cfg.Tuning.Enabled = true;
+
+            // ---- workstation gate
+            var (sw, _) = Make(new SimConfig { Name = "NVIDIA RTX PRO 6000 Blackwell Workstation Edition" }, "ws.json");
+            C("workstation GPU blocked without opt-in", Err(() => sw.StartGpuTest(50, 0, 10, false)).Contains("workstation"));
+            cfg.Tuning.AllowWorkstation = true;
+            C("workstation GPU allowed after opt-in", Err(() => sw.StartGpuTest(50, 0, 10, false)) == "" && Rec(sw)?.Ok == true);
+            cfg.Tuning.AllowWorkstation = false;
+
+            // ---- conflicting overclocking tools
+            procs.Add("MSIAfterburner");
+            C("refused while MSI Afterburner runs", Err(() => s0.StartGpuTest(50, 0, 10, false)).Contains("MSIAfterburner"));
+            procs.Clear();
+
+            // ---- limits from the driver range, never past the hard caps
+            var (sr, _) = Make(new SimConfig { CoreRange = new(-100, 200), MemRange = new(-100, 1000) }, "range.json");
+            C("core above the card's range refused", Err(() => sr.StartGpuTest(250, 0, 10, false)).Contains("0..200"));
+            C("memory above the card's range refused", Err(() => sr.StartGpuTest(0, 600, 10, false)).Contains("0..500"));
+
+            // ---- pass / fail, back to stock, history, fan boost
+            boosts.Clear();
+            s0.StartGpuTest(150, 0, 20, false);
+            var pass = Rec(s0);
+            C("stable setting passes", pass is { Ok: true }, pass?.Why ?? "no result");
+            C("card back at stock after a test", g0.GetOffset(ClockKind.Core) == 0 && g0.GetOffset(ClockKind.Memory) == 0);
+            C("fans boosted during the test, released after", boosts.Contains(85) && boost == null, string.Join(",", boosts));
+            s0.StartGpuTest(250, 0, 20, false);
+            var fail = Rec(s0);
+            C("unstable setting fails", fail is { Ok: false }, fail?.Why ?? "no result");
+            C("both tests in the history", s0.State.History.Count(h => h.Core is 150 or 250) == 2);
+            C("history survives a restart", JsonSerializer.Deserialize<TuningState>(File.ReadAllText(Path.Combine(dir, "state.json")), GlintConfig.Json)!.History.Count >= 2);
+
+            // ---- proof rule
+            C("apply refused above a proven setting", Err(() => s0.Apply(200, 0)).Contains("test it first"));
+            C("apply allowed at or below a proven setting", Err(() => s0.Apply(120, 0)) == "" && g0.GetOffset(ClockKind.Core) == 120);
+            C("save refused for an unproven setting", Err(() => s0.SaveResult(300, 0)) != "");
+            C("save allowed for a proven setting", Err(() => s0.SaveResult(150, 0)) == "" && s0.State.Saved?.Core == 150);
+            s0.Stock();
+            C("stock resets the card", g0.GetOffset(ClockKind.Core) == 0);
+
+            // ---- a crash mid-test is recorded as a failure on the next start
+            var st = JsonSerializer.Deserialize<TuningState>(File.ReadAllText(Path.Combine(dir, "state.json")), GlintConfig.Json)!;
+            st.Testing = new GpuTestRecord(DateTime.Now, 180, 0, 60, false, false, null, null, null, null, null, null, "999.99");
+            File.WriteAllText(Path.Combine(dir, "state.json"), JsonSerializer.Serialize(st, GlintConfig.Json));
+            var (s1, g1) = Make(new SimConfig { UnstableCore = 200 });
+            var note = s1.OnStartup(lastShutdownWasCrash: true);
+            C("unfinished test recorded as unstable after a crash", s1.State.History.Any(h => h.Core == 180 && !h.Ok && h.Why!.Contains("crashed")) && s1.State.Testing == null, note ?? "");
+
+            // ---- apply at startup: skipped after a crash, on a driver change, after a revert; applied otherwise
+            cfg.Tuning.ApplyAtStartup = true;
+            C("startup apply skipped after a crash", s1.OnStartup(true)?.Contains("crash") == true && g1.GetOffset(ClockKind.Core) == 0);
+            C("startup apply when safe", s1.OnStartup(false) == null && g1.GetOffset(ClockKind.Core) == 150);
+            s1.Stock("3 GPU crashes in 7 days");
+            C("startup apply skipped after crash watch reverted it", s1.OnStartup(false)?.Contains("crashes") == true && g1.GetOffset(ClockKind.Core) == 0);
+            var st2 = s1.State; st2.RevertedReason = null; st2.Saved = st2.Saved! with { Driver = "111.11" };
+            C("startup apply skipped after a driver change", s1.OnStartup(false)?.Contains("driver") == true && g1.GetOffset(ClockKind.Core) == 0);
+            cfg.Tuning.ApplyAtStartup = false;
+
+            // ---- temperature cut-off, ECC, driver reset
+            cfg.Tuning.AbortCoreC = 70;
+            var (sh, gh) = Make(new SimConfig { AmbientC = 72 }, "hot.json");
+            sh.StartGpuTest(50, 0, 20, false);
+            var hot = Rec(sh);
+            C("test stops at the core temperature limit", hot is { Ok: false } && hot.Why!.Contains("limit") && gh.GetOffset(ClockKind.Core) == 0, hot?.Why ?? "");
+            cfg.Tuning.AbortCoreC = 83;
+            var (se, _) = Make(new SimConfig { EccSupported = true, EccAboveMem = 400 }, "ecc.json");
+            se.StartGpuTest(0, 600, 20, false);
+            var ecc = Rec(se);
+            C("ECC-corrected VRAM errors fail the test", ecc is { Ok: false } && ecc.Why!.Contains("ECC"), ecc?.Why ?? "");
+            resets.Add("event 153 nvlddmkm");
+            s0.StartGpuTest(100, 0, 20, false);
+            var tdr = Rec(s0);
+            C("a driver reset during the test fails it", tdr is { Ok: false } && tdr.Why!.Contains("driver reset"), tdr?.Why ?? "");
+            resets.Clear();
+            s0.Dispose(); s1.Dispose(); sw.Dispose(); sr.Dispose(); sh.Dispose(); se.Dispose();
+        }
+        finally { try { Directory.Delete(dir, true); } catch { } }
+    }
+}

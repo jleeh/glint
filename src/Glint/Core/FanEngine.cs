@@ -7,6 +7,8 @@ namespace Glint.Core;
 /// </summary>
 public sealed class FanEngine
 {
+    /// <summary>Minimum duty for graphics-card fans while a GPU stress test runs (0 = none). Set by the tuning service.</summary>
+    public volatile int GpuBoost;
     readonly Dictionary<string, double> _smoothed = new();
     readonly Dictionary<string, double> _held = new();      // hysteresis-held temperature per input
     readonly Dictionary<string, double> _duty = new();      // last output per fan
@@ -109,14 +111,17 @@ public sealed class FanEngine
 
             foreach (var fan in rule.Fans)
             {
-                double cur = _duty.TryGetValue(fan, out var c0) ? c0 : target;
+                // GPU stress test running: graphics-card fans held at least at the boost (only ever raises a duty)
+                double tgt = GpuBoost > 0 && fan.StartsWith("gpu", StringComparison.Ordinal) ? Math.Max(target, GpuBoost) : target;
+                bool boosted = tgt > target;
+                double cur = _duty.TryGetValue(fan, out var c0) ? c0 : tgt;
                 double up = rule.RampUpPerSec * dtSec, down = rule.RampDownPerSec * dtSec;
                 // Failsafe / fixed jumps are never ramp-limited upward.
-                if (target >= cfg.FailsafeDuty || rule.Fixed != null || manual) cur = target;
-                else cur = target > cur ? Math.Min(target, cur + up) : Math.Max(target, cur - down);
+                if (tgt >= cfg.FailsafeDuty || rule.Fixed != null || manual || boosted) cur = tgt;
+                else cur = tgt > cur ? Math.Min(tgt, cur + up) : Math.Max(tgt, cur - down);
                 _duty[fan] = cur;
                 result[fan] = (int)Math.Round(cur);
-                LastExplain[fan] = $"{result[fan]}% ← {why}";
+                LastExplain[fan] = boosted ? $"{result[fan]}% ← tuning test boost" : $"{result[fan]}% ← {why}";
             }
         }
         return result;
