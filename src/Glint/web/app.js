@@ -2316,7 +2316,7 @@ function liveProfileOc() {
   };
   const cpuBars = co => `<span class="tn-gain cpu" title="Curve Optimizer per core: ${esc(co.join(', '))}. The % change shows once the tune has measured it.">${(co.reduce((a, v) => a + num(v), 0) / co.length).toFixed(0)} CPU</span>`;
   const fansTxt = () => '';
-  const row = (key, name, sum, stats, isAct, btn) => `<div class="tn-prof ${isAct ? 'act' : ''}" ${key}><span class="tn-pdot"></span><div class="tn-pmain"><b>${name}</b>${stats ? `<span class="tn-pstats">${stats}</span>` : ''}<span class="tn-psum" title="${esc(sum.replace(/<[^>]+>/g, ''))}">${sum}</span></div>${isAct ? '<span class="tn-pinuse">In use</span>' : btn}</div>`;
+  const row = (key, name, sum, stats, isAct, btn) => `<div class="tn-prof ${isAct ? 'act' : ''}" ${key}><span class="tn-pdot"></span><div class="tn-pmain"><b>${name}</b>${stats ? `<span class="tn-pstats">${stats}</span>` : ''}<span class="tn-psum" title="${esc(sum.replace(/<[^>]*>/g, '').replace(/[<>]/g, ''))}">${sum}</span></div>${isAct ? '<span class="tn-pinuse">In use</span>' : btn}</div>`;
   const stockStats = base ? `<span class="tn-facts" title="${esc(full(base, null))}">${[base.peakCoreC != null ? `${num(base.peakCoreC).toFixed(0)} °C` : '', base.powerW != null ? `${num(base.powerW).toFixed(0)} W` : ''].filter(Boolean).join(' · ')}</span>` : '';
   const html = `<div class="tn-plist">${row('data-stockrow', 'Stock', 'factory clocks, BIOS CPU settings', stockStats, stock, '<button class="btn small" data-stock>Use</button>')}${tuned.map(p => {
     const o = profileOc(p), co = own(cpuP, p), hasCo = Array.isArray(co) && co.length, r = own(ps.profiles ?? {}, p);

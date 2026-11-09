@@ -67,3 +67,6 @@ try {
 finally {
     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
 }
+# success is decided by the checks above (every file present), not by tar's exit code: bsdtar can exit 1 on a 7z it fully
+# extracted, and GitHub Actions fails a pwsh step whose last native exit code was non-zero
+exit 0
