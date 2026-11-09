@@ -37,6 +37,9 @@ jobs:
           $exe = 'src/Glint/bin/Release/net10.0-windows/Glint.exe'
           $p = Start-Process $exe -ArgumentList 'plugincheck', 'all', "$PWD/plugincheck.txt" -Wait -PassThru -NoNewWindow
           if ($p.ExitCode -ne 0) { Get-Content plugincheck.txt; exit 1 }
+      - name: Fetch CoreCycler (pinned, SHA-256 verified)
+        shell: pwsh
+        run: ./tools/fetch-corecycler.ps1
       - name: Publish (self-contained, win-x64)
         run: dotnet publish src/Glint/Glint.csproj -c Release -r win-x64 --self-contained true -p:PublishReadyToRun=false -p:Version=${{ env.VERSION }} -o out/publish
       - name: Install Inno Setup

@@ -75,6 +75,29 @@ function fontEnv() {
   await shot('devices');
   await nav('setup'); await wait(600);                          // fictional report: one failing plugin, a few warnings
   await shot('setup-check');
+  await nav('tuning'); await wait(400); await p.evaluate(() => tnSetTab('overview')); await p.click('#tn-ai-start'); await wait(500); await shot('tuning');
+  await p.evaluate(() => tnSetTab('history')); await wait(300);
+  await shot('tuning-history');
+  await p.evaluate(() => tnSetTab('cpu')); await wait(300);
+  await shot('tuning-cpu');
+  // manual overclock (GPU tab) and the per-profile overclock table
+  await p.evaluate(() => { S.tnMan = { core: 140, mem: 750, prof: null }; S.tnTab = 'gpu'; renderTuning(); }); await wait(500);
+  await shot('tuning-manual');
+  await p.evaluate(() => window.__mockConfigChanged(c => { for (const n of ['Gaming', 'Night shift', 'Streaming', 'Benchmark']) c.profiles[n] = JSON.parse(JSON.stringify(c.profiles.Balanced)); }));
+  await wait(400);
+  await p.evaluate(() => tnSetTab('overview')); await wait(300);
+  await shot('tuning-profiles');
+  await p.click('#profile-manage'); await wait(300);
+  await shot('profiles-manager');
+  await p.keyboard.press('Escape');
+  await nav('overview'); await shot('profiles-dropdown');
+  // the small tuning monitor window (its own page), at the window's default size
+  const mon = await b.newPage();
+  await mon.setViewport({ width: 520, height: 720, deviceScaleFactor: 2 });
+  await mon.goto(PAGE.replace('index.html', 'monitor.html')); await wait(1500);
+  await mon.evaluate(() => document.fonts.ready);
+  await mon.screenshot({ path: path.join(OUT, 'tuning-monitor.png') }); console.log('wrote tuning-monitor.png');
+  await mon.close();
   await nav('plugins'); await shot('plugins');
 
   await nav('overlay');

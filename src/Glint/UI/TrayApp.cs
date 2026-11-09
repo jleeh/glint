@@ -9,6 +9,7 @@ public sealed class TrayApp : ApplicationContext
     readonly NotifyIcon _icon;
     readonly System.Windows.Forms.Timer _tick;
     WebDashboard? _dash;
+    TuningMonitor? _monitor;
     readonly HotkeyWindow _hotkey;
     readonly GameOverlay.OverlayController _overlay;
     readonly Thread _uiThread = Thread.CurrentThread;
@@ -36,6 +37,9 @@ public sealed class TrayApp : ApplicationContext
         _overlay.ExtraResolver = src => _svc.Rig.CatalogValue(src.StartsWith("lhm:") ? src[4..] : src);
         RegisterHotkey(_svc.Config.Overlay?.Hotkey);
         _svc.Updater.Changed += OnUpdater;
+        // the tuning monitor pops up when a GPU test or an AI run starts (a test inside an AI run doesn't re-open a window the user closed)
+        _svc.Tuning.JobStarted += _ => { if (!_svc.Ai.Running) _sync.Post(_ => ShowMonitor(false), null); };
+        _svc.Ai.Started += () => _sync.Post(_ => ShowMonitor(false), null);
         _svc.ConfigApplied += c => Ui(() => RegisterHotkey(c.Overlay?.Hotkey));
         // Judge sensors on real readings, not at construction (LHM's first sample can be empty).
         if (!quiet)
@@ -86,6 +90,20 @@ public sealed class TrayApp : ApplicationContext
         _icon.Text = text.Length > 127 ? text[..127] : text;
     }
 
+    /// <summary>One radio-style item per fan profile (the active one ticked). '&amp;' is escaped so a name never becomes a keyboard accelerator.</summary>
+    internal static List<ToolStripMenuItem> ProfileItems(GlintConfig cfg, Action<string> pick)
+    {
+        var items = new List<ToolStripMenuItem>();
+        foreach (var p in cfg.Profiles.Keys)
+        {
+            var name = p;
+            var it = new ToolStripMenuItem(name.Replace("&", "&&")) { Checked = name == cfg.ActiveProfile, CheckOnClick = false };
+            it.Click += (_, _) => { if (cfg.Profiles.ContainsKey(name)) pick(name); };
+            items.Add(it);
+        }
+        return items;
+    }
+
     void BuildMenu()
     {
         var m = _icon.ContextMenuStrip!;
@@ -97,12 +115,7 @@ public sealed class TrayApp : ApplicationContext
         m.Items.Add(new ToolStripSeparator());
 
         var prof = new ToolStripMenuItem("Fan profile");
-        foreach (var p in cfg.Profiles.Keys)
-        {
-            var it = new ToolStripMenuItem(p) { Checked = p == cfg.ActiveProfile };
-            it.Click += (_, _) => { cfg.ActiveProfile = p; _svc.Apply(cfg); };
-            prof.DropDownItems.Add(it);
-        }
+        foreach (var it in ProfileItems(cfg, p => { try { _svc.UseProfile(p); } catch (Exception e) { _svc.Rig.Log.Add("profile: " + e.Message); } })) prof.DropDownItems.Add(it);
         var fanOff = new ToolStripMenuItem("Fan control off") { Checked = !cfg.FanControl, ToolTipText = "Hand fans back to the BIOS, GPU driver and device firmware" };
         fanOff.Click += (_, _) => { cfg.FanControl = !cfg.FanControl; _svc.Apply(cfg); };
         prof.DropDownItems.Add(new ToolStripSeparator());
@@ -165,10 +178,24 @@ public sealed class TrayApp : ApplicationContext
     public static EffectConfig Clone(EffectConfig e) =>
         System.Text.Json.JsonSerializer.Deserialize<EffectConfig>(System.Text.Json.JsonSerializer.Serialize(e, GlintConfig.Json), GlintConfig.Json)!;
 
+    /// <summary>Open the tuning monitor (single instance). Explicit opens bring it to the front; automatic ones don't steal focus from an open one.</summary>
+    void ShowMonitor(bool explicitOpen)
+    {
+        if (_monitor is { IsDisposed: false })
+        {
+            if (_monitor.WindowState == FormWindowState.Minimized) _monitor.WindowState = FormWindowState.Normal;
+            if (explicitOpen) { _monitor.Activate(); _monitor.BringToFront(); }
+            return;
+        }
+        _monitor = new TuningMonitor(_svc);
+        _monitor.FormClosed += (_, _) => { _monitor = null; GC.Collect(); };
+        _monitor.Show();
+    }
+
     void ShowDashboard()
     {
         if (_dash is { IsDisposed: false }) { _dash.Activate(); return; }
-        _dash = new WebDashboard(_svc);
+        _dash = new WebDashboard(_svc, () => ShowMonitor(true));
         _dash.FormClosed += (_, _) => { _dash = null; GC.Collect(); };
         _dash.Show();
     }

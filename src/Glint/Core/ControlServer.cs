@@ -156,6 +156,7 @@ public sealed class ControlServer : IDisposable
         ("curves.remove", "Delete a named curve. Refused (with the rules using it) if any rule input references it.", "{ name }"),
         ("profiles.create", "Create a fan profile as a copy of an existing one (default: the active profile). Does not switch to it (use profile.set).", "{ name, from? }"),
         ("profiles.remove", "Delete a fan profile (not the active one).", "{ name }"),
+        ("profiles.rename", "Rename a fan profile. Its overclock and Home Assistant's profile option follow; if it was the active profile it stays active. Names: 1-40 characters, no control characters, unique ignoring case, not \"Stock\".", "{ from, to }"),
         ("profile.set", "Switch fan profile.", "{ name }"),
         ("config.get", "The whole config.", ""),
         ("config.schema", "Description of every config field: type, meaning, valid range / enum, default, example (fan rules, curves, lighting effects and their params, layout, Home Assistant, sensor options). Read before editing the config.", ""),
@@ -167,12 +168,42 @@ public sealed class ControlServer : IDisposable
         ("overlay.set", "Change overlay settings (partial: only the fields given change; 'items' replaces the list). Item sources: fps, frametime, low1, time, glint.cpu, fan:<id>, duty:<id>, or a sensor id. Validated; invalid → {ok:false, errors} and nothing saved.", "{ enabled?, hotkey?, position?: 'top-left'|'top-right'|'bottom-left'|'bottom-right', offsetX?, offsetY?, scale?, opacity?, backgroundOpacity?, accent?: '#rrggbb'|null, layout?: 'compact'|'detailed', onlyWhenGame?, items? }"),
         ("overlay.toggle", "Show / hide the in-game overlay (enabled given → set it, else flip).", "{ enabled?: boolean }"),
         ("overlay.stats", "Live overlay readings: fps, frameTimeMs, low1 (1% low), the target (foreground) process, which present events are used, and whether the ETW session is running.", ""),
+        ("tuning.status", "Overclocking status: whether tuning is enabled, the GPU (name, driver, workstation, whether it may be tuned and why not), this card's limits (max core / memory offsets from the driver's range, temperature cut-offs, max test length), the memory-offset ratio, the saved result, whether crash watch reverted it, the last 30 tests (newest first) and the running job. Read this first.", ""),
+        ("tuning.gpu.test", "Start a GPU stress test at core / memory offsets (MHz; memory in MSI Afterburner units) for N seconds (10-300). Glint's CUDA test checks every result bit for bit against stock, watches temperatures, driver resets and ECC errors, holds the GPU fans up, and puts the card back to stock when it ends. light=true tests at low load (top boost clocks, where big core offsets fail first). powerPct (50-100, % of the card's default power limit) tests at a lower power limit (efficiency mode). Returns at once: poll tuning.wait. A crash or freeze mid-test is recorded as a failure on the next start.", "{ core, memAb, seconds?, light?, powerPct? }"),
+        ("tuning.history", "A page of the GPU test history, newest first: { total, offset, limit, items }. tuning.status already includes the newest 30.", "{ offset?, limit? }"),
+        ("tuning.wait", "Wait up to N seconds (max 25) for the running tuning job; returns { busy, phase, progress, result }. Call again while busy.", "{ seconds? }"),
+        ("tuning.stop", "Stop the running tuning job (the card goes back to stock).", ""),
+        ("tuning.gpu.apply", "Apply core / memory offsets now (until stock or reboot). Refused unless a full (non-light) test at or above both values passed on this driver.", "{ core, memAb }"),
+        ("tuning.gpu.verify", "Check the saved GPU result of the run's profile against stock, back to back (2-min tests, same fans): kept if it is at least 1.5% faster (75% compute rate, 25% VRAM bandwidth) and compute is not below stock, else memory then core are lowered and retested; if nothing beats stock the profile's GPU overclock is removed. Returns at once: poll tuning.wait. Call it after tuning.gpu.save, before the CPU part.", "{}"),
+        ("tuning.gpu.save", "Save core / memory offsets (and, in efficiency mode, the power limit powerPct as % of the card's default) as the result: what 'apply at startup' re-applies and what crash watch backs off from. Same proof rule as tuning.gpu.apply.", "{ core, memAb, powerPct? }"),
+        ("tuning.gpu.stock", "GPU back to stock clocks now (stops a running test first).", ""),
+        ("tuning.cpu.status", "CPU Curve Optimizer tuning (Ryzen 5000/7000/9000 only): CPU name and family, whether it can be tuned here and why not, microcode advisory (Intel 13th/14th gen), whether CoreCycler is bundled, the search (phase idle/searching/stopped/done, running, per-core values found so far, adjustments, failed cores, WHEA errors since it started, final values with margin, the BIOS sheet) and a sensible start value (startHint).", ""),
+        ("tuning.cpu.start", "Start the automatic per-core Curve Optimizer search with CoreCycler (y-cruncher, one core at a time, +1 on every error): startValue -50..0 is where each core starts (Ryzen 5000 allows -30 at most). Takes SEVERAL HOURS and resumes by itself after a freeze (the user presses reset) or reboot. Glint stops the stress test at the CPU temperature limit or if the temperature sensor fails. Only start it when the user asked for CPU tuning. Poll tuning.cpu.status.", "{ startValue }"),
+        ("tuning.cpu.finish", "End the search: stops CoreCycler, final values = found + 3 margin (never positive), saved into the profile the search was started for (Glint applies it from Windows while that profile is active; a BIOS sheet is the optional permanent route). Refused while the search is still working unless force=true (cores it hasn't reached would be untested).", "{ force? }"),
+        ("tuning.cpu.stop", "Stop the CPU search and its stress test now. What was found so far is kept (tuning.cpu.finish still works).", ""),
+        ("tuning.cpu.loadtest", "Start the all-core load test for the PBO / boost-override recommendation and the CPU benchmark (changes nothing): y-cruncher on every core for 20-90 s, then 16 s on one core. Returns at once: poll tuning.wait until busy is false; the result (peak / sustained temperature vs the limit, package power, clocks, scores, advice) is in its result and in tuning.cpu.status loadTest. Refused while the per-core search runs.", "{ seconds? }"),
+        ("tuning.cpu.check", "Read-only: can Windows reach the CPU's SMU (read the current per-core Curve Optimizer offsets)? ok, offsets, why not + fix, Memory Integrity / PawnIO state. Writes nothing; skipped while a search runs.", ""),
+        ("tuning.crashes", "Crash watch: recent GPU driver resets, hardware (WHEA) errors, bluescreens and game crashes in the NVIDIA driver, what Glint did about each (back-off, revert to stock, recorded only), and CPU cores whose errors suggest loosening their Curve Optimizer value.", ""),
+        ("tuning.fans.history", "Temperatures (CPU, GPU, hotspot, coolant) and each fan rule's duty over real use (up to the last 24 h, a sample every 30 s, kept across restarts): typical / p95 / max, and the sustained-load periods (5+ min: games, renders) with their peaks and how hard each rule ran. Read-only. Tune fan curves for these real peaks, not only short stress tests.", "{ hours? }"),
+        ("tuning.fans.status", "The fan rules that matter for tuning the GPU (rules driving graphics-card fans or reading a GPU sensor) and the CPU (reading a CPU / liquid sensor) in a profile (default: the active one): their curves, live duty and rpm, whether the AI may change each (editable / whyNot; pumps are flagged untouchable) and the curve rules Glint enforces.", "{ profile? }"),
+        ("tuning.fans.setCurve", "Replace one input's fan curve on an AI-owned profile (\"Quiet (tuned)\" ...), only for rules of the running goal's device (GPU or CPU), never a pump. points: 2-10 [tempC, duty%] pairs, temperatures strictly increasing within 20-110, duty never decreasing, within the rule's min/max duty, reaching 100% at or below the emergency temperature minus 5 C, at least 30% from 60 C up. Validated like every config write, copy-on-write (a curve of its own), limited to one write per 5 s.", "{ profile, rule, input?, points }"),
+        ("tuning.profile.prepare", "Create (first use) or reuse the AI's profile for a goal (quiet | balanced | performance | custom): a copy of the base profile (default: the active one), owned by the AI, and switch Glint to it so tests and fan curves apply there. Returns previousProfile: restoring it is the user's choice (tuning.profile.restore).", "{ goal, goalText?, from? }"),
+        ("tuning.profile.restore", "Switch back to the profile that was active before tuning.profile.prepare.", ""),
+        ("tuning.ai.start", "Start 'Tune with AI': Claude Code (the user's own login; Windows or WSL install) tunes the overclock AND the fan curves together for a goal, through the tuning tools only, in a new profile Glint builds for the goal (\"Quiet (tuned)\"..., fresh fan rules; the user's profiles are never touched; re-running a goal rebuilds it). goal: quiet | balanced | performance | custom (custom needs goalText, max 300 chars); the old gpu | cpu | all still works (no goal: fixed fan boost). target: gpu | cpu | all (default gpu). cpuMode: performance (default: an undervolt slower than stock is backed off) | efficiency (lowest power and temperature). context: the user's free-text wishes for the end result (max 1000 chars, sanitised; guidance only, never overrides safety limits). Only start it when the user asked.", "{ goal?, target?, goalText?, context?, budgetMinutes?, cpuMode? }"),
+        ("tuning.ai.stop", "Stop the AI tuning run (the card goes back to stock if a test was running).", ""),
+        ("tuning.ai.status", "AI tuning run: running, goal, which Claude Code install, error, final summary and the transcript.", ""),
         ("setup.check", "Setup check: is this PC set up right for Glint? Admin rights, PawnIO driver, WebView2, CPU temperature, conflicting RGB/fan apps (running or starting with Windows), GPU fan tools while Glint drives GPU fans, fans another program has taken over, plugins needing approval or failing, devices that declined, the startup task, version + update, OpenRGB bridge. Each item: status ok/warn/fail, plain-language detail, and the fix. Start here when something doesn't work.", ""),
         ("update.status", "Updates: this version, the latest release, whether it can be installed from here (canInstall / cannotInstall), autoInstall, and the install progress (install.state idle|downloading|verifying|installing|failed, install.message).", ""),
+        ("update.check", "Ask GitHub for the latest release now (the background check runs every 6 h) and return update.status. Use when the user says Glint shows an old version as latest.", ""),
         ("update.install", "Install the newer release: downloads the setup from Glint's GitHub releases, checks it against SHA256SUMS.txt and GitHub's build attestation for the release workflow, then runs it silently (Glint closes and restarts). Only with the user's consent; requires confirm=true. Poll update.status for progress.", "{ confirm: true }"),
         ("log", "Recent device / plugin log lines.", "{ lines?: number }"),
         ("app.restart", "Restart Glint (needed after adding or changing device plugins).", ""),
     };
+
+    /// <summary>A required whole-number parameter (no silent 0 for a missing or mistyped value: offsets go to hardware).</summary>
+    static int Int(JsonObject p, string key) =>
+        p[key] is JsonValue v && v.TryGetValue<double>(out var d) && double.IsFinite(d) && Math.Abs(d) < 100000 ? (int)Math.Round(d)
+        : throw new ArgumentException($"{key} must be a number");
 
     object Handle(string method, JsonObject p)
     {
@@ -389,12 +420,17 @@ public sealed class ControlServer : IDisposable
                 {
                     var c = Clone();
                     var name = S("name").Trim();
-                    if (name.Length == 0) return Fail("name is empty");
-                    if (c.Profiles.ContainsKey(name)) return Fail($"profile \"{name}\" already exists");
+                    if (ConfigValidator.ProfileNameError(name) is { } nameErr) return Fail(nameErr);
+                    if (c.Profiles.Keys.Any(k => k.Trim().Equals(name, StringComparison.OrdinalIgnoreCase))) return Fail($"profile \"{name}\" already exists");
                     var from = (string?)p["from"] ?? c.ActiveProfile;
                     if (!c.Profiles.TryGetValue(from, out var src)) return Fail($"no profile \"{from}\" (profiles: {string.Join(", ", c.Profiles.Keys)})");
                     c.Profiles[name] = JsonSerializer.Deserialize<List<FanRule>>(JsonSerializer.Serialize(src, GlintConfig.Json), GlintConfig.Json)!;
                     return Commit(c, extra: x => { x["profile"] = name; x["copiedFrom"] = from; });
+                }
+            case "profiles.rename":
+                {
+                    var err = _svc.RenameProfile(S("from"), S("to"));
+                    return err != null ? Fail(err) : new JsonObject { ["ok"] = true, ["profile"] = S("to").Trim(), ["renamedFrom"] = S("from") };
                 }
             case "profiles.remove":
                 {
@@ -473,7 +509,46 @@ public sealed class ControlServer : IDisposable
                 return _svc.Overlay?.Stats() ?? (object)new { enabled = _svc.Config.Overlay?.Enabled ?? false, visible = false, note = "no overlay in this process" };
             case "ha.status": return _svc.HomeAssistant.Status();
             case "setup.check": return SetupCheck.Run(_svc);
+            case "tuning.status": return _svc.Tuning.Status();
+            case "tuning.gpu.test":
+                return _svc.Tuning.StartGpuTest(Int(p, "core"), Int(p, "memAb"), (double?)p?["seconds"] ?? 60, (bool?)p?["light"] ?? false, p?["powerPct"] is null ? null : Int(p, "powerPct"));
+            case "tuning.wait": return _svc.Cpu.LoadBusy ? _svc.Cpu.WaitLoad((double?)p?["seconds"] ?? 20) : _svc.Tuning.Wait((double?)p?["seconds"] ?? 20);
+            case "tuning.history": return _svc.Tuning.History((int?)(double?)p["offset"] ?? 0, (int?)(double?)p["limit"] ?? 30);
+            case "tuning.stop": return _svc.Tuning.Stop();
+            case "tuning.gpu.apply": return _svc.Tuning.Apply(Int(p, "core"), Int(p, "memAb"));
+            case "tuning.gpu.save": return _svc.Tuning.SaveResult(Int(p, "core"), Int(p, "memAb"), powerPct: p?["powerPct"] is null ? null : Int(p, "powerPct"));
+            case "tuning.gpu.verify": return _svc.Tuning.StartVerify();
+            case "tuning.gpu.stock": return _svc.Tuning.Stock();
+            case "tuning.cpu.status": return _svc.Cpu.Status();
+            case "tuning.cpu.start": return _svc.Cpu.StartSearch(Int(p, "startValue"));
+            case "tuning.cpu.finish": return _svc.Cpu.Finish((bool?)p?["force"] ?? false);
+            case "tuning.cpu.stop": return _svc.Cpu.Stop();
+            case "tuning.cpu.loadtest": return _svc.Cpu.StartLoadTest(p?["seconds"] is null ? 45 : Int(p, "seconds"));
+            case "tuning.cpu.check": { var pr = _svc.Cpu.ProbeSmu(); return pr == null ? new { skipped = "not a supported Ryzen CPU, tuning off, or a search is running" } : new { probe = pr, power = _svc.Cpu.Pm, pboScalar = _svc.Cpu.SmuInfo }; }
+            case "tuning.crashes":
+                return new { watching = _svc.Crashes.Running, error = _svc.Crashes.LastError, events = _svc.Crashes.Records.TakeLast(50).Reverse(), cpuCoresToLoosen = _svc.Crashes.CoresToLoosen() };
+            case "tuning.fans.status": return _svc.AiFans.Status((string?)p?["profile"]);
+            case "tuning.fans.history": return _svc.Thermal.Summary(DateTime.Now, (double?)p?["hours"] ?? 24);
+            case "tuning.fans.setCurve":
+                {
+                    if (_svc.Config.Tuning?.Enabled != true) return Fail("tuning is off (Settings → Tuning)");
+                    List<double[]>? pts = null;
+                    try { pts = p?["points"]?.Deserialize<List<double[]>>(); } catch (JsonException) { return Fail("points must be [[tempC, duty%], ...]"); }
+                    return _svc.AiFans.SetCurve((string?)p?["profile"], (string?)p?["rule"], p?["input"]?.ToString(), pts);
+                }
+            case "tuning.profile.prepare":
+                if (_svc.Config.Tuning?.Enabled != true) return Fail("tuning is off (Settings → Tuning)");
+                return _svc.AiFans.Prepare((string?)p?["goal"], (string?)p?["goalText"], (string?)p?["from"]);
+            case "tuning.profile.restore": return _svc.AiFans.Restore();
+            case "tuning.ai.start":
+                if (_svc.Config.Tuning?.Enabled != true) return Fail("tuning is off (Settings → Tuning)");
+                return _svc.StartTune((string?)p["goal"] ?? "gpu", (int?)(double?)p["budgetMinutes"] ?? 45, (string?)p["context"], (string?)p["target"], (string?)p["goalText"], (string?)p["cpuMode"], (string?)p["gpuMode"]);
+            case "tuning.ai.stop": return _svc.Ai.Stop();
+            case "tuning.ai.status": return _svc.Ai.Status();
             case "update.status": return _svc.Updater.Describe();
+            case "update.check":
+                _svc.Updates.CheckRequested().GetAwaiter().GetResult();
+                return _svc.Updater.Describe();
             case "update.install":
                 {
                     if ((bool?)p["confirm"] != true)

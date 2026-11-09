@@ -139,7 +139,9 @@ static class Program
         if (args.Length > 0 && args[0] == "overlaybench") return GameOverlay.OverlayTests.Bench(args.Length > 1 ? args[1] : "overlaybench.json", args.Length > 2 ? int.Parse(args[2]) : 10);
         if (args.Length > 0 && args[0] == "etwsmoke") return GameOverlay.OverlayTests.EtwSmoke(args.Length > 1 ? args[1] : "etwsmoke.json", args.Length > 2 ? int.Parse(args[2]) : 3);
         if (args.Length > 0 && args[0] == "ctl") return Cli.Ctl(args.Skip(1).ToArray());
-        if (args.Length > 0 && args[0] == "mcp") return Cli.Mcp();
+        // real-hardware tuning check (NVML + CUDA): only with --hw, run by a human on their own PC as administrator
+        if (args.Length > 1 && args[0] == "tunetest") return Glint.Tuning.TuneHardwareTest.Run(args[1], args.Contains("--hw"));
+        if (args.Length > 0 && args[0] == "mcp") return Cli.Mcp(args.Length > 2 && args[1] == "--only" ? args[2] : null);
         if (EnsureLeanGc(args)) return 0;
         return RunTray(args.Contains("--restarted"));
     }
@@ -188,6 +190,25 @@ static class Program
         Eval("document.querySelector('#profile-seg button[data-p=\"Quiet\"]').click()");
         Pump(800);
         C("profile click reaches the service", svc.Config.ActiveProfile == "Quiet", svc.Config.ActiveProfile);
+        // profiles through the real page and host: create (config path), rename (host op keeps the overclock + active), push back
+        Eval("openProfileManager(); document.getElementById('pm-new').value = 'Gaming'; document.querySelector('#pm [data-pm=\"create\"]').click(); 1");
+        Pump(900);
+        C("manager: creating a profile reaches the service (a copy, 4 profiles)", svc.Config.Profiles.ContainsKey("Gaming") && svc.Config.Profiles.Count == 4 && svc.Config.Profiles["Gaming"].Count == svc.Config.Profiles["Quiet"].Count, string.Join(",", svc.Config.Profiles.Keys));
+        svc.Tuning.State.Profiles["Quiet"] = new Glint.Tuning.GpuSaved(80, 300, DateTime.Now, "1", "v", 80, 300);
+        Eval("document.querySelector('#pm tr[data-prow=\"Quiet\"] [data-pm=\"rename\"]').click(); document.getElementById('pm-ren').value = 'Silent'; document.querySelector('#pm [data-pm=\"rename-ok\"]').click(); 1");
+        Pump(1200);
+        C("manager: rename reaches the service; activeProfile, the overclock and the page follow", svc.Config.Profiles.ContainsKey("Silent") && !svc.Config.Profiles.ContainsKey("Quiet") && svc.Config.ActiveProfile == "Silent"
+          && svc.Tuning.State.Profiles.ContainsKey("Silent") && Eval("Object.keys(S.cfg.profiles).includes('Silent') && S.cfg.activeProfile === 'Silent'") == "true", svc.Config.ActiveProfile + " " + string.Join(",", svc.Config.Profiles.Keys));
+        Eval("document.querySelector('#pm tr[data-prow=\"Silent\"] [data-pm=\"rename\"]').click(); document.getElementById('pm-ren').value = 'Stock'; document.querySelector('#pm [data-pm=\"rename-ok\"]').click(); 1");
+        Pump(300);
+        C("manager: a bad name is refused in the page and nothing changes", svc.Config.Profiles.ContainsKey("Silent") && Eval("document.getElementById('pm-err').textContent.includes('reserved')") == "true");
+        Eval("closeProfileManager(); 1");
+        { var ext = System.Text.Json.JsonSerializer.Deserialize<GlintConfig>(System.Text.Json.JsonSerializer.Serialize(svc.Config, GlintConfig.Json), GlintConfig.Json)!;
+          ext.Profiles["FromElsewhere"] = ext.Profiles["Balanced"]; Pump(2800); svc.Apply(ext); Pump(900); }
+        C("a profile added elsewhere (MCP / CLI / HA) appears in the open page", Eval("Object.keys(S.cfg.profiles).includes('FromElsewhere') && [...document.querySelectorAll('#profile-seg button, #profile-sel option')].some(x => x.textContent === 'FromElsewhere')") == "true");
+        { var rs = System.Text.Json.JsonSerializer.Deserialize<GlintConfig>(System.Text.Json.JsonSerializer.Serialize(svc.Config, GlintConfig.Json), GlintConfig.Json)!;
+          rs.Profiles.Remove("FromElsewhere"); rs.Profiles.Remove("Gaming"); rs.Profiles["Quiet"] = rs.Profiles["Silent"]; rs.Profiles.Remove("Silent"); rs.ActiveProfile = "Balanced"; svc.Apply(rs); Pump(500); }
+        Eval("document.querySelector('#profile-seg button[data-p=\"Quiet\"]').click()"); Pump(800);
         C("config round-trip keeps lighting presets", svc.Config.Lighting.Presets.Count == cfg.Lighting.Presets.Count, $"{svc.Config.Lighting.Presets.Count}");
         // lighting effect
         Eval("window.__errs = []; window.addEventListener('error', e => __errs.push(e.message + ' @' + e.lineno)); 1");
@@ -225,6 +246,17 @@ static class Program
             Eval($"go('{pg}')"); Pump(300);
             C($"page {pg} renders in WebView2", Eval($"document.getElementById('page-{pg}').children.length > 0") == "true");
         }
+        // the tuning monitor window: real WebView2, real status push (tuning is off in this config: it must show Idle, touch no GPU)
+        var mon = new UI.TuningMonitor(svc) { StartPosition = FormStartPosition.Manual, Location = new Point(-32000, -32000), ShowInTaskbar = false };
+        mon.Show();
+        var msw = Stopwatch.StartNew();
+        while (!mon.Ready && msw.ElapsedMilliseconds < 15000) { Application.DoEvents(); Thread.Sleep(20); }
+        C("monitor window loads and says ready", mon.Ready, $"{msw.ElapsedMilliseconds} ms");
+        Pump(1800);
+        string MEval(string js) { var t = mon.EvalAsync(js); var w = Stopwatch.StartNew(); while (!t.IsCompleted && w.ElapsedMilliseconds < 5000) { Application.DoEvents(); Thread.Sleep(10); } return t.IsCompleted ? t.Result : "timeout"; }
+        C("monitor window receives the status push and renders Idle", MEval("document.getElementById('m-title').textContent") == "\"Idle\"" && MEval("document.getElementById('m-clock').textContent !== ''") == "true", MEval("document.getElementById('m-title').textContent"));
+        C("monitor window: Stop with nothing running is harmless and disabled", MEval("document.getElementById('m-stop').disabled") == "true");
+        mon.Close(); mon.Dispose();
         d.Close(); d.Dispose();
         Pump(4000);
         int edgeAfter = Edge();
@@ -353,6 +385,26 @@ static class Program
         C("plugins.remove deletes user plugins", list?.Any(x => ((string?)x!["file"])?.StartsWith("controltest") == true) == false);
         C("bundled plugins can't be deleted", Call("plugins.remove", new { file = "aurora.js" })?["error"] != null);
         C("profile.set validates names", Call("profile.set", new { name = "Nope" })?["error"] != null && Call("profile.set", new { name = "Quiet" })?["error"] == null && svc.Config.ActiveProfile == "Quiet");
+        static bool Until(Func<bool> f) { for (int i = 0; i < 60 && !f(); i++) Thread.Sleep(50); return f(); }
+        // profiles: create / rename / remove with name validation; a rename keeps the overclock attached (tuning state)
+        C("profiles.create: bad names rejected (empty, control chars, 'Stock', too long, duplicate ignoring case)",
+          new object[] { "  ", "a\u0007b", "Stock", new string('n', 41), "quiet" }.All(n => (bool?)Call("profiles.create", new { name = n, from = "Balanced" })?["result"]?["ok"] == false) && svc.Config.Profiles.Count == 3);
+        C("profiles.create: more than three profiles", (bool?)Call("profiles.create", new { name = "Gaming <b>x</b>", from = "Balanced" })?["result"]?["ok"] == true && (bool?)Call("profiles.create", new { name = "Night", from = "Quiet" })?["result"]?["ok"] == true && svc.Config.Profiles.Count == 5);
+        svc.Tuning.State.Profiles["Night"] = new Glint.Tuning.GpuSaved(90, 400, DateTime.Now, "1", "v", 90, 400);
+        var rnm = Call("profiles.rename", new { from = "Night", to = "Late shift" });
+        C("profiles.rename renames, keeps the rules and the overclock", (bool?)rnm?["result"]?["ok"] == true && svc.Config.Profiles.ContainsKey("Late shift") && !svc.Config.Profiles.ContainsKey("Night") && svc.Config.Profiles["Late shift"].Count == svc.Config.Profiles["Quiet"].Count
+          && svc.Tuning.State.Profiles.TryGetValue("Late shift", out var lsv) && lsv.Core == 90 && !svc.Tuning.State.Profiles.ContainsKey("Night"), rnm?.ToJsonString() ?? "");
+        string[] badTo = { "", "  ", "Stock", "STOCK", "quiet", "bal\u0000ance", new string('z', 41) };
+        C("profiles.rename rejects bad new names and changes nothing", badTo.All(n => (bool?)Call("profiles.rename", new { from = "Late shift", to = n })?["result"]?["ok"] != true) && svc.Config.Profiles.ContainsKey("Late shift") && svc.Config.Profiles.Count == 5);
+        C("profiles.rename: unknown profile / missing argument fail", Call("profiles.rename", new { from = "Nope", to = "X" })?["result"]?["ok"]?.GetValue<bool>() == false && Call("profiles.rename", new { from = "Late shift" })?["error"] != null);
+        Call("profile.set", new { name = "Late shift" });
+        Call("profiles.rename", new { from = "Late shift", to = "Graveyard" });
+        C("profiles.rename of the active profile keeps it active", svc.Config.ActiveProfile == "Graveyard" && svc.Tuning.State.Profiles.ContainsKey("Graveyard"), svc.Config.ActiveProfile);
+        C("profiles.remove refuses the active profile", (bool?)Call("profiles.remove", new { name = "Graveyard" })?["result"]?["ok"] == false);
+        Call("profile.set", new { name = "Balanced" });
+        C("profiles.remove deletes a profile and clears its overclock", (bool?)Call("profiles.remove", new { name = "Graveyard" })?["result"]?["ok"] == true && Until(() => !svc.Tuning.State.Profiles.ContainsKey("Graveyard")));
+        Call("profiles.remove", new { name = "Gaming <b>x</b>" });
+        C("profiles.rename is in help and in the MCP schema", Call("help")?["result"]?.AsArray().Any(m => (string?)m!["method"] == "profiles.rename") == true && svc.Config.Profiles.Count == 3);
         var noProf = Call("config.set", new { config = new { profiles = new { } } });
         C("config.set refuses a config with no profiles", noProf?["error"] != null || (bool?)noProf?["result"]?["ok"] == false, noProf?.ToJsonString() ?? "");
         var patch = Call("config.patch", new { path = "lighting.brightness", value = 42 });
@@ -395,6 +447,37 @@ static class Program
         C("MCP tools/call returns data", mcp.FirstOrDefault(m => (int?)m["id"] == 4)?["result"]?["content"]?[0]?["text"]?.ToString().Contains("aurora.js") == true);
         FanApiChecks(svc, Call, C, mcp.FirstOrDefault(m => (int?)m["id"] == 2)?["result"]?["tools"]?.AsArray());
         GameOverlay.OverlayTests.ApiChecks(svc, Call, C, mcp.FirstOrDefault(m => (int?)m["id"] == 2)?["result"]?["tools"]?.AsArray());
+        // tuning: off by default over the pipe too, and the AI's restricted MCP server offers only tuning tools
+        var ts = Call("tuning.status", new { })?["result"];
+        C("tuning.status works with tuning off (no GPU opened)", ts?["enabled"]?.GetValue<bool>() == false && ts?["gpu"] == null, ts?.ToJsonString() ?? "null");
+        var tgt = Call("tuning.gpu.test", new { core = 50, memAb = 0, seconds = 10 })?.ToJsonString();
+        C("tuning.gpu.test refused while tuning is off", tgt?.Contains("error") == true && tgt.Contains("tuning is off"), tgt ?? "null");
+        var onlyIn = string.Join("\n", new[]
+        {
+            """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}""",
+            """{"jsonrpc":"2.0","id":2,"method":"tools/list"}""",
+            """{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"glint_config_set","arguments":{"config":{}}}}""",
+        }) + "\n";
+        var only = Run("mcp --only tuning", onlyIn).Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(l => JsonNode.Parse(l)!).ToList();
+        var onlyTools = only.FirstOrDefault(m => (int?)m["id"] == 2)?["result"]?["tools"]?.AsArray().Select(t => (string?)t!["name"] ?? "").ToList() ?? new();
+        C("MCP --only tuning lists only tuning tools (no ai.*)", onlyTools.Count >= 6 && onlyTools.All(t => t.StartsWith("glint_tuning_") && !t.Contains("_ai_start")), string.Join(",", onlyTools));
+        C("MCP --only tuning refuses other tools", only.Any(m => (int?)m["id"] == 3 && m["error"] != null));
+        var newTools = new[] { "glint_tuning_fans_status", "glint_tuning_fans_setCurve", "glint_tuning_profile_prepare", "glint_tuning_profile_restore" };
+        C("MCP --only tuning lists the AI fan / profile tools", newTools.All(onlyTools.Contains), string.Join(",", onlyTools));
+        var setCurveSchema = only.FirstOrDefault(m => (int?)m["id"] == 2)?["result"]?["tools"]?.AsArray().FirstOrDefault(t => (string?)t!["name"] == "glint_tuning_fans_setCurve");
+        C("fans.setCurve's schema requires profile, rule and points", new[] { "profile", "rule", "points" }.All(k => setCurveSchema?["inputSchema"]?["required"]?.AsArray().Any(r => (string?)r == k) == true), setCurveSchema?.ToJsonString() ?? "null");
+        C("fans.setCurve is documented with its rules", ((string?)setCurveSchema?["description"])?.Contains("AI-owned profile") == true && ((string?)setCurveSchema?["description"])?.Contains("never a pump") == true);
+        var aiStartHelp = Glint.Core.ControlServer.Methods.First(m => m.Method == "tuning.ai.start").Help;
+        C("tuning.ai.start documents goal, target, goalText and context", new[] { "goal", "target", "goalText", "context" }.All(aiStartHelp.Contains));
+        var fsTune = Call("tuning.fans.setCurve", new { profile = "Balanced", rule = "x", points = new[] { new[] { 40, 30 }, new[] { 80, 100 } } })?.ToJsonString();
+        C("tuning.fans.setCurve refused while tuning is off", fsTune?.Contains("error") == true && fsTune.Contains("tuning is off"), fsTune ?? "null");
+        var prepOff = Call("tuning.profile.prepare", new { goal = "quiet" })?.ToJsonString();
+        C("tuning.profile.prepare refused while tuning is off", prepOff?.Contains("error") == true && prepOff.Contains("tuning is off"), prepOff ?? "null");
+        var fstat = Call("tuning.fans.status", new { })?["result"];
+        C("tuning.fans.status works over the pipe (rules, curve rules)", fstat?["rules"] != null && fstat["curveRules"] != null && fstat["aiOwned"]?.GetValue<bool>() == false, fstat?.ToJsonString()[..Math.Min(200, fstat.ToJsonString().Length)] ?? "null");
+        var userProfile = svc.Config.ActiveProfile;
+        var fsUser = Call("tuning.fans.status", new { profile = userProfile })?["result"];
+        C("tuning.fans.status marks every rule of a user profile as not editable", fsUser?["rules"]?.AsArray().All(r => r!["editable"]?.GetValue<bool>() == false) == true);
         // setup.check: the same report as the dashboard's Setup check page
         var sc = Call("setup.check");
         var scItems = sc?["result"]?["items"]?.AsArray();
@@ -655,6 +738,29 @@ static class Program
         svc.Updates.Start(TimeSpan.FromSeconds(20));
         // one-click updates: removes old download folders after a short delay; automatic install only if switched on
         svc.Updater.StartBackground();
+        // overclocking (off by default): record a test that died with the PC, re-apply the saved result only if it's safe
+        if (svc.Config.Tuning?.Enabled == true && File.Exists(Glint.Tuning.CpuTuning.StatePath))
+            _ = Task.Run(() => { try { svc.Cpu.OnStartup(); } catch (Exception e) { svc.Rig.Log.Add("cpu tuning: " + e.Message); } });
+        if (svc.Config.Tuning?.Enabled == true || File.Exists(Glint.Tuning.TuningService.StatePath))
+            _ = Task.Run(() =>
+            {
+                bool crashed = false;
+                try { crashed = Glint.Tuning.TuningService.LastShutdownWasCrash(); } catch { }
+                // the GPU step can refuse (MSI Afterburner running, no GPU...): that must never skip the CPU undervolt below
+                try { var n = svc.Tuning.OnStartup(crashed); if (n != null) svc.Rig.Log.Add("tuning: " + n); }
+                catch (Exception e) { svc.Rig.Log.Add("tuning: GPU overclock not re-applied: " + e.Message); }
+                try
+                {
+                    if (svc.Tuning.OnCpuCrash(crashed) is { } cn) svc.Rig.Log.Add("cpu tuning: " + cn);
+                    // the active profile's CPU undervolt: same rule as the GPU (always re-applied, never after a crash)
+                    if (svc.Config.Tuning is { Enabled: true } && !svc.Tuning.StockMode && svc.Tuning.CpuFor(svc.Config.ActiveProfile) is { } co)
+                    {
+                        if (crashed) svc.Rig.Log.Add("cpu tuning: undervolt not applied, the last shutdown was a crash");
+                        else svc.Rig.Log.Add("cpu tuning: " + (svc.Cpu.ApplyCo(co, "startup") ?? $"undervolt of {svc.Config.ActiveProfile} applied"));
+                    }
+                }
+                catch (Exception e) { svc.Rig.Log.Add("cpu tuning: " + e.Message); }
+            });
         Plugins.PluginHost.EffectsChanged += () => svc.Lighting.Apply(svc.Config);
         var tray = new UI.TrayApp(svc);
         var ui = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();

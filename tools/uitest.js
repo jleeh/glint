@@ -23,7 +23,7 @@ const fs = require('fs');
   await wait(700);
 
   // --- every page renders
-  for (const pg of ['overview', 'cooling', 'sensors', 'lighting', 'devices', 'overlay', 'setup', 'settings']) {
+  for (const pg of ['overview', 'cooling', 'sensors', 'lighting', 'devices', 'overlay', 'tuning', 'setup', 'settings']) {
     await nav(pg);
     const n = await p.$eval(`#page-${pg}`, el => el.children.length);
     check(`page ${pg} renders`, n > 0, `${n} children`);
@@ -44,10 +44,19 @@ const fs = require('fs');
   check('fan control toggle off → fanControl:false sent, notice shown', c?.fanControl === false && !!(await p.$('[data-fanoff]')) && !(await p.$('[data-fancontrol].on')), String(c?.fanControl));
   await nav('cooling');
   check('cooling page shows the fan-control-off notice', !!(await p.$('#page-cooling [data-fanoff]')));
-  await p.click('#page-cooling [data-fancontrol-on]');
+  check('cooling page has its own fan-control toggle, showing off', !!(await p.$('#c-fancontrol')) && !(await p.$('#c-fancontrol.on')));
+  await p.click('#c-fancontrol');
   c = await cfg();
   await wait(100);
-  check('cooling "turn fan control on" → fanControl:true, notice gone', c?.fanControl === true && !(await p.$('#page-cooling [data-fanoff]')), String(c?.fanControl));
+  check('cooling toggle on → fanControl:true, notice gone, toggle on', c?.fanControl === true && !(await p.$('#page-cooling [data-fanoff]')) && !!(await p.$('#c-fancontrol.on')), String(c?.fanControl));
+  await p.click('#c-fancontrol');
+  c = await cfg();
+  await wait(100);
+  check('cooling toggle off → fanControl:false, notice shown', c?.fanControl === false && !!(await p.$('#page-cooling [data-fanoff]')) && !(await p.$('#c-fancontrol.on')), String(c?.fanControl));
+  await p.click('#c-fancontrol');
+  c = await cfg();
+  await wait(100);
+  check('cooling toggle back on', c?.fanControl === true && !!(await p.$('#c-fancontrol.on')), String(c?.fanControl));
   await nav('overview');
 
   // --- cooling
@@ -341,6 +350,14 @@ const fs = require('fs');
   // automatic install toggle
   await p.click('#upd-auto'); c = await cfg();
   check('settings: automatic install toggle saves updates.autoInstall', c.updates?.autoInstall === true && c.updates.check === true, JSON.stringify(c.updates));
+  check('settings: "Check now" hidden while an update is on offer', await p.$eval('#upd-recheck', e => e.style.display === 'none'));
+  await p.evaluate(() => { window.__mockInstallIdle(); window.__mockNoUpdate = true; window.__mockChecks = 0; document.querySelector('#upd-recheck').style.display = ''; });
+  await p.click('#upd-recheck'); await wait(30);
+  check('settings: "Check now" shows it is checking and disables itself', (await p.$eval('#upd-status', e => e.textContent)).includes('Checking') && await p.$eval('#upd-recheck', e => e.disabled));
+  await wait(250);
+  const upTxt = await p.$eval('#upd-status', e => e.textContent);
+  check('settings: "Check now" sends one checkUpdate and shows the fresh answer with its age', await p.evaluate(() => window.__mockChecks) === 1 && upTxt.includes('is the latest version') && upTxt.includes('checked just now')
+    && await p.$eval('#upd-recheck', e => !e.disabled && e.style.display !== 'none'), upTxt);
   await p.click('#upd-check'); c = await cfg();
   check('settings: update check toggle saves updates.check (and switches automatic install off)', c.updates?.check === false && c.updates.autoInstall === false, JSON.stringify(c.updates));
   await p.click('#upd-auto'); c = await cfg();
@@ -672,7 +689,7 @@ const fs = require('fs');
       const C = `red;background:url(x)"><img src=x onerror=window.__xss=1 data-xss>`;           // colour: CSS + markup injection
       window.__inj = [];
       const BAD = 'img,script,iframe,object,embed,[data-xss],[onerror],[onload],[onclick],[onmouseover]';
-      const own = n => n.matches('script[src="mock.js"], script[src="app.js"]');                   // index.html's own scripts
+      const own = n => n.matches('script[src="mock.js"], script[src="app.js"], script[src="tuning-format.js"], script[src="monitor.js"]');                   // index.html's own scripts
       const look = n => { if (n.nodeType !== 1) return; [n, ...n.querySelectorAll(BAD)].forEach(x => { if (x.matches(BAD) && !own(x)) window.__inj.push(x.outerHTML.slice(0, 120)); }); };
       new MutationObserver(ms => ms.forEach(m => m.addedNodes.forEach(look))).observe(document, { childList: true, subtree: true });
       const zone = { id: P, dev: P, start: 0, count: 8, kind: 'ring', cols: 0, category: P, name: P };
@@ -701,6 +718,17 @@ const fs = require('fs');
         } else if (m.type === 'sensors') {
           m.catalog.hardware.push({ id: P, name: P, type: P, sub: [], sensors: [{ id: P, name: P, type: P, unit: P, value: 1, min: 1, max: 2, aliases: [P, '/' + P] }] });
           m.catalog.error = P;
+        } else if (m.type === 'tuning' && m.status) {
+          const st = m.status, IMG = '<img src=x onerror=window.__xss=1 data-xss>';
+          st.gpu.name = P; st.gpu.driver = P; st.reverted = P; st.history.forEach(r => { r.why = P; r.driver = P; r.loadMhz = P; r.core = P; r.thermalLimited = true; });
+          st.compare.tuned.loadMhz = P; st.compare.stock.rate = P; st.compare.tuned.core = P;
+          if (st.testing) st.testing.core = P;
+          if (st.live) st.live.throttle = [P, 'thermal'];
+          m.ai.transcript.push(P, '**' + P + '**', '[x](javascript:window.__xss=1) ' + IMG, '# ' + P, '- ' + P, '| a | ' + P + ' |\n|---|---|\n| ' + IMG + ' | `' + IMG + '` |',
+            '→ tuning.gpu.test {"core":"' + IMG + '","memAb":0}', '→ ' + IMG, '! ' + P);
+          m.ai.summary = P + '\n\n## ' + P + '\n* ' + IMG; m.ai.goal = P; m.ai.running = false;
+        } else if (m.type === 'tuningHistory') {
+          m.history.items.forEach(r => { r.why = P; r.core = P; r.memAb = P; r.loadMhz = P; r.thermalLimited = true; r.powerLimited = true; r.time = P; });
         } else if (m.type === 'setup') {
           m.report.items.push({ id: P, title: P, status: 'fail', detail: P, fixLabel: P, fix: P, fixArg: P, important: true });
           m.report.items.push({ id: P + 2, title: P, status: P, detail: P, important: false });
@@ -722,6 +750,11 @@ const fs = require('fs');
     await xp.evaluate(() => { go('overlay'); document.getElementById('ov-add').click(); }); await wait(1300);
     await xp.evaluate(() => { go('sensors'); }); await wait(1300);
     await xp.evaluate(() => { go('devices'); toast('"><img src=x onerror=window.__xss=1 data-xss>'); }); await wait(200);
+    await xp.evaluate(() => { go('tuning'); }); await wait(500);
+    await xp.evaluate(() => document.getElementById('tn-ai-start').click()); await wait(700);
+    await xp.evaluate(() => { document.querySelector('[data-hp="1"]')?.click(); }); await wait(500);
+    const tnx = await xp.evaluate(() => ({ log: document.getElementById('tn-log').textContent.length, anchors: document.querySelectorAll('#page-tuning a').length, rows: document.querySelectorAll('#tn-history tbody tr').length }));
+    check('xss: tuning page (transcript Markdown, results, history, compare) is inert and still renders', tnx.log > 50 && tnx.anchors === 0 && tnx.rows > 0, JSON.stringify(tnx));
     const r = await xp.evaluate(() => ({
       xss: window.__xss, inj: window.__inj, now: document.querySelectorAll('img, [data-xss]').length,
       css: [...document.querySelectorAll('[style]')].filter(e => /url\(|;\s*background:\s*url/i.test(e.getAttribute('style'))).map(e => e.getAttribute('style').slice(0, 80)),
@@ -746,6 +779,427 @@ const fs = require('fs');
     check('xss: no JavaScript errors with hostile data', xerr.length === 0, xerr.slice(0, 3).join(' | '));
     await xp.close();
   }
+  // --- tuning page (AI overclocking; on in the demo config, off by default in Glint)
+  await nav('tuning');
+  const tnTab = async t => { await p.evaluate(x => tnSetTab(x), t); await wait(150); };
+  const tabs0 = await p.evaluate(() => ({ tabs: [...document.querySelectorAll('#tn-tabs [data-tab]')].map(b => b.dataset.tab).join(), shown: [...document.querySelectorAll('#page-tuning .tn-pane')].filter(x => !x.hidden).map(x => x.dataset.pane).join(), log: document.getElementById('tn-log').hidden, adv: document.getElementById('tn-adv').open }));
+  await p.evaluate(() => { window.__mockCpuSearch = true; }); await nav('overview'); await nav('tuning'); await wait(400);
+  const hero = await p.evaluate(() => ({ state: document.getElementById('tn-h-ai-v').textContent, stopShown: !document.getElementById('tn-ai-stop').hidden, startHidden: document.getElementById('tn-ai-start').hidden, live: document.getElementById('tn-live').textContent }));
+  check('tuning: the tuner shows one state with live numbers; while the CPU search runs, Stop replaces Tune', hero.state.includes('Tuning') && hero.stopShown && hero.startHidden && /CPU undervolt search · 5\/8 cores done · testing core 5 at -21/.test(hero.live), JSON.stringify(hero));
+  await p.evaluate(() => { delete window.__mockCpuSearch; }); await nav('overview'); await nav('tuning'); await wait(400);
+  check('tuning: idle, the tuner says Ready and offers Tune (Stop hidden)', await p.evaluate(() => document.getElementById('tn-h-ai-v').textContent === 'Ready' && !document.getElementById('tn-ai-start').hidden && document.getElementById('tn-ai-stop').hidden));
+  await p.click('#tn-style [data-s="quiet"]'); await wait(100);
+  check('tuning: Start says which new profile the tune creates', /Creates the profile "Quiet \(tuned\)"/.test(await p.$eval('#tn-go-to', e => e.textContent)), await p.$eval('#tn-go-to', e => e.textContent));
+  await p.click('#tn-style [data-s="balanced"]'); await wait(100);
+  check('tuning: Advanced is collapsed by default; the empty AI log is hidden', tabs0.adv === false && tabs0.log === true, JSON.stringify(tabs0));
+  await p.evaluate(() => { S.tnAdvOpen = true; document.getElementById('tn-adv').open = true; }); await wait(150);
+  check('tuning: Advanced holds the editors and the detail tabs (GPU first)', tabs0.tabs === 'gpu,cpu,history,safety' && tabs0.shown === 'gpu', JSON.stringify(tabs0));
+  await p.click('#tn-tabs [data-tab="cpu"]'); await wait(150);
+  const tabs1 = await p.evaluate(() => ({ shown: [...document.querySelectorAll('#page-tuning .tn-pane')].filter(x => !x.hidden).map(x => x.dataset.pane).join(), sel: document.querySelector('#tn-tabs [aria-selected="true"]')?.dataset.tab }));
+  await nav('overview'); await nav('tuning'); await wait(300);
+  const tabs2 = await p.evaluate(() => ({ shown: [...document.querySelectorAll('#page-tuning .tn-pane')].filter(x => !x.hidden).map(x => x.dataset.pane).join(), adv: document.getElementById('tn-adv').open }));
+  check('tuning: a detail tab shows only that section; the tab and Advanced stay open across page changes', tabs1.shown === 'cpu' && tabs1.sel === 'cpu' && tabs2.shown === 'cpu' && tabs2.adv, JSON.stringify(tabs1) + ' ' + JSON.stringify(tabs2));
+  await wait(300);
+  check('tuning: page shows the AI card and the GPU', await p.$eval('#page-tuning', el => el.textContent.includes('AI tuner') && el.textContent.includes('Demo GeForce RTX 4080')));
+  check('tuning: history table lists the first page of tests (pass and fail)', await p.$$eval('#tn-history tbody tr', r => r.length) === 15 && await p.$eval('#tn-history', el => el.textContent.includes('fail') && el.textContent.includes('pass')));
+  check('tuning: saved result shown', await p.$eval('#tn-gpu', el => el.textContent.includes('+120') && el.textContent.includes('+750')));
+  check('tuning: CPU card says whether Curve Optimizer is reachable from Windows', await p.$eval('#tn-smu', el => el.textContent.includes('Yes') && el.textContent.includes('from Windows') && el.textContent.includes('Memory Integrity on') && el.textContent.includes('PawnIO installed')));
+  await p.evaluate(() => { window.__mockSmu = { ok: false, summary: 'Curve Optimizer can\'t be reached from Windows: <img src=x onerror=window.__smuXss=1>', fix: 'Install PawnIO <b>now</b>', offsets: null, memoryIntegrity: true, pawnIo: false }; });
+  await nav('overview'); await nav('tuning'); await new Promise(r => setTimeout(r, 400));
+  const smuBad = await p.$eval('#tn-smu', el => ({ t: el.textContent, imgs: el.querySelectorAll('img,b').length, cls: el.className }));
+  check('tuning: a failed Curve Optimizer check shows why + the fix, escaped', smuBad.cls === 'tn-warn' && smuBad.t.includes('Install PawnIO <b>now</b>') && smuBad.t.includes('PawnIO missing') && smuBad.imgs === 0 && !(await p.evaluate(() => window.__smuXss)), JSON.stringify(smuBad));
+  await p.evaluate(() => { delete window.__mockSmu; });
+  check('tuning: CPU card shows per-core values and the BIOS sheet', await p.$eval('#tn-cpu', el => el.textContent.includes('Negative 19') && el.querySelectorAll('.tn-cores .tn-core').length === 8));
+  await p.click('#tn-ai-start'); await wait(400);
+  check('tuning: Tune with AI shows the live transcript', await p.$eval('#tn-log', el => el.textContent.includes('Test core +150') && el.textContent.includes('Starting Claude Code')));
+  check('tuning: start disabled while a run is going', await p.$eval('#tn-ai-start', el => el.disabled));
+  await p.click('#tn-ai-stop'); await wait(300);
+
+  // --- tuning page: formatting, stock vs tuned, unlock toggle, paginated history, monitor button
+  await nav('tuning');
+  await wait(500);
+  const mdt = await p.evaluate(() => ({
+    img: TF.md('<img src=x onerror=window.__t=1> **b**'), link: TF.md('[click](javascript:window.__t=1)'), code: TF.md('use `**not bold**` and **bold** and *it*'),
+    tbl: TF.md('| a | b |\n|---|---|\n| 1 | **2** |'), list: TF.md('1. one\n2. two\n\n- x\n- y'), head: TF.md('## Title\ntext'), fence: TF.md('```\n<b>x</b>\n```'),
+  }));
+  check('markdown: raw HTML is escaped, links drop their target', !/<img/i.test(mdt.img) && mdt.img.includes('&lt;img') && !/<a[\s>]/.test(mdt.link) && !mdt.link.includes('javascript'), mdt.img + ' | ' + mdt.link);
+  check('markdown: bold/italic/code/table/lists/headings become elements', mdt.code.includes('<code>**not bold**</code>') && mdt.code.includes('<strong>bold</strong>') && mdt.code.includes('<em>it</em>')
+    && mdt.tbl.includes('<table') && mdt.tbl.includes('<th>a</th>') && mdt.tbl.includes('<strong>2</strong>') && mdt.list.includes('<ol') && mdt.list.includes('<ul') && mdt.head.includes('<h4') && mdt.fence.includes('&lt;b&gt;x&lt;/b&gt;'), JSON.stringify(mdt).slice(0, 200));
+  const steps = await p.evaluate(() => ['→ tuning.gpu.test {"core":250,"memAb":0,"seconds":45,"light":true}', '→ tuning.status {}', '→ tuning.gpu.save {"core":200,"memAb":750}', '→ tuning.gpu.stock {}', '→ tuning.wait {"seconds":25}', '→ tuning.gpu.test {"core":100,"memAb":500,"seconds":4', 'plain text'].map(l => TF.stepText(l)));
+  check('steps: tool calls become friendly text, tuning.wait is hidden', JSON.stringify(steps) === JSON.stringify(['Test core +250 / memory +0 · 45 s (light)', 'Read status', 'Save core +200 / memory +750', 'Back to stock', '', 'Test core +100 / memory +500 · 4 s', null]), JSON.stringify(steps));
+  // the AI log on the Tuning page
+  await p.click('#tn-ai-start'); await wait(500);
+  const lg = await p.$eval('#tn-log', el => ({ t: el.textContent, steps: [...el.querySelectorAll('.tf-step')].map(x => x.textContent), tbl: el.querySelectorAll('table.md-table').length, strong: el.querySelectorAll('strong').length, li: el.querySelectorAll('ol li').length, res: el.querySelectorAll('.tf-res').length, run: el.querySelectorAll('.tf-res.run').length }));
+  check('tuning log: tool calls shown as friendly steps, no raw JSON or tuning.wait', lg.steps.some(x => x.includes('Test core +150 / memory +500 · 45 s')) && lg.steps.some(x => x.includes('Read status')) && !lg.t.includes('{"core"') && !lg.t.includes('tuning.wait') && !lg.t.includes('seconds":25'), lg.steps.join(' | '));
+  check('tuning log: Markdown rendered (table, bold, numbered list), no raw asterisks or pipes', lg.tbl === 1 && lg.strong >= 2 && lg.li === 3 && !lg.t.includes('**') && !lg.t.includes('|---'), JSON.stringify({ tbl: lg.tbl, strong: lg.strong, li: lg.li }));
+  check('tuning log: finished tests are result cards, the running one is marked', lg.res === 3 && lg.run === 1, JSON.stringify({ res: lg.res, run: lg.run }));
+  const mq = await p.evaluate(() => (window.__msgs ?? []).filter(m => m.type === 'tuning').length);
+  await p.click('#tn-monitor'); await wait(150);
+  check('tuning: "Open monitor" asks the host for the monitor window', await p.evaluate(() => (window.__msgs ?? []).some(m => m.type === 'tuning' && m.op === 'monitor')), mq);
+  await p.click('#tn-ai-stop'); await wait(300);
+  await p.evaluate(() => window.__mockConfigChanged(c => { for (const k of Object.keys(c.profiles)) if (k.endsWith(' (tuned)')) delete c.profiles[k]; if (!c.profiles[c.activeProfile]) c.activeProfile = 'Balanced'; })); await wait(300);
+  // power / limits wording and the unlock toggle
+  await tnTab('gpu');
+  const gp = await p.$eval('#page-tuning', el => ({ head: el.querySelector('.tn-head').textContent, sub: el.querySelector('#tn-gpu-sub').textContent, gpu: el.querySelector('#tn-gpu').textContent }));
+  check('tuning: header explains the new limits model (no "never ... power limits")', gp.head.includes("card's own maximum") && gp.head.includes('emergency') && !/never voltage or power limits/.test(gp.head) && !/stop at your temperature limits/.test(gp.head), gp.head.slice(0, 160));
+  check('tuning: GPU card shows power limit now/default/max and slowdown + emergency temperatures', gp.sub.includes('320 W now') && gp.sub.includes('340 W card maximum') && gp.gpu.includes('slows down at 83 °C') && gp.gpu.includes('86 °C') && gp.gpu.includes('100 °C'), gp.sub + ' | ' + gp.gpu.slice(0, 200));
+  check('tuning: unlock-power toggle starts on', !!(await p.$('#tn-unlock.on')) && /Unlock power limit \(up to this card's maximum/.test(await p.$eval('#tn-unlock + label', e => e.textContent)));
+  await p.click('#tn-unlock');
+  check('tuning: unlock-power toggle goes through the config (off)', (await cfg())?.tuning?.unlockPower === false);
+  await p.click('#tn-unlock');
+  check('tuning: unlock-power toggle goes through the config (on again)', (await cfg())?.tuning?.unlockPower === true);
+  // stock vs tuned
+  await wait(3300);
+  const cm = await p.evaluate(() => ({
+    rows: [...document.querySelectorAll('#tn-cmp .cmp-row')].map(r => ({ k: r.dataset.cmp, d: r.querySelector('.cmp-delta').textContent, c: r.querySelector('.cmp-delta').className, s: r.querySelector('.cmp-stock i').style.width, t: r.querySelector('.cmp-tuned i').style.width })),
+    legend: document.querySelector('#tn-cmp .tn-cmp-legend')?.textContent ?? '',
+  }));
+  const by = k => cm.rows.find(r => r.k === k);
+  check('compare: bars for clock, compute, VRAM, power and temperature', cm.rows.map(r => r.k).join() === 'loadMhz,rate,gBps,powerW,peakCoreC', cm.rows.map(r => r.k).join());
+  check('compare: labels Stock and Tuned (core +120 / memory +750)', cm.legend.includes('Stock') && cm.legend.includes('Tuned (core +120 / memory +750)'), cm.legend);
+  check('compare: % deltas (clock +7.0 % green, power +10.0 % amber), tuned bar longer than stock', by('loadMhz')?.d === '+7.0%' && by('loadMhz').c.includes('gain') && by('powerW')?.d === '+10.0%' && by('powerW').c.includes('cost') && by('loadMhz').t === '100%' && parseFloat(by('loadMhz').s) < 100, JSON.stringify(cm.rows[0]) + JSON.stringify(by('powerW')));
+  await p.evaluate(() => { window.__mockNoStock = true; tuningAsk(); }); await wait(400);
+  check('compare: no baseline → clear empty state, no bars', (await p.$$('#tn-cmp .cmp-row')).length === 0 && (await p.$eval('#tn-cmp-empty', e => e.textContent)).includes('measures stock first'));
+  await p.evaluate(() => { window.__mockNoStock = false; tuningAsk(); }); await wait(300);
+  // paginated history: 38 saved tests, 15 per page
+  const hs = async () => p.evaluate(() => ({ rows: document.querySelectorAll('#tn-history tbody tr').length, info: document.getElementById('tn-hinfo')?.textContent ?? '', first: document.querySelector('#tn-history tbody tr')?.textContent ?? '', cur: document.querySelector('#tn-history .cur')?.textContent ?? '', nums: [...document.querySelectorAll('#tn-history [data-hp]')].map(b => b.dataset.hp).join() }));
+  await p.evaluate(() => { try { sessionStorage.clear(); } catch { } tnHist.page = 0; renderTuning(); }); await wait(500);
+  await tnTab('history');
+  let h1 = await hs();
+  check('history: page 1 has 15 rows, total 38, pages 1..3', h1.rows === 15 && h1.info.includes('1–15 of 38 tests') && h1.info.includes('page 1 of 3') && h1.nums === 'prev,0,1,2,next', JSON.stringify(h1));
+  check('history: rows show clock, compute, VRAM, power, peak and limited chips', await p.$eval('#tn-history', el => el.querySelectorAll('.tf-chip.warn').length > 0 && /\d+ G\/s/.test(el.textContent) && /\d+ GB\/s/.test(el.textContent) && /\d+ W/.test(el.textContent) && /\d+ °C/.test(el.textContent)));
+  await p.click('#tn-history [data-hp="1"]'); await wait(500);
+  const h2 = await hs();
+  check('history: page 2 shows the next 15 rows', h2.rows === 15 && h2.info.includes('16–30 of 38') && h2.cur === '2' && h2.first !== h1.first, h2.info);
+  await p.click('#tn-history [data-hp="next"]'); await wait(500);
+  const h3 = await hs();
+  check('history: last page shows the remaining 8, Older is disabled', h3.rows === 8 && h3.info.includes('31–38 of 38') && await p.$eval('#tn-history [data-hp="next"]', b => b.disabled), h3.info);
+  await p.click('#tn-history [data-hp="1"]'); await wait(400);
+  await wait(3300);                                                       // the 3 s refresh must keep the page
+  check('history: the page survives the 3 s refresh', (await hs()).info.includes('page 2 of 3'), (await hs()).info);
+  await nav('overview'); await nav('tuning'); await wait(600);
+  check('history: the page survives leaving and re-rendering the Tuning page', (await hs()).info.includes('page 2 of 3') && (await hs()).cur === '2', (await hs()).info);
+  await p.evaluate(() => window.__mockAddTest()); await wait(3500);
+  const h4 = await hs();
+  check('history: a new test does not yank the reader off page 2; total goes to 39', h4.info.includes('page 2 of 3') && h4.info.includes('of 39 tests'), h4.info);
+  await p.click('#tn-history [data-hp="0"]'); await wait(500);
+  await p.evaluate(() => window.__mockAddTest()); await wait(3500);
+  const h5 = await hs();
+  check('history: on page 1 the newest test appears at the top', h5.info.includes('page 1 of 3') && h5.info.includes('of 40 tests') && /\+135/.test(h5.first), h5.info + ' | ' + h5.first.slice(0, 60));
+  await p.select('#tn-psize', '30'); await wait(600);
+  const h6 = await hs();
+  check('history: page size 30 → 30 rows, 2 pages; the choice survives a re-render', h6.rows === 30 && h6.info.includes('page 1 of 2'), h6.info);
+  await nav('overview'); await nav('tuning'); await wait(600);
+  check('history: page size is remembered', (await hs()).rows === 30);
+  await p.select('#tn-psize', '15'); await wait(500);
+  check('history: back to 15 per page', (await hs()).rows === 15);
+
+  // --- tuning monitor window (monitor.html): rendered against mock.js's demo run
+  {
+    const mp = await b.newPage();
+    await mp.setViewport({ width: 520, height: 720 });
+    mp.setDefaultTimeout(4000);
+    const merr = [];
+    mp.on('pageerror', e => merr.push(e.message)); mp.on('console', m => { if (m.type() === 'error') merr.push(m.text()); });
+    await mp.evaluateOnNewDocument(() => {
+      window.__inj = [];
+      const BAD = 'img,script,iframe,object,embed,[data-xss],[onerror],[onload]';
+      const own = n => n.matches('script[src="mock.js"], script[src="tuning-format.js"], script[src="monitor.js"]');
+      new MutationObserver(ms => ms.forEach(m => m.addedNodes.forEach(n => { if (n.nodeType === 1) [n, ...n.querySelectorAll(BAD)].forEach(x => { if (x.matches(BAD) && !own(x)) window.__inj.push(x.outerHTML.slice(0, 100)); }); }))).observe(document, { childList: true, subtree: true });
+    });
+    await mp.goto('file://' + page.replace(/index\.html$/, 'monitor.html'));
+    await wait(1300);
+    const T = async f => mp.evaluate(f);
+    const hd = await T(() => ({ title: document.getElementById('m-title').textContent, sub: document.getElementById('m-sub').textContent, stop: document.getElementById('m-stop').disabled, prog: !document.getElementById('m-prog').hidden }));
+    check('monitor: header says what is being tested, with a progress bar and an enabled Stop', hd.title === 'Testing core +150 / memory +500 · 45 s' && hd.sub.includes('AI tuning GPU') && !hd.stop && hd.prog, JSON.stringify(hd));
+    check('monitor: the header shows the run\'s goal and the user\'s context', hd.sub.includes('Goal: Balanced') && hd.sub.includes('I game at 4K'), hd.sub);
+    const lg = await T(() => { const el = document.getElementById('m-log'); return { t: el.textContent, steps: [...el.querySelectorAll('.tf-step')].map(x => x.textContent), tbl: el.querySelectorAll('table.md-table th').length, strong: el.querySelectorAll('strong').length, ol: el.querySelectorAll('ol li').length, code: el.querySelectorAll('code').length, pass: el.querySelectorAll('.tf-res.pass').length, run: el.querySelectorAll('.tf-res.run').length, chip: el.querySelectorAll('.tf-res .tf-chip.warn').length }; });
+    check('monitor: Markdown rendered as elements (table, bold, list, code), not raw asterisks', lg.tbl === 3 && lg.strong >= 2 && lg.ol === 3 && lg.code >= 1 && !lg.t.includes('**') && !lg.t.includes('|---'), JSON.stringify({ tbl: lg.tbl, strong: lg.strong, ol: lg.ol, code: lg.code }));
+    check('monitor: tool calls are friendly steps; tuning.wait and raw JSON are hidden', lg.steps.length === 4 && lg.steps[0] === '▸Read status' && lg.steps.includes('▸Test core +100 / memory +0 · 45 s') && lg.steps.includes('▸Test core +0 / memory +0 · 30 s (light)') && !lg.t.includes('tuning.') && !lg.t.includes('{"'), lg.steps.join(' | '));
+    check('monitor: finished tests are result rows (pass, power-limited chip), the current one is RUNNING', lg.pass === 2 && lg.run === 1 && lg.chip >= 1 && lg.t.includes('434 G ops/s') && lg.t.includes('903 GB/s'), JSON.stringify({ pass: lg.pass, run: lg.run, chip: lg.chip }));
+    const gg = await T(() => ({ n: document.querySelectorAll('.mg').length, txt: document.getElementById('m-gauges').textContent, warn: document.querySelectorAll('.mg .mk.warn').length, bad: document.querySelectorAll('.mg .mk.bad').length, chips: document.getElementById('m-chips').textContent }));
+    check('monitor: gauges for core/memory temperature, clock, power, fan and load, with slowdown + emergency marks', gg.n === 6 && /GPU core/i.test(gg.txt) && /Memory temp/i.test(gg.txt) && /Power/i.test(gg.txt) && gg.warn >= 2 && gg.bad >= 2 && gg.txt.includes('340 W'), JSON.stringify({ n: gg.n, warn: gg.warn, bad: gg.bad }));
+    check('monitor: power-limited chip while the card is power-capped', gg.chips.includes('power-limited'), gg.chips);
+    const pw = await T(() => {
+      const base = structuredClone(M.msg), w = () => document.getElementById('m-prog-fill').style.width;
+      window.__now = () => 1e12; const at = s => { const m = structuredClone(base); m.status.testing.seconds = 60; m.status.testing.startedAt = new Date(1e12 - s * 1000).toISOString(); monitorApply(m); return w(); };
+      const r = [at(0), at(15), at(30), at(60), at(90)];
+      const m = structuredClone(base); m.status.testing = null; monitorApply(m); r.push(document.getElementById('m-prog').hidden);
+      const t = structuredClone(base); t.status.live.throttle = ['thermal slowdown']; monitorApply(t); r.push(document.getElementById('m-chips').textContent);
+      delete window.__now; return r;
+    });
+    check('monitor: progress bar width follows elapsed time (0 / 25 / 50 / 100 / clamped 100 %), hidden when no test runs', pw[0] === '0%' && pw[1] === '25%' && pw[2] === '50%' && pw[3] === '100%' && pw[4] === '100%' && pw[5] === true, pw.slice(0, 6).join(' '));
+    check('monitor: thermal-limited chip when the card throttles on temperature', String(pw[6]).includes('thermal-limited'), pw[6]);
+    const fin = await T(() => {
+      const m = structuredClone(M.msg); m.ai.running = false; m.status.busy = false; m.status.testing = null; m.status.live = null; m.ai.summary = '## Result\n**Saved** core `+120` / memory `+750`\n\n| Metric | Stock | Tuned |\n|---|---|---|\n| Clock | 2790 | **2985** |\n\n- stable for 180 s';
+      monitorApply(m);
+      const s = document.querySelector('#m-log .tf-summary');
+      return { h: !!s?.querySelector('h4'), tbl: s?.querySelectorAll('td').length, strong: s?.querySelectorAll('strong').length, li: s?.querySelectorAll('li').length, title: document.getElementById('m-title').textContent, stop: document.getElementById('m-stop').disabled, once: document.querySelectorAll('#m-log .tf-say').length };
+    });
+    check('monitor: the final summary is rendered as Markdown; header goes back to Idle', fin.h && fin.tbl === 3 && fin.strong >= 2 && fin.li === 1 && fin.title === 'Idle' && fin.stop, JSON.stringify(fin));
+    const lt = await T(() => {
+      const m = structuredClone(M.msg); m.ai.running = true; m.ai.target = 'cpu'; m.status.testing = null; m.status.busy = false; m.status.live = null;
+      m.cpu = { phase: 'idle', cpu: { tempC: 55 }, curveOptimizer: { abortC: 90 }, loadTest: { running: true, live: { step: 'all', elapsed: 20, seconds: 45, tempC: 81, powerW: 156, avgMhz: 4970, maxMhz: 5003, abortC: 90 } } };
+      monitorApply(m);
+      const a = { title: document.getElementById('m-title').textContent, g: document.getElementById('m-gauges').textContent, bar: document.getElementById('m-prog').hidden, stop: document.getElementById('m-stop').disabled };
+      m.cpu.loadTest = { running: false, live: null }; monitorApply(m);
+      const b = { g: document.getElementById('m-gauges').textContent };
+      return { a, b };
+    });
+    check('monitor: CPU load test shows CPU temp / power / clock live (not empty GPU gauges), with its own progress and Stop', lt.a.title.includes('CPU load test: all cores') && lt.a.g.includes('81') && lt.a.g.includes('156') && lt.a.g.includes('4970') && !/GPU core/.test(lt.a.g) && lt.a.bar === false && lt.a.stop === false, JSON.stringify(lt.a));
+    check('monitor: a CPU-only AI tune between steps still shows the CPU, not the GPU', lt.b.g.includes('CPU temp') && lt.b.g.includes('55') && !/GPU core/.test(lt.b.g), lt.b.g);
+    const sw = await T(() => {
+      const m = structuredClone(M.msg); m.ai.running = true; m.ai.target = 'cpu'; m.status.testing = null; m.status.busy = false; m.status.live = null;
+      const pts = [{ value: 0, ok: true, kind: 'all', score: 0, mhz: 4636 }, { value: -5, ok: true, kind: 'all', score: 1.2, mhz: 4690 },
+        { value: 0, ok: true, kind: 'one', score: -0.3, mhz: 5440 }, { value: -25, ok: true, kind: 'one', score: 2.1, mhz: 5560 }, { value: -5, ok: true, kind: 'one', score: null }];
+      m.cpu = { phase: 'searching', cpu: { tempC: 70 }, search: { wheaSinceStart: 0, live: { phase: 'sweep', sweepPass: 'one', value: -25, sweep: pts, tempC: 70, abortC: 90 } } };
+      monitorApply(m);
+      const g = [...document.querySelectorAll('#m-gauges .mg')].map(x => ({ label: x.querySelector('.mg-label').textContent, bar: !!x.querySelector('.mg-bar') }));
+      return { g, chips: document.getElementById('m-chips').textContent };
+    });
+    const bar = l => sw.g.find(x => x.label.startsWith(l))?.bar;
+    check('monitor: sweep readings, hardware errors and a step with no known length show no progress bar (only gauges that fill do)', bar('Sweep') === false && bar('Hardware errors') === false && bar('Step 1 of 3') === false && bar('CPU temp') === true, JSON.stringify(sw.g));
+    check('monitor: single-core sweep chips show their own % vs single-core stock (not all 0%), all-core chips hidden in that pass', sw.chips.includes('-25: +2.1%') && sw.chips.includes('0: -0.3%') && sw.chips.includes('-5: –') && !sw.chips.includes('+1.2%'), sw.chips);
+    const er = await T(() => { monitorApply({ type: 'tuning', error: 'GPU busy' }); return document.getElementById('m-title').textContent; });
+    check('monitor: a host error is shown, not a blank window', er === 'Status unavailable', er);
+    await mp.evaluate(() => { window.__mockIdleMonitor = false; });
+    await wait(1300);                                                       // the mock's 1 s push brings the demo run back
+    await mp.click('#m-top');
+    check('monitor: "Keep on top" toggle tells the host', await T(() => document.getElementById('m-top').classList.contains('on') && window.__msgs.some(m => m.type === 'top' && m.on === true)));
+    await mp.click('#m-stop'); await wait(1400);
+    const sp = await T(() => ({ sent: window.__msgs.some(m => m.type === 'action' && m.op === 'stop'), title: document.getElementById('m-title').textContent, stop: document.getElementById('m-stop').disabled, bar: document.getElementById('m-prog').hidden }));
+    check('monitor: Stop sends the stop action and the window shows Idle afterwards', sp.sent && sp.title === 'Idle' && sp.stop && sp.bar, JSON.stringify(sp));
+    check('monitor: asks the host for status on load', await T(() => window.__msgs.some(m => m.type === 'ready' && m.page === 'monitor')));
+    // hostile transcript / status text stays inert
+    const hx = await T(() => {
+      const P = `"'><img src=x onerror=window.__xss=1 data-xss>`, m = structuredClone(M.msg);
+      m.ai.running = true; m.ai.goal = P; m.status.gpu.name = P; m.status.testing = { core: P, memAb: P, seconds: P, light: true, startedAt: P };
+      m.status.live = { coreC: P, memC: P, mhz: P, powerW: P, fanPct: P, utilPct: P, throttle: [P] }; m.status.history.forEach(r => { r.why = P; r.core = P; });
+      m.ai.transcript = [P, '**' + P + '**', '[x](javascript:window.__xss=1)', '# ' + P, '| a | b |\n|-|-|\n| ' + P + ' | ' + P + ' |', '→ tuning.gpu.test {"core":"' + P + '"}', '→ ' + P, '! ' + P];
+      m.ai.summary = P; monitorApply(m);
+      return { xss: window.__xss, inj: window.__inj, a: document.querySelectorAll('a').length, shown: document.getElementById('m-log').innerHTML.includes('&lt;img src=x onerror') };
+    });
+    check('monitor xss: hostile transcript / status text injects nothing and runs nothing', hx.xss === undefined && hx.inj.length === 0 && hx.a === 0 && hx.shown, JSON.stringify(hx).slice(0, 200));
+    check('monitor: no JavaScript errors', merr.length === 0, merr.slice(0, 3).join(' | '));
+    await mp.close();
+  }
+  // ===== profiles: header switcher, manager, per-profile overclocks, manual overclocking, AI goal, external config changes =====
+  const dlg = { log: [], accept: true };
+  const dlgFn = d => { dlg.log.push(d.message()); dlg.accept ? d.accept() : d.dismiss(); };
+  p.on('dialog', dlgFn);
+  const sent = (type, pred = () => true) => p.evaluate((t, f) => (window.__msgs ?? []).filter(m => m.type === t).map(m => JSON.parse(JSON.stringify(m))), type).then(a => a.filter(pred));
+  const clearMsgs = () => p.evaluate(() => { window.__msgs.length = 0; });
+  const hdr = () => p.evaluate(() => ({ seg: !document.getElementById('profile-seg').hidden, sel: !document.getElementById('profile-sel').hidden,
+    names: [...document.querySelectorAll('#profile-seg button, #profile-sel option')].map(x => x.textContent), active: document.querySelector('#profile-seg button.on, #profile-sel option:checked')?.textContent }));
+  const pmCreate = async (name, from) => { await p.evaluate((n, f) => { document.getElementById('pm-new').value = n; if (f) document.getElementById('pm-from').value = f; }, name, from); await p.click('#pm [data-pm="create"]'); await wait(200); };
+  const pmErr = () => p.$eval('#pm-err', e => e.textContent);
+  await nav('overview'); await wait(2700);
+  await p.evaluate(() => window.__mockConfigChanged(c => { for (const n of Object.keys(c.profiles)) if (n.startsWith('AI ')) delete c.profiles[n]; c.activeProfile = 'Balanced'; }));   // earlier checks started an AI run: start this section from the three demo profiles
+  await wait(400);
+  let h0 = await hdr(); c = await cfg();
+  check('header: with three profiles it shows segmented buttons, not the dropdown', h0.seg && !h0.sel && h0.names.length === 3, JSON.stringify(h0));
+  await p.click('#profile-manage'); await wait(150);
+  check('manager: the header button opens a dialog listing every profile', !!(await p.$('#pm [role="dialog"]')) && (await p.$$('#pm tr[data-prow]')).length === 3);
+  await p.keyboard.press('Escape'); await wait(100);
+  check('manager: Escape closes it', !(await p.$('#pm')));
+  await p.click('#profile-manage'); await wait(100);
+  await pmCreate('Gaming', 'Quiet'); c = await cfg();
+  check('manager: create makes a copy of the chosen profile (same rules, not the same object)', !!c.profiles.Gaming && JSON.stringify(c.profiles.Gaming) === JSON.stringify(c.profiles.Quiet) && Object.keys(c.profiles).length === 4, Object.keys(c.profiles).join());
+  const nRules = c.profiles.Gaming.length;
+  const nBefore = Object.keys(c.profiles).length;
+  const bad = [['', 'Give the profile a name'], ['   ', 'Give the profile a name'], ['stock', 'reserved'], ['STOCK', 'reserved'], ['balanced', 'already exists'], [' QUIET ', 'already exists'], ['x'.repeat(41), '40 characters'], ['bad\u0007name', 'control']];
+  const badRes = [];
+  for (const [n, want] of bad) { await pmCreate(n); badRes.push([JSON.stringify(n.slice(0, 8)), (await pmErr()).includes(want)]); }
+  c = await cfg();
+  check('manager: invalid names (empty, Stock, duplicate ignoring case, > 40 chars, control character) are refused with a message', badRes.every(x => x[1]) && Object.keys(c.profiles).length === nBefore, JSON.stringify(badRes.filter(x => !x[1])));
+  const XN = '<img src=x onerror=window.__xss=1>';
+  await pmCreate(XN); c = await cfg();
+  const xi = await p.evaluate(() => ({ xss: window.__xss, imgs: document.querySelectorAll('#pm img, #profile-seg img, #profile-sel img, #page-overview img, #page-cooling img').length, shown: document.querySelector('#pm tr[data-prow] b') ? [...document.querySelectorAll('#pm tr[data-prow] b')].some(b => b.textContent.includes('<img src=x')) : false }));
+  check('manager: an XSS-looking name is stored as plain text and renders inert (manager, header)', !!c.profiles[XN] && xi.xss === undefined && xi.imgs === 0 && xi.shown, JSON.stringify(xi));
+  for (const n of ['Night', 'Travel', 'Stream']) await pmCreate(n, 'Balanced');
+  c = await cfg(); h0 = await hdr();
+  check('header: with many profiles (8) the segmented buttons give way to a dropdown listing all of them', !h0.seg && h0.sel && h0.names.length === 8 && h0.names.includes(XN) && !(await p.$('#profile-seg button')), JSON.stringify(h0).slice(0, 200));
+  await p.keyboard.press('Escape'); await wait(100);
+  await p.select('#profile-sel', 'Night'); c = await cfg();
+  check('header dropdown: choosing a profile sends activeProfile', c.activeProfile === 'Night', c.activeProfile);
+  check('header dropdown reflects the active profile', (await hdr()).active === 'Night');
+  await wait(2700); await clearMsgs();
+  await p.click('#profile-manage'); await wait(100);
+  await p.click('#pm tr[data-prow="Travel"] [data-pm="rename"]'); await wait(100);
+  await p.evaluate(() => { document.getElementById('pm-ren').value = 'Stock'; }); await p.click('#pm [data-pm="rename-ok"]');
+  check('manager: renaming to a bad name shows an error and sends nothing', (await pmErr()).includes('reserved') && (await sent('profileRename')).length === 0);
+  await p.evaluate(() => { document.getElementById('pm-ren').value = 'Weekend'; }); await p.click('#pm [data-pm="rename-ok"]'); await wait(300);
+  const rm = await sent('profileRename');
+  c = await p.evaluate(() => window.__lastConfig); h0 = await hdr();
+  check('manager: rename sends one profileRename {from,to}; the page shows the host\'s result (renamed, same position)', rm.length === 1 && rm[0].from === 'Travel' && rm[0].to === 'Weekend' && h0.names.includes('Weekend') && !h0.names.includes('Travel') && Object.keys(c.profiles).indexOf('Weekend') === 6, JSON.stringify(rm) + ' ' + h0.names.join());
+  await p.click('#pm tr[data-prow="Night"] [data-pm="rename"]'); await wait(100);
+  await p.evaluate(() => { document.getElementById('pm-ren').value = 'Evening'; }); await p.click('#pm [data-pm="rename-ok"]'); await wait(300);
+  h0 = await hdr();
+  check('manager: renaming the active profile keeps it active', h0.active === 'Evening' && (await p.evaluate(() => S.cfg.activeProfile)) === 'Evening', h0.active);
+  check('manager: the active profile\'s Delete is disabled', await p.$eval('#pm tr[data-prow="Evening"] [data-pm="delete"]', b => b.disabled));
+  await clearMsgs();
+  await p.$eval('#pm tr[data-prow="Evening"] [data-pm="delete"]', b => { b.disabled = false; b.click(); }); await wait(200);
+  c = await cfg();
+  check('manager: deleting the active profile is refused even if the button is forced', (await pmErr()).includes('active profile') && !!c.profiles.Evening && (await sent('config')).length === 0, await pmErr());
+  dlg.accept = false; dlg.log.length = 0;
+  await p.click('#pm tr[data-prow="Stream"] [data-pm="delete"]'); await wait(200);
+  check('manager: delete asks first; cancelling keeps the profile', dlg.log.length === 1 && !!(await p.evaluate(() => S.cfg.profiles.Stream)));
+  dlg.accept = true;
+  await p.click('#pm tr[data-prow="Stream"] [data-pm="delete"]'); c = await cfg();
+  check('manager: confirmed delete removes the profile from the config', !c.profiles.Stream && Object.keys(c.profiles).length === 7, Object.keys(c.profiles).join());
+  const ord0 = Object.keys(c.profiles);
+  await p.click(`#pm tr[data-prow="${ord0[1]}"] [data-pm="up"]`); c = await cfg();
+  check('manager: move up reorders the profiles in the config', Object.keys(c.profiles)[0] === ord0[1] && Object.keys(c.profiles)[1] === ord0[0], Object.keys(c.profiles).join());
+  await p.click('#pm [data-pm="switch"]:not([disabled])'); c = await cfg();
+  check('manager: Switch makes a profile active', c.activeProfile !== 'Evening');
+  await p.click('#pm [data-pm="close"]'); await wait(100);
+  check('manager: closes with its button', !(await p.$('#pm')));
+  check('manager: the profile with an XSS-looking name did not run anything (after all operations)', (await p.evaluate(() => window.__xss)) === undefined);
+
+  // --- per-profile overclock table on the Tuning page
+  await tnTab('overview');
+  await p.evaluate(() => { document.getElementById('profile-sel').value = 'Balanced'; document.getElementById('profile-sel').dispatchEvent(new Event('change')); });
+  await nav('tuning'); await wait(700);
+  const rows = await p.$$eval('#tn-profiles [data-ocrow]', r => r.map(x => ({ n: x.dataset.ocrow, t: x.textContent.replace(/\s+/g, ' ') })));
+  const nProf = Object.keys(await cfg().then(x => x.profiles)).length;
+  check('profile list: Stock first, then only profiles that carry an overclock / undervolt (plain fan profiles hidden)', rows.length === 2 && rows.map(r => r.n).sort().join() === 'Balanced,Quiet' && nProf === 7 && !!(await p.$('#tn-profiles [data-stockrow]')), rows.map(r => r.n).join());
+  const rb = rows.find(r => r.n === 'Balanced'), rq = rows.find(r => r.n === 'Quiet'), rg = rows.find(r => r.n === 'Gaming');
+  check('profile list: one line per profile with what it carries (GPU offsets, CPU undervolt)', /GPU core \+120 · memory \+750/.test(rb.t) && /CPU undervolt -20/.test(rb.t) && !/untested/.test(rb.t) && rb.t.includes('In use'), rb.t);
+  const statsB = await p.$eval('[data-ocrow="Balanced"] .tn-pstats', e => ({ t: e.textContent.replace(/\s+/g, ' '), tip: e.querySelector('.tn-gain')?.title ?? '' })).catch(() => ({ t: '', tip: '' }));
+  check('profile list: each profile shows a compact headline (GPU gain vs stock, peak temp, power, CPU undervolt bars); full numbers on hover',
+    /\+8\.5% GPU/.test(statsB.t) && /71 °C · 331 W/.test(statsB.t) && /\+3\.1% CPU/.test(statsB.t) && /Clock 2985 MHz/.test(statsB.tip) && /compute 447/.test(statsB.tip)
+    && /all-core \+3\.1% · single-core \+2\.8% · clock 5100 → 5250 MHz · peak 88 → 83 °C/.test(await p.$eval('[data-ocrow="Balanced"] .tn-gain.cpu', e => e.title)) && /64 °C · 301 W/.test(await p.$eval('#tn-profiles [data-stockrow]', e => e.textContent)), JSON.stringify(statsB));
+  check('profile list: the PBO advice from the tune\'s load test shows as a tip (Glint cannot read the BIOS), reasoning on hover', await p.$eval('[data-ocrow="Balanced"] .tn-pbo', e => e.textContent === 'PBO tip: Auto' && /Thermal-limited/.test(e.title) && /can.t read or change the BIOS/.test(e.title)).catch(() => false));
+  check('profile list: an untested saved overclock is flagged', /core \+200/.test(rq.t) && /untested/.test(rq.t), rq.t);
+  check('profile list: a plain fan profile (no overclock) is not listed', !rg);
+  check('profile list: no clutter (no driver, dates, Clear buttons); the active profile has no Use button',
+    !rb.t.includes('999.99') && !(await p.$('#tn-profiles [data-pclear]')) && !(await p.$('[data-ocrow="Balanced"] [data-pswitch]')) && !!(await p.$('[data-ocrow="Quiet"] [data-pswitch]')));
+  const nt = await p.evaluate(() => { const d = document.querySelector('#tn-profiles details[data-pnotes="Balanced"]'); return d ? { sum: d.querySelector('summary').textContent, li: d.querySelectorAll('li').length, strong: d.querySelectorAll('strong').length, raw: d.textContent.includes('**'), quiet: !!document.querySelector('#tn-profiles details[data-pnotes="Quiet"]') } : null; });
+  check('profile notes: the tune record (what was set and why, incl. the CPU result) is saved with the profile and rendered as Markdown', nt && nt.sum.startsWith('What this tune set') && nt.li >= 3 && nt.strong >= 3 && !nt.raw && !nt.quiet, JSON.stringify(nt));
+  await p.click('#tn-profiles details[data-pnotes="Balanced"] summary'); await wait(3600);
+  check('profile notes: stay open across the 3 s refresh', await p.evaluate(() => document.querySelector('#tn-profiles details[data-pnotes="Balanced"]')?.open === true));
+  await clearMsgs(); await p.click('#tn-profiles [data-stock]'); await wait(500);
+  check('profile list: Stock is one click (stockAll) and then shows as in use', (await sent('tuning', m => m.op === 'stockAll')).length === 1 && /In use/.test(await p.$eval('#tn-profiles [data-stockrow]', e => e.textContent)) && /Use/.test(await p.$eval('[data-ocrow="Balanced"]', e => e.textContent)));
+  await clearMsgs(); await p.click('[data-ocrow="Quiet"] [data-pswitch]'); await wait(400); c = await cfg();
+  check('profile list: Use sends useProfile and the host makes it active (leaving stock)', (await sent('tuning', m => m.op === 'useProfile' && m.args.profile === 'Quiet')).length === 1 && c.activeProfile === 'Quiet' && !(await p.evaluate(() => S.tuning?.status?.stockMode)), c.activeProfile);
+  await wait(2700); await nav('overview'); await nav('tuning'); await wait(600); await clearMsgs();
+
+  // --- manual overclocking
+  await p.evaluate(() => { document.getElementById('profile-sel').value = 'Balanced'; document.getElementById('profile-sel').dispatchEvent(new Event('change')); }); await wait(500);
+  await p.evaluate(() => { S.tnMan = { core: 0, mem: 0, prof: null }; renderTuning(); }); await wait(700);
+  await tnTab('gpu');
+  const mx = await p.evaluate(() => ({ cm: +document.getElementById('tn-m-core').max, mm: +document.getElementById('tn-m-mem').max, info: document.getElementById('tn-m-info').textContent, pw: document.getElementById('tn-m-power').textContent, prof: document.getElementById('tn-m-prof').value }));
+  check('manual: sliders span 0..the card\'s limits (core 500, memory 3000)', mx.cm === 500 && mx.mm === 3000, JSON.stringify(mx));
+  check('manual: shows the applied offsets and the power-unlock state', mx.info.includes('Applied now') && /core \+0 MHz/.test(mx.info) && /unlocked/.test(mx.pw) && mx.pw.includes('340 W'), mx.info + ' | ' + mx.pw);
+  check('manual: "Save to" defaults to the active profile', mx.prof === 'Balanced', mx.prof);
+  const setN = async (id, v) => { await p.evaluate((i, x) => { const e = document.getElementById(i); e.value = x; e.dispatchEvent(new Event('change', { bubbles: true })); }, id, v); await wait(60); };
+  await setN('tn-m-core-n', 9999); await setN('tn-m-mem-n', -40);
+  let mv = await p.evaluate(() => ({ c: document.getElementById('tn-m-core').value, cn: document.getElementById('tn-m-core-n').value, m: document.getElementById('tn-m-mem').value }));
+  check('manual: values clamp to 0..limit (9999 → 500, −40 → 0), slider and number agree', mv.c === '500' && mv.cn === '500' && mv.m === '0', JSON.stringify(mv));
+  await p.evaluate(() => { const e = document.getElementById('tn-m-core'); e.value = 5000; e.dispatchEvent(new Event('input', { bubbles: true })); });
+  check('manual: the slider itself cannot exceed its limit', (await p.$eval('#tn-m-core-n', e => e.value)) === '500');
+  await setN('tn-m-core-n', 100); await setN('tn-m-mem-n', 500); await clearMsgs(); dlg.log.length = 0;
+  check('manual: a setting under a passing full test is shown as proven', /proven by a full test/.test(await p.$eval('#tn-m-info', e => e.textContent)));
+  await p.click('#tn-m-test'); await wait(150);
+  const ts = await sent('tuning', m => m.op === 'test');
+  check('manual: "Test 60 s" sends the test op for these offsets (60 s)', ts.length === 1 && ts[0].args.core === 100 && ts[0].args.memAb === 500 && ts[0].args.seconds === 60, JSON.stringify(ts));
+  await p.click('#tn-m-apply'); await wait(500);
+  const ap = await sent('tuning', m => m.op === 'manualApply');
+  check('manual: applying a proven setting asks nothing and sends no force', ap.length === 1 && dlg.log.length === 0 && ap[0].args.core === 100 && ap[0].args.memAb === 500 && !('force' in ap[0].args), JSON.stringify(ap));
+  check('manual: the applied offsets update after Apply', /core \+100 MHz · memory \+500/.test(await p.$eval('#tn-m-info', e => e.textContent)), await p.$eval('#tn-m-info', e => e.textContent));
+  await setN('tn-m-core-n', 300); await clearMsgs(); dlg.log.length = 0; dlg.accept = false;
+  check('manual: a setting above every passing test is flagged untested', /untested/.test(await p.$eval('#tn-m-info', e => e.textContent)));
+  await p.click('#tn-m-apply'); await wait(300);
+  check('manual: untested Apply asks first (explains the risk); cancelling sends nothing', dlg.log.length === 1 && /untested/i.test(dlg.log[0]) && /crash/i.test(dlg.log[0]) && (await sent('tuning', m => m.op === 'manualApply')).length === 0, dlg.log[0]?.slice(0, 80));
+  dlg.accept = true; await p.click('#tn-m-apply'); await wait(400);
+  const apf = await sent('tuning', m => m.op === 'manualApply');
+  check('manual: after confirming, the untested Apply is sent with force:true', apf.length === 1 && apf[0].args.force === true && apf[0].args.core === 300, JSON.stringify(apf));
+  await clearMsgs(); dlg.log.length = 0; dlg.accept = false;
+  await p.select('#tn-m-prof', 'Gaming'); await p.click('#tn-m-save'); await wait(300);
+  check('manual: untested Save to profile asks first; cancelling sends nothing', dlg.log.length === 1 && /Gaming/.test(dlg.log[0]) && (await sent('tuning', m => m.op === 'manualSave')).length === 0);
+  dlg.accept = true; await p.click('#tn-m-save'); await wait(600);
+  const sv = await sent('tuning', m => m.op === 'manualSave');
+  check('manual: confirmed untested Save sends the chosen profile with force:true, and the table shows it untested', sv.length === 1 && sv[0].args.profile === 'Gaming' && sv[0].args.force === true && /untested/.test(await p.$eval('[data-ocrow="Gaming"]', r => r.textContent)), JSON.stringify(sv));
+  await setN('tn-m-core-n', 100); await clearMsgs(); dlg.log.length = 0; await p.select('#tn-m-prof', 'Balanced'); await p.click('#tn-m-save'); await wait(300);
+  const sv2 = await sent('tuning', m => m.op === 'manualSave');
+  check('manual: a proven Save needs no confirmation and sends no force', dlg.log.length === 0 && sv2.length === 1 && sv2[0].args.profile === 'Balanced' && !('force' in sv2[0].args), JSON.stringify(sv2));
+  const allTn = await sent('tuning', () => true);
+  check('security: no tuning op other than manualApply / manualSave / cpuFinish ever carries force', (await p.evaluate(() => (window.__msgs ?? []).filter(m => m.type === 'tuning' && m.args && 'force' in m.args && !['manualApply', 'manualSave', 'cpuFinish'].includes(m.op)).length)) === 0);
+  await setN('tn-m-core-n', 0); await setN('tn-m-mem-n', 0);
+
+  // --- AI goal picker + "what should the end result be like?"
+  await tnTab('overview');
+  const st0 = await p.evaluate(() => ({ seg: [...document.querySelectorAll('#tn-style button b')].map(b => b.textContent), on: document.querySelector('#tn-style button.on b')?.textContent, ph: document.getElementById('tn-context').placeholder, max: document.getElementById('tn-context').maxLength }));
+  check('ai: goal picker has Quiet / Balanced / Performance / Custom (Balanced selected) and a textarea with example placeholder', JSON.stringify(st0.seg) === '["Quiet","Balanced","Performance","Custom"]' && st0.on === 'Balanced' && /fans never above 50%/.test(st0.ph) && st0.max === 1000, JSON.stringify(st0));
+  await p.evaluate(() => { const t = document.getElementById('tn-context'); t.value = 'x'.repeat(1100); t.dispatchEvent(new Event('input', { bubbles: true })); });
+  const cap = await p.evaluate(() => ({ len: document.getElementById('tn-context').value.length, n: document.getElementById('tn-ctx-n').textContent, saved: localStorage.getItem('glint.tn.context')?.length }));
+  check('ai: the context is capped at 1000 characters (value, counter, saved draft)', cap.len === 1000 && cap.n.includes('1000 / 1000') && cap.saved === 1000, JSON.stringify(cap));
+  await p.click('#tn-style [data-s="quiet"]');
+  const XC = 'Quiet please <img src=x onerror=window.__xss=1> "q" & more';
+  await p.evaluate(x => { const t = document.getElementById('tn-context'); t.value = x; t.dispatchEvent(new Event('input', { bubbles: true })); }, XC);
+  await p.evaluate(() => renderTuning()); await wait(300);
+  check('ai: the draft (style + text) survives a re-render and is kept in localStorage', (await p.$eval('#tn-context', t => t.value)) === XC && (await p.$eval('#tn-style button.on b', b => b.textContent)) === 'Quiet' && (await p.evaluate(() => localStorage.getItem('glint.tn.style'))) === 'quiet');
+  check('ai: GPU Performance / Efficiency choice, Performance by default, hidden (with its label) for a CPU-only tune', await p.$eval('#tn-gpumode button.on', e => e.dataset.m) === 'performance' && await (async () => { await p.click('#tn-goal [data-g="cpu"]'); const h = await p.$eval('#tn-gpumode', e => e.hidden) && await p.$eval('#tn-gpumode-l', e => e.hidden); await p.click('#tn-goal [data-g="all"]'); return h && !(await p.$eval('#tn-gpumode', e => e.hidden)); })());
+  check('ai: CPU Performance / Efficiency choice, Performance by default, hidden for a GPU-only tune', await p.$eval('#tn-cpumode button.on', e => e.dataset.m) === 'performance' && await p.$eval('#tn-cpumode', e => !e.hidden) && await (async () => { await p.click('#tn-goal [data-g="gpu"]'); const h = await p.$eval('#tn-cpumode', e => e.hidden); await p.click('#tn-goal [data-g="all"]'); return h; })());
+  check('ai: one notes box (optional for Quiet / Balanced / Performance), options on show', /optional/.test(await p.$eval('#tn-context', e => e.placeholder)) && !(await p.$('#tn-goaltext')) && !(await p.$('#tn-prefs')) && !!(await p.$('#tn-goal')) && !!(await p.$('#tn-budget')));
+  await wait(2700); await clearMsgs(); await p.click('#tn-ai-start'); await wait(900);
+  const as = await sent('tuning', m => m.op === 'aiStart');
+  check('ai: Tune with AI sends aiStart {goal, target, budgetMinutes, context} (no goalText unless Custom)', as.length === 1 && as[0].args.goal === 'quiet' && as[0].args.context === XC && as[0].args.budgetMinutes === 45 && as[0].args.target === 'all' && !('goalText' in as[0].args), JSON.stringify(as));
+  const ap0 = await p.evaluate(() => ({ badge: document.querySelector('#tn-profiles [data-ocrow="Quiet (tuned)"] .oc-tag.ai')?.textContent, rs: !!document.getElementById('tn-restore'), act: S.cfg.activeProfile, hint: document.getElementById('tn-go-to')?.textContent ?? '' }));
+  check('ai: the tune runs in its own new profile ("Quiet (tuned)", AI badge, active), with no "go back" step', ap0.badge === 'AI' && ap0.act === 'Quiet (tuned)' && !ap0.rs, JSON.stringify(ap0));
+  await p.click('#profile-manage'); await wait(150);
+  check('manager: AI-made profiles carry an AI badge and a note that re-tuning recreates them', await p.$eval('#pm tr[data-prow="Quiet (tuned)"]', r => !!r.querySelector('.oc-tag.ai')) && (await p.$eval('#pm .card-sub', e => e.textContent)).includes('recreates'));
+  await p.keyboard.press('Escape'); await wait(100);
+  const ran = await p.evaluate(() => ({ t: document.getElementById('tn-ai-ran').textContent, imgs: document.querySelectorAll('#page-tuning img').length, xss: window.__xss }));
+  check('ai: the card shows the running goal and context, and the hostile text is inert (esc / textContent)', /Goal: Quiet/.test(ran.t) && ran.t.includes('<img src=x') && ran.imgs === 0 && ran.xss === undefined, JSON.stringify(ran).slice(0, 220));
+  await p.click('#tn-ai-stop'); await wait(400);
+  await p.click('#tn-style [data-s="custom"]'); await clearMsgs();
+  check('ai: for Custom the same box asks for the goal', /required for Custom/.test(await p.$eval('#tn-context', e => e.placeholder)));
+  await p.evaluate(() => { const t = document.getElementById('tn-context'); t.value = ''; t.dispatchEvent(new Event('input', { bubbles: true })); });
+  await p.click('#tn-ai-start'); await wait(300);
+  check('ai: a Custom goal with no sentence does not start', (await sent('tuning', m => m.op === 'aiStart')).length === 0);
+  await p.evaluate(() => { const t = document.getElementById('tn-context'); t.value = 'Silent gaming <img src=x onerror=window.__xss=1>' + ' and more'.repeat(60); t.dispatchEvent(new Event('input', { bubbles: true })); });
+  await p.click('#tn-ai-start'); await wait(900);
+  const cs = await sent('tuning', m => m.op === 'aiStart');
+  const cr = await p.evaluate(() => ({ t: document.getElementById('tn-ai-ran').textContent, imgs: document.querySelectorAll('#page-tuning img').length, xss: window.__xss }));
+  check('ai: a Custom run sends goalText; it is shown back as plain text', cs.length === 1 && cs[0].args.goal === 'custom' && cs[0].args.goalText.startsWith('Silent gaming <img') && cs[0].args.goalText.length <= 300 && /Goal: Custom \(Silent gaming <img/.test(cr.t) && cr.imgs === 0 && cr.xss === undefined, JSON.stringify(cr).slice(0, 200));
+  check('history: a Fans column shows the average / peak fan duty of tests that measured it', (await p.$$eval('#tn-history .fan-chip', e => e.length)) > 0 && (await p.$eval('#tn-history thead', e => e.textContent)).includes('Fans'));
+  check('cpu: the card shows the goal plan and the undervolt note', await p.$eval('#tn-cpu-plan', e => e.textContent.includes('Power limits (PBO)') && e.textContent.includes('Undervolt') && e.textContent.includes('quiet')) && (await p.$eval('#tn-co-note', e => e.textContent)).includes('undervolts'));
+  await p.click('#tn-ai-stop'); await wait(300);
+  await p.click('#tn-style [data-s="balanced"]');
+  p.off('dialog', dlgFn);
+
+  // --- the dashboard refreshes after changes made elsewhere (configChanged push); never under the user's typing
+  await nav('cooling'); await wait(2700);
+  await p.evaluate(() => { document.querySelector('#page-cooling').firstElementChild.dataset.sentinel = '1'; });
+  const sentinel = () => p.evaluate(() => !!document.querySelector('#page-cooling [data-sentinel]'));
+  await p.evaluate(() => window.__mockConfigChanged(() => { }));
+  await wait(300);
+  check('configChanged: an identical config does not re-render the page', await sentinel());
+  const curve0 = await p.evaluate(() => Object.keys(S.cfg.curves)[0]);
+  const v0 = await p.evaluate(c0 => S.cfg.curves[c0][1][1], curve0);
+  await p.evaluate(c0 => window.__mockConfigChanged(c => { c.curves[c0][1][1] += 3; c.profiles['Remote'] = JSON.parse(JSON.stringify(c.profiles.Balanced)); }), curve0); await wait(300);
+  const v1 = await p.evaluate(c0 => S.cfg.curves[c0][1][1], curve0);
+  h0 = await hdr();
+  check('configChanged: a change made elsewhere re-renders (new profile in the header, the curve value changed, page rebuilt)', v1 === v0 + 3 && h0.names.includes('Remote') && !(await sentinel()) && (await p.$$eval('#c-profile option', o => o.map(x => x.textContent))).includes('Remote'), `${v0} → ${v1} ${h0.names.join()}`);
+  await p.evaluate(() => { document.querySelector('#page-cooling').firstElementChild.dataset.sentinel = '1'; });
+  await p.click('#c-name'); await p.keyboard.type('x'); await wait(2700);
+  await p.evaluate(() => window.__mockConfigChanged(c => { c.profiles['Remote2'] = JSON.parse(JSON.stringify(c.profiles.Balanced)); }));
+  await wait(300);
+  h0 = await hdr();
+  check('configChanged: while the user is typing in an input nothing re-renders (header and page untouched)', !h0.names.includes('Remote2') && await sentinel() && (await p.evaluate(() => document.activeElement?.id)) === 'c-name', h0.names.join());
+  await p.$eval('#c-name', e => e.blur()); await wait(300);
+  h0 = await hdr();
+  check('configChanged: the change applies once the field loses focus', h0.names.includes('Remote2') && !(await sentinel()), h0.names.join());
+  await nav('tuning'); await wait(500);
+
+  await tnTab('gpu');
+  check('tuning: no apply-at-startup setting (the active profile always re-applies)', !(await p.$('#tn-startup')));
+  p.once('dialog', d => d.accept());
+  await p.click('#tn-enabled'); await wait(200);
+  const tc = await cfg();
+  check('tuning: turning it off goes through the config and hides the controls', tc?.tuning?.enabled === false && !(await p.$('#tn-log')));
+  check('tuning: off state explains nothing is touched', await p.$eval('#page-tuning', el => el.textContent.includes('never touches your clocks')));
   const report = { passed: checks.filter(x => x.pass).length, failed: checks.filter(x => !x.pass).length, checks, errors };
   fs.writeFileSync(out, JSON.stringify(report, null, 2));
   console.log(`passed ${report.passed} failed ${report.failed}`);

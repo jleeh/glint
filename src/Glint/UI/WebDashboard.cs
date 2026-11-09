@@ -16,6 +16,7 @@ namespace Glint.UI;
 public sealed class WebDashboard : Form
 {
     readonly GlintService _svc;
+    readonly Action? _openMonitor;
     readonly WebView2 _web = new() { Dock = DockStyle.Fill, DefaultBackgroundColor = Color.FromArgb(12, 13, 18) };
     readonly System.Windows.Forms.Timer _state = new() { Interval = 1000 }, _preview = new() { Interval = 50 };
     bool _ready;
@@ -25,12 +26,15 @@ public sealed class WebDashboard : Form
 
     [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
 
-    public WebDashboard(GlintService svc)
+    public WebDashboard(GlintService svc, Action? openMonitor = null)
     {
         _svc = svc;
+        _openMonitor = openMonitor;
         Text = "Glint";
-        Size = new Size(1320, 860);
-        MinimumSize = new Size(980, 640);
+        // sizes are in 96-dpi units: PerMonitorV2 makes Size physical pixels, so 1320 px was only ~880 wide on a 4K screen at 150 %
+        var wa = Screen.FromPoint(Cursor.Position).WorkingArea;
+        Size = WindowFit.Fit(1560, 960, DeviceDpi, wa);
+        MinimumSize = WindowFit.Fit(980, 640, DeviceDpi, wa);
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = Color.FromArgb(12, 13, 18);
         Icon = TrayApp.AppIcon;
@@ -38,11 +42,15 @@ public sealed class WebDashboard : Form
         _state.Tick += (_, _) =>
         {
             Push(StateMessage());
+            // tuning status only while the Tuning page is open (it asks every few seconds; nothing is read otherwise)
+            if (Environment.TickCount64 < _tuningUntil) Push(TuningMessage());
             if (_svc.Rig.CatalogWanted && _svc.Rig.Catalog is { } cat && cat.Time != _lastCatalog) { _lastCatalog = cat.Time; Push(new { type = "sensors", catalog = cat }); }
         };
         _preview.Tick += (_, _) => Push(PreviewMessage());
         Plugins.PluginHost.EffectsChanged += OnPluginsChanged;
-        FormClosed += (_, _) => { _svc.Lighting.StopTestPattern(); Plugins.PluginHost.EffectsChanged -= OnPluginsChanged; _state.Dispose(); _preview.Dispose(); _web.Dispose(); };
+        // config changed elsewhere (MCP, CLI, tray, Home Assistant, a file edit): show it without reopening the window
+        _svc.ConfigApplied += OnConfigApplied;
+        FormClosed += (_, _) => { _svc.ConfigApplied -= OnConfigApplied; _svc.Lighting.StopTestPattern(); Plugins.PluginHost.EffectsChanged -= OnPluginsChanged; _state.Dispose(); _preview.Dispose(); _web.Dispose(); };
         _ = InitAsync();
     }
 
@@ -108,10 +116,56 @@ public sealed class WebDashboard : Form
     /// <summary>Notepad by absolute path, for a plugin file / the config.</summary>
     public static void OpenInNotepad(string file) => Process.Start(new ProcessStartInfo(Sys32("notepad.exe"), $"\"{file}\"") { UseShellExecute = false });
 
+    /// <summary>After an update check: push the fresh answer (the dashboard's "Check now" waits for this).</summary>
+    async Task RefreshUpdate(Task<UpdateInfo> check)
+    {
+        UpdateInfo info;
+        try { info = await check; } catch { info = _svc.Updates.Info; }
+        try { if (!IsDisposed) BeginInvoke(() => Push(new { type = "updateInfo", update = info })); } catch { }
+    }
+
     void Push(object msg)
     {
         if (!_ready || _web.CoreWebView2 == null) return;
         try { _web.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(msg, GlintConfig.Json)); } catch { }
+    }
+
+    void OnConfigApplied(GlintConfig c)
+    {
+        try { BeginInvoke(() => { if (_ready) Push(new { type = "configChanged", config = PageConfig(c) }); }); } catch { }
+    }
+
+    long _tuningUntil;
+    object TuningMessage()
+    {
+        try
+        {
+            return new { type = "tuning", status = _svc.Tuning.Status(), ai = _svc.Ai.Status(), cpu = _svc.Cpu.Status(),
+                         crashes = new { watching = _svc.Crashes.Running, events = _svc.Crashes.Records.TakeLast(20).Reverse(), cpuCoresToLoosen = _svc.Crashes.CoresToLoosen() } };
+        }
+        catch (Exception e) { return new { type = "tuning", error = e.Message }; }
+    }
+
+    static object? Open(Action a) { a(); return null; }
+
+    /// <summary>Run a slow tuning action (stops that join threads, SMU tool calls) off the UI thread; errors come back as a toast,
+    /// and the page gets a fresh status when it's done.</summary>
+    object? Slow(Func<object?> work)
+    {
+        _ = Task.Run(() =>
+        {
+            string? err = null;
+            try { work(); } catch (Exception e) { err = e.Message; }
+            try { if (!IsDisposed) BeginInvoke(() => { if (err != null) Push(new { type = "toast", kind = "error", text = err }); Push(TuningMessage()); }); } catch { }
+        });
+        return null;
+    }
+
+    /// <summary>One page of the saved test history for the Tuning page's pagination.</summary>
+    object HistoryMessage(int offset, int limit)
+    {
+        var h = _svc.Tuning.History(offset, limit);
+        return new { type = "tuningHistory", history = h };
     }
 
     void OnMessage(string json)
@@ -126,6 +180,10 @@ public sealed class WebDashboard : Form
                 Push(StateMessage());
                 _state.Start();
                 RunSetupCheck(); // once per dashboard open, for the sidebar badge and the Overview banner
+                _ = RefreshUpdate(_svc.Updates.CheckIfStale(UpdateChecker.StaleOnOpen));
+                break;
+            case "checkUpdate":
+                _ = RefreshUpdate(_svc.Updates.CheckRequested());
                 break;
             case "setupCheck":
                 RunSetupCheck();
@@ -175,11 +233,59 @@ public sealed class WebDashboard : Form
                 }
                 catch (Exception e) { Push(new { type = "toast", kind = "error", text = "Couldn't apply: " + e.Message }); }
                 break;
+            case "profileRename":
+                {
+                    // goes through GlintService.RenameProfile: validated, the overclock and activeProfile follow
+                    var err = _svc.RenameProfile((string?)m!["from"] ?? "", (string?)m["to"] ?? "");
+                    if (err != null) { Push(new { type = "toast", kind = "error", text = "Not renamed: " + err }); Push(InitMessage()); }
+                    break;
+                }
             case "sensorsWanted":
                 _svc.Rig.WantCatalog();
                 if ((bool?)m!["reset"] == true) _svc.Rig.ResetCatalogMinMax();
                 if (_svc.Rig.Catalog is { } now) { _lastCatalog = now.Time; Push(new { type = "sensors", catalog = now }); }
                 break;
+            case "tuning":
+                {
+                    _tuningUntil = Environment.TickCount64 + 6000;
+                    var op = (string?)m!["op"] ?? "status";
+                    var a = m["args"] as JsonObject ?? new JsonObject();
+                    int I(string k) => a[k] is JsonValue v && v.TryGetValue<double>(out var d) && double.IsFinite(d) ? (int)Math.Round(d) : throw new ArgumentException(k + " must be a number");
+                    try
+                    {
+                        _ = op switch
+                        {
+                            "status" => null,
+                            // goal = quiet | balanced | performance | custom (goalText for custom), target = gpu | cpu | all, context = the user's wishes
+                            "aiStart" => _svc.StartTune((string?)a["goal"] ?? "balanced", (int?)(double?)a["budgetMinutes"] ?? 45, (string?)a["context"], (string?)a["target"], (string?)a["goalText"], (string?)a["cpuMode"], (string?)a["gpuMode"]),
+                            // back to the profile that was active before the AI switched to its own
+                            "profileRestore" => _svc.AiFans.Restore(),
+                            "aiStop" => Slow(() => _svc.StopAll()),
+                            "stockAll" => Slow(() => _svc.UseStock()),
+                            "useProfile" => Slow(() => _svc.UseProfile((string?)a["profile"] ?? throw new ArgumentException("profile is required"))),
+                            "saveCpu" => Slow(() => _svc.SaveCpu((string?)a["profile"] ?? throw new ArgumentException("profile is required"), a["values"] is System.Text.Json.Nodes.JsonArray arr ? arr.Select(x => x is JsonValue v && v.TryGetValue<double>(out var d) && double.IsFinite(d) ? (int)Math.Round(d) : throw new ArgumentException("values must be numbers")).ToArray() : null)),
+                            "history" => Open(() => Push(HistoryMessage(Math.Max(0, (int?)(double?)a["offset"] ?? 0), Math.Clamp((int?)(double?)a["limit"] ?? 15, 1, 100)))),
+                            "monitor" => Open(() => _openMonitor?.Invoke()),
+                            "stop" => Slow(() => _svc.StopAll()),
+                            "stock" => _svc.Tuning.Stock(),
+                            "applySaved" => new { applied = true, note = _svc.Tuning.ApplySaved() },   // as a profile switch: its power limit, untested-but-saved results too
+                            // manual overclocking: force = the user confirmed an untested setting in the dashboard (never from the AI / MCP)
+                            "manualApply" => _svc.Tuning.Apply(I("core"), I("memAb"), (bool?)a["force"] ?? false),
+                            "manualSave" => _svc.Tuning.SaveResult(I("core"), I("memAb"), (string?)a["profile"], (bool?)a["force"] ?? false),
+                            "test" => _svc.Tuning.StartGpuTest(I("core"), I("memAb"), (double?)a["seconds"] ?? 60, (bool?)a["light"] ?? false),
+                            // clear one profile's saved overclock (the profile must exist in the config)
+                            "clearProfile" => (string?)a["profile"] is { } cp && _svc.Config.Profiles.ContainsKey(cp) ? _svc.Tuning.ClearProfile(cp) : throw new ArgumentException("no such profile"),
+                            "clearRevert" => _svc.Tuning.ClearRevert(),
+                            "cpuFinish" => _svc.Cpu.Finish((bool?)a["force"] ?? false),
+                            "cpuStop" => _svc.Cpu.Stop(),
+                            "cpuCheck" => Slow(() => _svc.Cpu.ProbeSmu()),
+                            _ => throw new InvalidOperationException("unknown tuning action " + op),
+                        };
+                    }
+                    catch (Exception e) when (e is InvalidOperationException or ArgumentException or KeyNotFoundException or FormatException or InvalidCastException or NullReferenceException) { Push(new { type = "toast", kind = "error", text = e.Message }); }
+                    Push(TuningMessage());
+                    break;
+                }
             case "sensorsReset":
                 _svc.Rig.ResetCatalogMinMax();
                 break;
@@ -372,5 +478,16 @@ public sealed class WebDashboard : Form
         _svc.Lighting.WantField();
         var field = _svc.Lighting.Field;
         return new { type = "preview", rgb = Convert.ToBase64String(bytes), field = field == null ? null : Convert.ToBase64String(field), fw = LightingEngine.FieldW, fh = LightingEngine.FieldH };
+    }
+}
+
+/// <summary>A window size given in 96-dpi units, scaled to the monitor's DPI and kept inside 94 % of its working area.</summary>
+public static class WindowFit
+{
+    public static Size Fit(int w, int h, int dpi, Rectangle workArea)
+    {
+        double k = Math.Max(dpi, 96) / 96.0;
+        int maxW = (int)(workArea.Width * 0.94), maxH = (int)(workArea.Height * 0.94);
+        return new Size(Math.Max(320, Math.Min((int)Math.Round(w * k), maxW)), Math.Max(320, Math.Min((int)Math.Round(h * k), maxH)));
     }
 }

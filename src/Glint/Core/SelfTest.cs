@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Glint.Devices;
@@ -36,6 +36,9 @@ public static class SelfTest
             bad.ActiveProfile = "Missing";
             var v1 = ConfigValidator.Validate(bad);
             string[] expect = { "strictly increase", "greater than maxDuty", "unknown curve \"nope\"", "lighting.brightness", "unknown effect type", "#rrggbb", "activeProfile" };
+            { var pn = GlintConfig.Defaults(); pn.Profiles["x\u0001y"] = pn.Profiles["Quiet"]; pn.Profiles["BALANCED "] = pn.Profiles["Quiet"]; pn.Profiles["stock"] = pn.Profiles["Quiet"]; pn.Profiles[new string('a', 41)] = pn.Profiles["Quiet"]; pn.Profiles["<img src=x onerror=1>"] = pn.Profiles["Quiet"];
+              var pe = ConfigValidator.Validate(pn); string[] want = { "control characters", "unique ignoring case", "reserved", "longer than 40" };
+              C("validator: profile names (control chars, duplicates ignoring case, \"Stock\", > 40 chars rejected; odd markup allowed as plain text)", want.All(w => pe.Any(x => x.Contains(w))) && !pe.Any(x => x.Contains("img")), string.Join("; ", pe)); }
             C("validator: catches curve order, min>max, unknown curve, brightness, effect type, colour, active profile", expect.All(e => v1.Any(x => x.Contains(e))), string.Join("; ", expect.Where(e => !v1.Any(x => x.Contains(e)))));
             var withSensor = GlintConfig.Defaults(); withSensor.Profiles["Balanced"][0].Inputs[0].Sensor = "max(cpu,xt:ghost)";
             var ctx = new ValidationContext { Sensors = new[] { "cpu", "gpu" }, Fans = new[] { "st:pump" } };
@@ -629,6 +632,33 @@ public static class SelfTest
         SelfTestV02.Run(C);
         SelfTestSecurity.Run(C);
         SelfTestUpdater.Run(C);
+        // ---- fan input state follows the input, not its position (removing / adding an input must not hand its
+        // smoothed temperature to a neighbour: once made "liquid" read the CPU's 70 °C and a new case-air input read 100%)
+        {
+            var cfg = GlintConfig.Defaults();
+            cfg.Curves["hot"] = new() { new[] { 40.0, 20 }, new[] { 80.0, 100 } };
+            cfg.Curves["cool"] = new() { new[] { 30.0, 20 }, new[] { 50.0, 100 } };
+            var rule = new FanRule { Name = "r", Fans = new() { "f" }, Inputs = new() {
+                new FanInput { Sensor = "cpu", Curve = "hot", SmoothingSec = 20 }, new FanInput { Sensor = "liquid", Curve = "cool", SmoothingSec = 20 } } };
+            cfg.Profiles[cfg.ActiveProfile] = new() { rule };
+            var e = new FanEngine();
+            var sens = new Dictionary<string, double> { ["cpu"] = 78, ["liquid"] = 31, ["probe"] = 29 };
+            for (int i = 0; i < 30; i++) e.Compute(cfg, sens, 1);
+            rule.Inputs.RemoveAt(0);                                   // liquid moves to index 0
+            e.Compute(cfg, sens, 1);
+            string ex = e.LastExplain.GetValueOrDefault("f") ?? "";
+            C("fans: removing an input doesn't hand its temperature to the next one", ex.Contains("liquid=31.0°→24%"), ex);
+            rule.Inputs.Insert(0, new FanInput { Sensor = "probe", Curve = "cool", SmoothingSec = 20 });   // new input at a used index
+            e.Compute(cfg, sens, 1);
+            ex = e.LastExplain.GetValueOrDefault("f") ?? "";
+            C("fans: a new input starts from its own reading", ex.Contains("probe=29.0°→20%") && ex.Contains("liquid=31.0°→24%"), ex);
+            sens["liquid"] = 25;                                         // falls by more than the hysteresis band: duty from the held value
+            rule.Inputs[1].Hysteresis = 3; e.Compute(cfg, sens, 1);
+            ex = e.LastExplain.GetValueOrDefault("f") ?? "";
+            C("fans: explain shows the held value the duty came from when it differs from the reading", ex.Contains("liquid=25.0° (held") && ex.Contains("→"), ex);
+        }
+        try { Glint.Tuning.GpuTuningTests.Run(C); Glint.Tuning.TuningTests.Run(C); Glint.Tuning.CrashWatchTests.Run(C); Glint.Tuning.CpuTuningTests.Run(C); Glint.Tuning.AiGoalTests.Run(C); }
+        catch (Exception e) { C("tuning: suite ran", false, e.ToString()); }
 
         // ---------------- Home Assistant over MQTT (in-process fake broker on 127.0.0.1)
         try { HomeAssistantChecks(C); }
@@ -1208,6 +1238,34 @@ public static class SelfTest
             broker.Send("homeassistant/status", "online");
             C("HA: discovery re-published when HA comes online", WaitFor(() => broker.Published().Count(p => p.Topic.EndsWith("/config")) >= discBefore * 2, 3000),
               $"{discBefore} → {broker.Published().Count(p => p.Topic.EndsWith("/config"))}");
+
+            // profiles can be added and renamed (more than three): the select follows, a renamed active profile stays active
+            var posQuiet = svc.Config.Profiles.Keys.ToList().IndexOf("Quiet");
+            svc.Tuning.State.Profiles["Quiet"] = new Glint.Tuning.GpuSaved(100, 500, DateTime.Now, "1", "v", 100, 500);
+            var rn = svc.RenameProfile("Quiet", "Silent & Calm");
+            C("profiles: rename keeps its position, activeProfile follows, the overclock follows", rn == null && svc.Config.ActiveProfile == "Silent & Calm" && svc.Config.Profiles.Keys.ToList().IndexOf("Silent & Calm") == posQuiet
+              && svc.Tuning.State.Profiles.ContainsKey("Silent & Calm") && !svc.Tuning.State.Profiles.ContainsKey("Quiet"), rn ?? "");
+            C("HA: select options follow a renamed profile", WaitFor(() => Disc("select", "fan_profile")?["options"]?.AsArray().Select(x => (string?)x).Contains("Silent & Calm") == true, 4000), Disc("select", "fan_profile")?.ToJsonString() ?? "");
+            C("HA: the renamed (active) profile is published as the state", WaitFor(() => broker.Published().Any(p => p.Topic == selState && p.Payload == "Silent & Calm"), 4000), "");
+            var more = System.Text.Json.JsonSerializer.Deserialize<GlintConfig>(System.Text.Json.JsonSerializer.Serialize(svc.Config, GlintConfig.Json), GlintConfig.Json)!;
+            more.Profiles["Gaming"] = more.Profiles["Balanced"]; more.Profiles["Night"] = more.Profiles["Balanced"]; svc.Apply(more);
+            C("HA: select options list every profile (5)", WaitFor(() => Disc("select", "fan_profile")?["options"]?.AsArray().Count == 5, 4000), Disc("select", "fan_profile")?["options"]?.ToJsonString() ?? "");
+            broker.Send(selCmd, "Night");
+            C("HA: select switches to a profile added later", WaitFor(() => svc.Config.ActiveProfile == "Night", 3000), svc.Config.ActiveProfile);
+            broker.Send(selCmd, "No such profile");
+            Thread.Sleep(300);
+            C("HA: select command for an unknown profile is ignored", svc.Config.ActiveProfile == "Night", svc.Config.ActiveProfile);
+            var tray = Glint.UI.TrayApp.ProfileItems(svc.Config, _ => { });
+            C("tray: one item per profile (all 5), the active one ticked, '&' escaped", tray.Count == 5 && tray.Count(i => i.Checked) == 1 && tray.Single(i => i.Checked).Text == "Night" && tray.Any(i => i.Text == "Silent && Calm"), string.Join("|", tray.Select(i => i.Text)));
+            var sw = ""; Glint.UI.TrayApp.ProfileItems(svc.Config, n => sw = n).First(i => i.Text == "Gaming").PerformClick();
+            C("tray: clicking a profile item picks that profile", sw == "Gaming", sw);
+            var del = System.Text.Json.JsonSerializer.Deserialize<GlintConfig>(System.Text.Json.JsonSerializer.Serialize(svc.Config, GlintConfig.Json), GlintConfig.Json)!;
+            del.Profiles.Remove("Silent & Calm"); svc.Apply(del);
+            C("profiles: deleting a profile clears its overclock", WaitFor(() => !svc.Tuning.State.Profiles.ContainsKey("Silent & Calm"), 3000), "");
+            // put the names back for the rest of the suite
+            var restore = System.Text.Json.JsonSerializer.Deserialize<GlintConfig>(System.Text.Json.JsonSerializer.Serialize(svc.Config, GlintConfig.Json), GlintConfig.Json)!;
+            restore.Profiles["Quiet"] = restore.Profiles["Balanced"]; restore.Profiles.Remove("Gaming"); restore.Profiles.Remove("Night"); restore.ActiveProfile = "Balanced"; svc.Apply(restore);
+
 
             var st = JsonSerializer.SerializeToNode(svc.HomeAssistant.Status())!;
             C("HA: config changes outside the HA section don't reconnect", broker.Connects == 1 && (bool?)st["connected"] == true && (int?)st["reconnects"] == 0 && (int?)st["entities"] >= 6, st.ToJsonString());

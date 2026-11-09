@@ -7,6 +7,8 @@ namespace Glint.Core;
 /// </summary>
 public sealed class FanEngine
 {
+    /// <summary>Minimum duty for graphics-card fans while a GPU stress test runs (0 = none). Set by the tuning service.</summary>
+    public volatile int GpuBoost;
     readonly Dictionary<string, double> _smoothed = new();
     readonly Dictionary<string, double> _held = new();      // hysteresis-held temperature per input
     readonly Dictionary<string, double> _duty = new();      // last output per fan
@@ -43,10 +45,14 @@ public sealed class FanEngine
     }
 
     /// <summary>Compute duties for all fans in the profile.</summary>
+    static string InputKey(FanRule rule, FanInput inp) =>
+        $"{rule.Name}|{inp.Sensor}|{inp.Curve}|{(inp.Points == null ? "" : string.Join(";", inp.Points.Select(p => string.Join(",", p))))}";
+
     public Dictionary<string, int> Compute(GlintConfig cfg, IReadOnlyDictionary<string, double> sensors, double dtSec)
     {
         var result = new Dictionary<string, int>();
         LastExplain.Clear();
+        var seen = new HashSet<string>();
         foreach (var (rule, ri) in cfg.Active.Select((r, i) => (r, i)))
         {
             double target;
@@ -66,7 +72,10 @@ public sealed class FanEngine
                 for (int ii = 0; ii < rule.Inputs.Count; ii++)
                 {
                     var inp = rule.Inputs[ii];
-                    string key = $"{ri}:{ii}";
+                    // State belongs to the input itself (rule + sensor + curve), not to its position: removing or adding an
+                    // input must not hand another input's smoothed / held temperature to its neighbour.
+                    string key = InputKey(rule, inp);
+                    seen.Add(key);
                     double raw = Resolve(inp.Sensor, sensors);
                     if (double.IsNaN(raw) || raw < -20 || raw > 150)
                     {
@@ -85,7 +94,8 @@ public sealed class FanEngine
                     _held[key] = held;
                     var pts = inp.Points ?? (inp.Curve != null && cfg.Curves.TryGetValue(inp.Curve, out var c) ? c : null);
                     double d = pts == null ? cfg.FailsafeDuty : Interpolate(pts, held);
-                    parts.Add((d, inp.Weight, $"{inp.Sensor}={raw:0.0}°→{d:0}%"));
+                    // show the value the duty came from: smoothing / hysteresis can hold it above the live reading
+                    parts.Add((d, inp.Weight, Math.Abs(held - raw) >= 0.05 ? $"{inp.Sensor}={raw:0.0}° (held {held:0.0}°)→{d:0}%" : $"{inp.Sensor}={raw:0.0}°→{d:0}%"));
                 }
                 target = rule.Combine switch
                 {
@@ -109,16 +119,22 @@ public sealed class FanEngine
 
             foreach (var fan in rule.Fans)
             {
-                double cur = _duty.TryGetValue(fan, out var c0) ? c0 : target;
+                // GPU stress test running: graphics-card fans held at least at the boost (only ever raises a duty)
+                double tgt = GpuBoost > 0 && fan.StartsWith("gpu", StringComparison.Ordinal) ? Math.Max(target, GpuBoost) : target;
+                bool boosted = tgt > target;
+                double cur = _duty.TryGetValue(fan, out var c0) ? c0 : tgt;
                 double up = rule.RampUpPerSec * dtSec, down = rule.RampDownPerSec * dtSec;
                 // Failsafe / fixed jumps are never ramp-limited upward.
-                if (target >= cfg.FailsafeDuty || rule.Fixed != null || manual) cur = target;
-                else cur = target > cur ? Math.Min(target, cur + up) : Math.Max(target, cur - down);
+                if (tgt >= cfg.FailsafeDuty || rule.Fixed != null || manual || boosted) cur = tgt;
+                else cur = tgt > cur ? Math.Min(tgt, cur + up) : Math.Max(tgt, cur - down);
                 _duty[fan] = cur;
                 result[fan] = (int)Math.Round(cur);
-                LastExplain[fan] = $"{result[fan]}% ← {why}";
+                LastExplain[fan] = boosted ? $"{result[fan]}% ← tuning test boost" : $"{result[fan]}% ← {why}";
             }
         }
+        // forget inputs that no longer exist (renamed / removed rules and inputs)
+        foreach (var k in _smoothed.Keys.Where(k => !seen.Contains(k)).ToList()) _smoothed.Remove(k);
+        foreach (var k in _held.Keys.Where(k => !seen.Contains(k)).ToList()) _held.Remove(k);
         return result;
     }
 }

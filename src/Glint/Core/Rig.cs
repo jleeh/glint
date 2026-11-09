@@ -231,7 +231,7 @@ public sealed class Rig : IDisposable
                 CpuMeter.Add("lhm " + hw.HardwareType.ToString().ToLowerInvariant(), CpuMeter.ThreadMs() - h0);
             }
             _ = c0;
-            double gpuCore = double.NaN, gpuHot = double.NaN, cpu = double.NaN, nvme = double.NaN, dimm = double.NaN;
+            double gpuCore = double.NaN, gpuHot = double.NaN, gpuMem = double.NaN, cpu = double.NaN, nvme = double.NaN, dimm = double.NaN;
             foreach (var (key, s) in _lhmTemps)
             {
                 if (s.Value is not float v || v <= 0 || v > 150) continue;
@@ -247,6 +247,8 @@ public sealed class Rig : IDisposable
                     case HardwareType.GpuNvidia or HardwareType.GpuAmd or HardwareType.GpuIntel when !root.Name.Contains("Radeon(TM) Graphics"):
                         if (s.Name == "GPU Core" && double.IsNaN(gpuCore)) gpuCore = v;
                         if (s.Name == "GPU Hot Spot" && double.IsNaN(gpuHot)) gpuHot = v;
+                        // NVAPI reports 255 (and 0 without admin) when it has no reading: never a temperature to act on
+                        if (s.Name == "GPU Memory Junction" && double.IsNaN(gpuMem) && Glint.Tuning.TuningLimits.ValidTemp(v) is double mj) gpuMem = mj;
                         break;
                     case HardwareType.Motherboard:
                         d["mb:" + s.Name] = v; break;
@@ -277,6 +279,7 @@ public sealed class Rig : IDisposable
             if (!double.IsNaN(cpu)) d["cpu"] = cpu;
             if (!double.IsNaN(gpuCore)) d["gpu"] = gpuCore;
             if (!double.IsNaN(gpuHot)) d["gpu.hotspot"] = gpuHot;
+            if (!double.IsNaN(gpuMem)) d["gpu.memjunction"] = gpuMem;
             var disks = d.Where(k => k.Key.StartsWith("disk:")).Select(k => k.Value).ToList();
             if (disks.Count > 0) d["storage"] = disks.Max();
             if (!double.IsNaN(dimm)) d["ram"] = dimm;
@@ -305,6 +308,8 @@ public sealed class Rig : IDisposable
 
     /// <summary>Keep the full catalog live for the next 3 s (the dashboard calls this every second while the
     /// Sensors page is open, like <see cref="LightingEngine.WantField"/>). Costs nothing once it lapses.</summary>
+    /// <summary>The CPU's power limits and use from its SMU power table (Ryzen, admin), or null.</summary>
+    public Glint.Tuning.PmLimits? ReadPm() => _lhm == null ? null : Glint.Tuning.RyzenPm.Read(_lhm.Hardware);
     public void WantCatalog() => Interlocked.Exchange(ref _catalogUntil, Environment.TickCount64 + 3000);
     public bool CatalogWanted => Environment.TickCount64 < Interlocked.Read(ref _catalogUntil);
     /// <summary>Value of one catalog sensor by id (keeps the catalog live while someone keeps asking, e.g. the game overlay).</summary>
@@ -422,6 +427,7 @@ public sealed class Rig : IDisposable
             case HardwareType.GpuNvidia or HardwareType.GpuAmd or HardwareType.GpuIntel when !root.Name.Contains("Radeon(TM) Graphics"):
                 if (s.Name == "GPU Core") a.Insert(0, "gpu");
                 if (s.Name == "GPU Hot Spot") a.Insert(0, "gpu.hotspot");
+                if (s.Name == "GPU Memory Junction") a.Insert(0, "gpu.memjunction");
                 break;
             case HardwareType.Motherboard: a.Insert(0, "mb:" + s.Name); break;
             case HardwareType.Storage: a.Insert(0, $"disk:{Slug(root.Name)}"); a.Insert(0, "storage"); break;

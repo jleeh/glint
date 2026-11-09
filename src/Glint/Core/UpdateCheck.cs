@@ -10,7 +10,9 @@ public sealed record UpdateInfo(string Current, string? Latest, string? Url, boo
 public sealed record ReleaseInfo(string Tag, Version Version, bool Prerelease, bool Draft);
 
 /// <summary>
-/// Optional update check: one request to GitHub's releases/latest API at startup (after a short delay) and every 24 h,
+/// Optional update check: one request to GitHub's releases/latest API at startup (after a short delay), then whenever the
+/// last answer is older than <see cref="Interval"/> (wall clock, so sleep/hibernate can't stretch it), when the dashboard
+/// opens with an answer older than <see cref="StaleOnOpen"/>, and when the user clicks "Check now";
 /// only while <see cref="UpdateOptions.Check"/> is on. No other network, no telemetry. Downloading and installing is
 /// <see cref="Updater"/>'s job (only when the user asks, or opted into automatic installs).
 /// Offline, rate-limited, private or missing repo (404): silently "unknown". Runs on the thread pool (no thread of its own).
@@ -36,7 +38,13 @@ public sealed class UpdateChecker : IDisposable
     /// <summary>The release behind <see cref="Info"/> (null when the last check found none).</summary>
     public ReleaseInfo? Release { get; private set; }
     public event Action<UpdateInfo>? Changed;
-    public static readonly TimeSpan Interval = TimeSpan.FromHours(24);
+    public static readonly TimeSpan Interval = TimeSpan.FromHours(6);
+    /// <summary>How often the background loop looks at the clock (cheap; it only sends a request once the answer is stale).</summary>
+    public static readonly TimeSpan Tick = TimeSpan.FromMinutes(10);
+    /// <summary>Opening the dashboard re-checks when the last answer is older than this.</summary>
+    public static readonly TimeSpan StaleOnOpen = TimeSpan.FromHours(1);
+    /// <summary>"Check now" never sends more than one request per this window (GitHub allows 60 unauthenticated/h).</summary>
+    public static readonly TimeSpan MinManualGap = TimeSpan.FromSeconds(30);
     public const int MaxResponseBytes = 1 << 20;
 
     /// <param name="handler">Tests pass a fake handler (no network at all).</param>
@@ -48,7 +56,8 @@ public sealed class UpdateChecker : IDisposable
         Info = new UpdateInfo(_current, null, null, false, null, null);
     }
 
-    /// <summary>Background schedule: first check after <paramref name="firstDelay"/>, then every 24 h while enabled.</summary>
+    /// <summary>Background schedule: first check after <paramref name="firstDelay"/>, then every <see cref="Interval"/>
+    /// by the wall clock (a single long Task.Delay doesn't count time the PC spent asleep, so a 24 h wait could take days).</summary>
     public void Start(TimeSpan firstDelay)
     {
         _started = true;
@@ -59,18 +68,29 @@ public sealed class UpdateChecker : IDisposable
                 await Task.Delay(firstDelay, _cts.Token);
                 while (!_cts.IsCancellationRequested)
                 {
-                    if (_cfg().Updates?.Check == true) await CheckNow();
-                    await Task.Delay(Interval, _cts.Token);
+                    await CheckIfStale(Interval);
+                    await Task.Delay(Tick, _cts.Token);
                 }
             }
             catch (OperationCanceledException) { }
         });
     }
 
+    /// <summary>True when there is no answer yet or the last one is older than <paramref name="maxAge"/>.</summary>
+    public bool IsStale(TimeSpan maxAge, DateTime? now = null) => Info.CheckedAt is not { } at || (now ?? DateTime.UtcNow) - at >= maxAge;
+
+    /// <summary>Check when enabled and the last answer is older than <paramref name="maxAge"/>; otherwise return it as is.</summary>
+    public Task<UpdateInfo> CheckIfStale(TimeSpan maxAge) =>
+        _cfg().Updates?.Check == true && IsStale(maxAge) ? CheckNow() : Task.FromResult(Info);
+
+    /// <summary>The user asked ("Check now" / update.check): a fresh answer unless one arrived in the last few seconds.
+    /// Works even with the background check switched off: the user explicitly asked for this one request.</summary>
+    public Task<UpdateInfo> CheckRequested() => IsStale(MinManualGap) ? CheckNow() : Task.FromResult(Info);
+
     /// <summary>The setting was just switched on: check now unless a check ran recently.</summary>
     public void OnConfig(GlintConfig c)
     {
-        if (_started && c.Updates?.Check == true && (Info.CheckedAt == null || DateTime.UtcNow - Info.CheckedAt > Interval)) _ = CheckNow();
+        if (_started && c.Updates?.Check == true && IsStale(Interval)) _ = CheckNow();
     }
 
     /// <summary>One request. Never throws; failures leave Latest unknown with a short note.</summary>

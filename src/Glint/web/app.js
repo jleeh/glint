@@ -117,18 +117,22 @@ const fmtT = v => v == null ? '–' : v.toFixed(v >= 100 ? 0 : 1);
 
 /* ------------------------------------------------------------------ messaging */
 
-let commitTimer = null;
+let commitTimer = null, commitSend = null;
 function commit(rerender) {
   clearTimeout(commitTimer);
   S.ovrLocalUntil = Date.now() + 2500; // local edits win over the host's (older) override list until it has caught up
-  commitTimer = setTimeout(() => {
+  commitSend = () => {
+    commitSend = null;
     send({ type: 'config', config: S.cfg });
     // a typed MQTT password is sent once, then forgotten: the page never holds or shows the stored one
     const ha = S.cfg.homeAssistant;
     if (ha && 'password' in ha) { S.init.haHasPassword = ha.password !== ''; delete ha.password; haPassUi(); }
-  }, 140);
+  };
+  commitTimer = setTimeout(commitSend, 140);
   if (rerender) renderPage(S.page);
 }
+// send a pending config edit now (before an operation that the host must see after it, like a rename)
+function flushCommit() { if (commitSend) { clearTimeout(commitTimer); commitSend(); } }
 
 bridge?.addEventListener('message', e => {
   const m = typeof e.data === 'string' ? JSON.parse(e.data) : e.data;
@@ -146,7 +150,8 @@ bridge?.addEventListener('message', e => {
     S.lastPerf = m.perf;
     const sig = Object.keys(m.sensors).sort().join('|');
     if (sig !== S.sensorSig) { S.sensorSig = sig; if (S.page === 'overview' || S.page === 'devices') renderPage(S.page); }
-    if (m.profile !== S.cfg.activeProfile) S.cfg.activeProfile = m.profile;
+    // the host's state lags a profile switch made here by a moment: don't let it undo the switch before the config has been sent
+    if (m.profile !== S.cfg.activeProfile && Date.now() >= (S.ovrLocalUntil ?? 0)) S.cfg.activeProfile = m.profile;
     syncOverrides(m.overrides);
     live();
   } else if (m.type === 'sensors') {
@@ -180,9 +185,33 @@ bridge?.addEventListener('message', e => {
     setupBadge();
     if (S.page === 'setup') renderSetup();
     else if (S.page === 'overview') setupBanner();
+  } else if (m.type === 'updateInfo') {
+    S.updChecking = false;
+    if (S.state) S.state.update = m.update;
+    liveUpdate();
   } else if (m.type === 'updater') {
     if (S.state) S.state.install = m.install;
     liveUpdate();
+  } else if (m.type === 'configChanged') {
+    // a change made elsewhere (MCP, CLI, tray, Home Assistant). The page's own edits echo back too: keep local edits
+    // for a moment, and never re-render under the user's typing (apply once they leave the field).
+    if (Date.now() < (S.ovrLocalUntil ?? 0)) return;
+    if (JSON.stringify(m.config) === JSON.stringify(S.cfg)) return;
+    const apply = () => { S.cfg = m.config; if (!own(S.cfg.profiles, S.profile)) S.profile = S.cfg.activeProfile; renderProfiles(); renderPage(S.page); };
+    const f = document.activeElement;
+    if (f && f.closest?.('#content') && /^(INPUT|TEXTAREA|SELECT)$/.test(f.tagName)) {
+      S.pendingCfg = apply;
+      f.addEventListener('blur', () => { const fn = S.pendingCfg; S.pendingCfg = null; fn?.(); }, { once: true });
+    } else apply();
+  } else if (m.type === 'tuning') {
+    S.tuning = m;
+    if (S.page === 'tuning') liveTuning();
+    if (S.pm) pmRender();
+  } else if (m.type === 'tuningHistory') {
+    tnHist.data = m.history;
+    const last = Math.max(0, Math.ceil(num(m.history?.total) / tnHist.size) - 1);
+    if (tnHist.page > last) { tnHist.page = last; tnSave(); tnAskHistory(); }       // tests were deleted: stay on a page that exists
+    if (S.page === 'tuning') liveHistory();
   } else if (m.type === 'toast') toast(m.text, m.kind);
 });
 
@@ -204,6 +233,7 @@ const PAGES = {
   devices: ['Devices', 'Detected hardware, names and LED counts'],
   plugins: ['Plugins', 'Add hardware support and effects with small JavaScript files'],
   overlay: ['Game overlay', 'FPS, temperatures and clocks on top of your games'],
+  tuning: ['Tuning', 'One-click AI overclocking and undervolting, saved as profiles'],
   setup: ['Setup check', 'Is this PC set up right for Glint? Each problem comes with a fix'],
   settings: ['Settings', 'Safety, performance and files'],
 };
@@ -232,18 +262,28 @@ function renderAll() {
 }
 function renderPage(p) {
   if (!S.cfg) return;
-  ({ overview: renderOverview, cooling: renderCooling, sensors: renderSensors, lighting: renderLighting, devices: renderDevices, plugins: renderPlugins, overlay: renderOverlay, setup: renderSetup, settings: renderSettings })[p]();
+  ({ overview: renderOverview, cooling: renderCooling, sensors: renderSensors, lighting: renderLighting, devices: renderDevices, plugins: renderPlugins, overlay: renderOverlay, tuning: renderTuning, setup: renderSetup, settings: renderSettings })[p]();
   live();
 }
+// The header switcher: segmented buttons while the names fit, a dropdown when there are many or long ones.
+const PROFILE_SEG_MAX = { count: 6, chars: 52 };
+function profilesFit(names) { return names.length <= PROFILE_SEG_MAX.count && names.reduce((n, p) => n + p.length, 0) <= PROFILE_SEG_MAX.chars; }
+function switchProfile(name) {
+  if (!own(S.cfg.profiles, name)) return;
+  S.cfg.activeProfile = name; S.profile = name;
+  renderProfiles(); commit(true);
+  toast(`Fan profile: ${name}`);
+}
 function renderProfiles() {
-  const seg = $('#profile-seg');
-  seg.innerHTML = Object.keys(S.cfg.profiles).map(p => `<button data-p="${esc(p)}" class="${p === S.cfg.activeProfile ? 'on' : ''}">${esc(p)}</button>`).join('');
-  seg.onclick = e => {
-    const b = e.target.closest('button'); if (!b) return;
-    S.cfg.activeProfile = b.dataset.p; S.profile = b.dataset.p;
-    renderProfiles(); commit(true);
-    toast(`Fan profile: ${b.dataset.p}`);
-  };
+  const names = Object.keys(S.cfg.profiles), seg = $('#profile-seg'), sel = $('#profile-sel'), fit = profilesFit(names);
+  seg.hidden = !fit; sel.hidden = fit;
+  seg.innerHTML = fit ? names.map(p => `<button data-p="${esc(p)}" class="${p === S.cfg.activeProfile ? 'on' : ''}">${esc(p)}</button>`).join('') : '';
+  sel.innerHTML = fit ? '' : names.map(p => `<option value="${esc(p)}" ${p === S.cfg.activeProfile ? 'selected' : ''}>${esc(p)}</option>`).join('');
+  $('#profile-manage').innerHTML = IC.sliders;
+  seg.onclick = e => { const b = e.target.closest('button'); if (b) switchProfile(b.dataset.p); };
+  sel.onchange = () => switchProfile(sel.value);
+  $('#profile-manage').onclick = () => openProfileManager();
+  if (S.pm) pmRender();
 }
 
 /* live updates that don't rebuild the page */
@@ -268,6 +308,7 @@ const IC = {
   fan: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="1.6"/><path d="M12 10.4c0-3.5.8-6.4 3.3-6.4 1.8 0 2.6 1.7 1.8 3.3s-3.3 2.6-5.1 3.1M13.6 12c3.5 0 6.4.8 6.4 3.3 0 1.8-1.7 2.6-3.3 1.8s-2.6-3.3-3.1-5.1M12 13.6c0 3.5-.8 6.4-3.3 6.4-1.8 0-2.6-1.7-1.8-3.3s3.3-2.6 5.1-3.1M10.4 12C6.9 12 4 11.2 4 8.7 4 6.9 5.7 6.1 7.3 6.9s2.6 3.3 3.1 5.1"/></svg>',
   plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
   x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>',
+  sliders: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg>',
   copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
   trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>',
   hub: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 10h2M7 14h2M12 10h5M12 14h5"/></svg>',
@@ -451,7 +492,11 @@ function renderCooling() {
   const curveNames = Object.keys(S.cfg.curves);
 
   $('#page-cooling').innerHTML = `
-  ${S.cfg.fanControl === false ? fanOffNote(true) : ''}
+  <div class="card card-pad row between" style="margin-bottom:14px;gap:12px">
+    <div><div class="card-title">Fan control</div><div class="card-sub">On: Glint drives every fan below from your curves. Off: fans go back to the BIOS, GPU driver and device firmware.</div></div>
+    <div class="toggle ${S.cfg.fanControl !== false ? 'on' : ''}" id="c-fancontrol" title="${S.cfg.fanControl !== false ? 'Turn fan control off' : 'Turn fan control on'}"></div>
+  </div>
+  ${S.cfg.fanControl === false ? fanOffNote() : ''}
   <div class="cool-layout">
     <div>
       <div class="field" style="margin-bottom:14px">
@@ -576,7 +621,7 @@ function bindSlider(id, fmt, onInput) {
 
 function bindCooling(r, rules) {
   const pg = $('#page-cooling');
-  pg.querySelector('[data-fancontrol-on]')?.addEventListener('click', () => { S.cfg.fanControl = true; commit(true); toast('Fan control on'); });
+  $('#c-fancontrol').onclick = () => { S.cfg.fanControl = S.cfg.fanControl === false; commit(true); toast(S.cfg.fanControl ? 'Fan control on' : 'Fan control off: fans are back on their own control'); };
   $('#c-profile').onchange = e => { S.profile = e.target.value; S.rule = 0; S.curve = null; renderCooling(); };
   $('#c-activate')?.addEventListener('click', () => { S.cfg.activeProfile = S.profile; renderProfiles(); commit(true); });
   $('#c-dup').onclick = () => {
@@ -1606,8 +1651,8 @@ function renderSettings() {
         <div class="muted" style="font-size:12px;margin-top:12px">Needs an MQTT broker, such as Home Assistant's Mosquitto add-on (Settings → Add-ons), with the MQTT integration enabled. Glint's entities then appear automatically; no YAML needed.</div>
       </div>
       <div class="card card-pad" id="upd-card">
-        <div class="row between card-head"><div><div class="card-title">Updates</div><div class="card-sub">One request to GitHub at startup and once a day. Nothing is installed unless you click Install or switch on automatic install.</div></div><div class="toggle ${UPD().check !== false ? 'on' : ''}" id="upd-check" title="Check for updates"></div></div>
-        <div class="ha-status" id="upd-status"><span class="pdot off"></span><span>–</span><span class="spacer" style="flex:1"></span><button class="btn small primary" id="upd-install" style="display:none">Install update</button><button class="btn small" id="upd-open" style="display:none">Open release page</button></div>
+        <div class="row between card-head"><div><div class="card-title">Updates</div><div class="card-sub">One request to GitHub at startup and every 6 hours. Nothing is installed unless you click Install or switch on automatic install.</div></div><div class="toggle ${UPD().check !== false ? 'on' : ''}" id="upd-check" title="Check for updates"></div></div>
+        <div class="ha-status" id="upd-status"><span class="pdot off"></span><span>–</span><span class="spacer" style="flex:1"></span><button class="btn small primary" id="upd-install" style="display:none">Install update</button><button class="btn small" id="upd-open" style="display:none">Open release page</button><button class="btn small" id="upd-recheck" title="Ask GitHub for the latest release now">Check now</button></div>
         <div class="muted upd-progress" id="upd-progress" role="status" aria-live="polite"></div>
         <div class="row between" style="gap:12px"><div><div style="font-size:13px">Install updates automatically</div><div class="muted" style="font-size:12px">Only after 10 minutes without input, with no game in front and not on battery. Every setup is checked against its SHA-256 and GitHub build attestation first.</div></div><div class="toggle ${UPD().autoInstall ? 'on' : ''}" id="upd-auto" title="Install updates automatically"></div></div>
       </div>
@@ -1649,6 +1694,7 @@ function bindUpdates() {
   };
   $('#upd-open').onclick = () => { const url = S.state?.update?.url ?? S.init.releasesUrl; if (/^https:\/\//i.test(url ?? '')) send({ type: 'openUrl', url }); };
   $('#upd-install').onclick = () => installUpdate();
+  $('#upd-recheck').onclick = () => { S.updChecking = true; liveUpdate(); send({ type: 'checkUpdate' }); };
   liveUpdate();
 }
 const UPD_BUSY = ['downloading', 'verifying', 'installing'];
@@ -1664,11 +1710,17 @@ function installText(i) {
   const head = { downloading: 'Downloading', verifying: 'Verifying', installing: 'Installing', failed: 'Failed' }[i.state] ?? i.state;
   return `${head}: ${i.message ?? ''}${pct}`;
 }
+function ago(t) {
+  const m = t ? Math.round((Date.now() - Date.parse(t)) / 60000) : NaN;
+  if (!(m >= 0)) return '';
+  return ' · checked ' + (m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 2880 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} days ago`);
+}
 function updateText() {
+  if (S.updChecking) return ['off', 'Checking GitHub for the latest release…'];
   const u = S.state?.update, cur = u?.current ?? S.init.version;
   if (UPD().check === false) return ['off', `Glint ${cur} · update check is off`];
   if (u?.available) return ['warn', `Update available: v${u.latest} (you have ${cur})`];
-  if (u?.latest) return ['ok', `Glint ${cur} is the latest version`];
+  if (u?.latest) return ['ok', `Glint ${cur} is the latest version${ago(u.checkedAt)}`];
   return ['off', u?.checkedAt ? `Glint ${cur} · couldn't check (${u.note ?? 'offline'})` : `Glint ${cur} · not checked yet`];
 }
 function liveUpdate() {
@@ -1681,6 +1733,8 @@ function liveUpdate() {
   $('#upd-open').style.display = avail ? '' : 'none';
   $('#upd-install').style.display = canInstall ? '' : 'none';
   $('#upd-install').disabled = busy;
+  $('#upd-recheck').disabled = !!S.updChecking || busy;
+  $('#upd-recheck').style.display = avail ? 'none' : '';
   $('#upd-install').textContent = busy ? 'Installing…' : inst?.state === 'failed' ? 'Try again' : 'Install update';
   const pr = $('#upd-progress'), t = avail && S.init.cannotInstall ? `Install it from the release page: ${S.init.cannotInstall}.` : installText(inst);
   if (pr.textContent !== t) pr.textContent = t;
@@ -1757,6 +1811,614 @@ function renderSetup() {
     if (it.fix === 'installUpdate') { installUpdate(); return; }
     send({ type: 'setupFix', fix: it.fix, arg: it.fixArg });
   };
+}
+
+/* Tuning page: AI overclocking. Off by default; nothing is tested, applied or watched until the user turns it on. */
+const T_CFG = () => (S.cfg.tuning ??= { enabled: false, allowWorkstation: false, applyAtStartup: false, emergencyCoreC: 90, emergencyMemC: 100, unlockPower: true, crashWatch: true, autoBackoff: true, maxCrashes: 3, crashWindowDays: 7 });
+let tuningPoll = null;
+const TN_CTX_MAX = 1000, TN_GT_MAX = 300;
+const TN_TABS = [['gpu', 'GPU'], ['cpu', 'CPU'], ['history', 'History'], ['safety', 'Safety']];
+function tnGoHint(running) { const gt = $('#tn-go-to'); if (gt) gt.textContent = running ? '' : `Creates the profile "${(TN_STYLES.find(x => x[0] === tnStyle()) ?? ['', 'Balanced'])[1]} (tuned)"`; }
+function tnSetTab(id) {
+  if (!TN_TABS.some(t => t[0] === id)) return;
+  S.tnTab = id;
+  $$('#tn-tabs [data-tab]').forEach(b => { const on = b.dataset.tab === id; b.classList.toggle('on', on); b.setAttribute('aria-selected', on); });
+  $$('#page-tuning .tn-pane').forEach(x => { x.hidden = x.dataset.pane !== id; });
+}
+const tnGoalText = () => { if (S.tnGoalText == null) { try { S.tnGoalText = localStorage.getItem('glint.tn.goaltext') ?? ''; } catch { S.tnGoalText = ''; } } return String(S.tnGoalText).slice(0, TN_GT_MAX); };
+const TN_STYLES = [['quiet', 'Quiet', 'Cool and quiet: modest gains, low power and temperature'], ['balanced', 'Balanced', 'A good gain without pushing the card'], ['performance', 'Performance', 'The fastest stable result the card can do'], ['custom', 'Custom', 'Follow only what you write below']];
+const tnStyle = () => { if (S.tnStyle == null) { try { S.tnStyle = localStorage.getItem('glint.tn.style'); } catch { } } return TN_STYLES.some(x => x[0] === S.tnStyle) ? S.tnStyle : 'balanced'; };
+const tnContext = () => { if (S.tnContext == null) { try { S.tnContext = localStorage.getItem('glint.tn.context') ?? ''; } catch { S.tnContext = ''; } } return String(S.tnContext).slice(0, TN_CTX_MAX); };
+function tnDraftSave() { try { localStorage.setItem('glint.tn.style', tnStyle()); localStorage.setItem('glint.tn.context', tnContext()); localStorage.setItem('glint.tn.goaltext', tnGoalText()); } catch { } }
+function tnCtxCount() { const e = $('#tn-ctx-n'); if (e) e.textContent = tnContext().length ? `${tnContext().length} / ${TN_CTX_MAX}` : ''; }
+function tuningAsk(op = 'status', args) { send({ type: 'tuning', op, args }); }
+function renderTuning() {
+  const c = T_CFG();
+  clearInterval(tuningPoll);
+  tuningPoll = setInterval(() => { if (S.page === 'tuning') { tuningAsk(); tnAskHistory(); } else clearInterval(tuningPoll); }, 3000);
+  tuningAsk(); tnAskHistory();
+  const tab = TN_TABS.some(t => t[0] === S.tnTab) ? S.tnTab : 'gpu';
+  const pane = (id, html) => `<div class="tn-pane" data-pane="${id}" ${tab === id ? '' : 'hidden'}>${html}</div>`;
+  const sw = (id, on, label, hint) => `<div class="row tn-sw" ${id === 'tn-ws' ? 'id="tn-ws-row"' : ''}><div class="toggle ${on ? 'on' : ''}" id="${id}"></div><label>${label}${hint ? ` <span class="muted">${hint}</span>` : ''}</label></div>`;
+  const safe = `<ul class="tn-safe">
+          <li>Clock offsets and Curve Optimizer undervolts only: Glint never raises a voltage.</li>
+          <li>The GPU power limit goes up only to the card's own maximum (its firmware ceiling).</li>
+          <li>Throttling at the card's temperature or power limit is a limit the AI tunes under; only emergency temperatures stop a test.</li>
+          <li>The card goes back to stock after every test, and crashes back the overclock off automatically.</li></ul>`;
+  const enabledSwitch = `<span class="row" style="gap:8px"><span class="muted" style="font-size:12px">${c.enabled ? 'On' : 'Off'}</span><div class="toggle ${c.enabled ? 'on' : ''}" id="tn-enabled" title="Turn tuning on or off"></div></span>`;
+  $('#page-tuning').innerHTML = !c.enabled ? `
+    <div class="card card-pad tn-intro tn-head">
+      <div class="row between" style="gap:16px;align-items:flex-start"><div><div class="card-title">AI overclocking</div>
+        <div class="card-sub">One click: your Claude Code login tunes the GPU overclock, the CPU undervolt and the fans, tests them, and saves the result as a profile.</div></div>${enabledSwitch}</div>
+      ${safe}
+      <div class="muted" style="font-size:13px;margin-top:14px">Tuning is off. Nothing is tested, applied or watched, and Glint never touches your clocks. Turn it on above to start.
+      Overclocking runs hardware beyond its factory settings: crashes during tests are expected, and some manufacturers don't cover overclocking under warranty.</div>
+    </div>` : `
+    <div class="card tn-tuner">
+      <div class="tn-t-head">
+        <div class="tn-t-title">${IC.bolt}<span>AI tuner</span></div>
+        <div class="tn-t-status"><span class="tn-state" id="tn-h-ai-v">–</span><span class="tn-state-sub" id="tn-ai-sub">Looking for Claude Code…</span></div>
+        <button class="btn ghost small" id="tn-monitor" title="A small window with live gauges, progress and the AI's reasoning">Monitor ↗</button>
+      </div>
+      <div class="tn-t-run"><div class="tn-prog" id="tn-h-ai-p" hidden><i></i></div><div class="tn-liveline" id="tn-live"></div></div>
+      <div class="tn-t-form">
+        <label>Goal</label><div class="tn-t-row"><div class="seg tn-goalseg" id="tn-style" role="radiogroup" aria-label="Tuning goal">${TN_STYLES.map(([g, l, tip]) => `<button data-s="${g}" role="radio" aria-checked="${tnStyle() === g}" title="${esc(tip)}" class="${tnStyle() === g ? 'on' : ''}"><b>${l}</b></button>`).join('')}</div></div>
+        <label>Tune</label><div class="tn-t-row"><div class="seg" id="tn-goal">${[['all', 'GPU + CPU'], ['gpu', 'GPU'], ['cpu', 'CPU']].map(([g, l]) => `<button data-g="${g}" class="${(S.tnGoal ?? 'all') === g ? 'on' : ''}">${l}</button>`).join('')}</div><select id="tn-budget" class="input" aria-label="Time budget">${[15, 30, 45, 90, 180].map(m => `<option value="${m}" ${(S.tnBudget ?? 45) === m ? 'selected' : ''}>${m} min</option>`).join('')}</select></div>
+        <label>Mode</label><div class="tn-t-row"><span class="tn-modelabel" id="tn-gpumode-l" ${(S.tnGoal ?? 'all') === 'cpu' ? 'hidden' : ''}>GPU</span><div class="seg" id="tn-gpumode" ${(S.tnGoal ?? 'all') === 'cpu' ? 'hidden' : ''}>${[['performance', 'Performance', 'Fastest stable overclock'], ['efficiency', 'Efficiency', 'Most work per watt: a lower power limit with a core offset, near-stock speed for much less power and heat']].map(([m, l, t]) => `<button data-m="${m}" title="${t}" class="${(S.tnGpuMode ?? 'performance') === m ? 'on' : ''}">${l}</button>`).join('')}</div><span class="tn-modelabel" id="tn-cpumode-l" ${(S.tnGoal ?? 'all') === 'gpu' ? 'hidden' : ''}>CPU</span><div class="seg" id="tn-cpumode" ${(S.tnGoal ?? 'all') === 'gpu' ? 'hidden' : ''}>${[['performance', 'Performance', 'Fastest: picks the undervolt with the best all-core and single-core speed, never slower than stock'], ['efficiency', 'Efficiency', 'Best speed per watt: lower power and temperature, staying within 5% of stock speed']].map(([m, l, t]) => `<button data-m="${m}" title="${t}" class="${(S.tnCpuMode ?? 'performance') === m ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+        <label for="tn-context">Notes</label><div class="tn-t-row tn-notes"><textarea id="tn-context" rows="2" maxlength="${TN_CTX_MAX}" aria-label="Notes for the AI" placeholder="${tnStyle() === 'custom' ? 'Describe your goal (required for Custom), e.g. as quiet as possible while gaming at 4K' : 'Notes for the AI (optional), e.g. fans never above 50%; stability over the last few MHz'}" spellcheck="true">${esc(tnContext())}</textarea><span class="muted tn-small" id="tn-ctx-n"></span></div>
+      </div>
+      <div class="tn-t-foot"><div class="muted tn-small tn-hint" id="tn-go-to"></div><button class="btn tn-go tn-stopbtn" id="tn-ai-stop">Stop</button><button class="btn primary tn-go" id="tn-ai-start">Tune</button></div>
+      <div class="muted tn-small" id="tn-ai-ran" style="padding:0 20px"></div>
+      <details class="tn-more tn-logwrap"><summary>What the AI is doing</summary><div class="tn-log tf" id="tn-log" hidden></div></details>
+    </div>
+    <div class="card card-pad"><div class="row between" style="align-items:center;gap:12px"><div><div class="card-title">Profiles</div><div class="card-sub">Fans, GPU overclock and CPU undervolt, applied together.</div></div><div class="row" style="gap:14px;align-items:center"><button class="btn small ghost" id="tn-pm">Manage…</button>${enabledSwitch}</div></div>
+      <div id="tn-profiles"></div></div>
+      <div class="section-title tn-tabbar"><div class="tn-tabs" id="tn-tabs" role="tablist" aria-label="Details">${TN_TABS.map(([id, l]) => `<button role="tab" data-tab="${id}" aria-selected="${tab === id}" class="${tab === id ? 'on' : ''}">${l}<span class="tn-dot" id="tn-dot-${id}" hidden></span></button>`).join('')}</div><span class="line"></span></div>
+      ${pane('gpu', `<div class="tn-2col">
+        <div class="card card-pad"><div class="card-title" id="tn-gpu-name">GPU</div><div class="card-sub" id="tn-gpu-sub"></div><div class="tn-chips" id="tn-gpu-chips"></div>
+          <div id="tn-gpu"></div>
+          <div class="tn-group">${sw('tn-unlock', c.unlockPower !== false, 'Unlock power limit', '(up to this card\'s maximum, never beyond)')}
+          ${sw('tn-ws', c.allowWorkstation, 'Allow tuning a workstation GPU', '(RTX PRO, RTX A, Quadro)')}</div></div>
+        <div class="card card-pad"><div class="card-title">Stock vs tuned</div><div class="card-sub" id="tn-res-sub"></div>
+          <div id="tn-res-now" class="tn-kv"></div><div id="tn-cmp" class="tn-cmp"></div>
+          <div class="row" style="gap:8px;margin-top:16px;flex-wrap:wrap"><button class="btn" id="tn-apply">Apply saved result</button><button class="btn ghost" id="tn-stock">Back to stock</button></div></div></div>`)}
+      ${pane('cpu', `<div class="card card-pad"><div class="card-title" id="tn-cpu-name">CPU</div><div class="card-sub" id="tn-cpu-sub"></div><div id="tn-cpu"></div></div>`)}
+      ${pane('history', `<div class="card card-pad"><div class="card-title">Test history</div><div class="card-sub">Newest first. Hitting the card's own temperature or power limit is a limit, not a failure.</div>
+          <div id="tn-history"></div></div>`)}
+      ${pane('safety', `<div class="tn-2col">
+        <div class="card card-pad"><div class="card-title">Crash watch</div><div class="card-sub" id="tn-crash-sub"></div>
+          <div class="tn-group">${sw('tn-cw', c.crashWatch, 'Watch for driver resets, hardware errors and bluescreens')}
+          ${sw('tn-bo', c.autoBackoff, 'Back off automatically', '(core −15 MHz, then memory −250)')}</div>
+          <div class="row" style="gap:8px;font-size:13px;margin-top:12px;flex-wrap:wrap"><span class="muted">Back to stock after</span><input type="number" class="input tn-num" id="tn-max" min="1" max="20" value="${num(c.maxCrashes, 3)}"><span class="muted">crashes in</span><input type="number" class="input tn-num" id="tn-days" min="1" max="90" value="${num(c.crashWindowDays, 7)}"><span class="muted">days</span></div>
+          <div class="label" style="margin-top:18px">Recent crashes</div><div id="tn-crashes"></div></div>
+        <div class="card card-pad tn-head"><div class="card-title">How it stays safe</div><div class="card-sub">Limits Glint enforces itself, whatever the AI or anyone else asks for.</div>${safe}</div></div>`)}
+    <details class="tn-adv" id="tn-adv" ${S.tnAdvOpen ? 'open' : ''}><summary>Advanced: edit a profile by hand</summary>
+      <div class="tn-advbar"><label for="tn-adv-prof">Edit profile</label><select id="tn-adv-prof" class="input" aria-label="Profile to edit"></select><span class="muted tn-small">Changes save into this profile; Save &amp; apply also applies it if it's in use.</span></div>
+      <div class="tn-2col">
+        <div class="card card-pad">${manMarkup()}</div>
+        <div class="card card-pad"><div class="card-title">CPU undervolt</div><div class="card-sub">Curve Optimizer per core. 0 = BIOS default, more negative = more undervolt.</div>
+          <div class="tn-coedit" id="tn-coedit"></div>
+          <div class="tn-btnrow"><button class="btn ghost" id="tn-co-clear">Clear</button><button class="btn primary" id="tn-co-save">Save &amp; apply</button></div>
+          <div class="muted tn-small tn-note">Fan curves: <button class="linkbtn" id="tn-fans-link">edit this profile on the Cooling page →</button></div></div>
+      </div>
+    </details>`;
+  $$('#tn-enabled').forEach(el => el.onclick = () => {
+    if (!c.enabled && !confirm('Turn on overclocking?\n\nGlint will only change clocks when you (or the AI, when you start it) run tests or apply a result. Crashes during tests are expected.')) return;
+    c.enabled = !c.enabled; commit(true);
+  });
+  if (!c.enabled) return;
+  $('#tn-tabs').onclick = e => { const b = e.target.closest('[data-tab]'); if (b) tnSetTab(b.dataset.tab); };
+  const flip = (id, key) => { $(id).onclick = () => { c[key] = !c[key]; commit(true); }; };
+  flip('#tn-unlock', 'unlockPower'); flip('#tn-ws', 'allowWorkstation'); flip('#tn-cw', 'crashWatch'); flip('#tn-bo', 'autoBackoff');
+  $('#tn-max').onchange = e => { c.maxCrashes = clamp(Math.round(num(e.target.value, 3)), 1, 20); commit(); };
+  $('#tn-days').onchange = e => { c.crashWindowDays = clamp(Math.round(num(e.target.value, 7)), 1, 90); commit(); };
+  $('#tn-goal').onclick = e => { const b = e.target.closest('[data-g]'); if (!b) return; S.tnGoal = b.dataset.g; $$('#tn-goal button').forEach(x => x.classList.toggle('on', x === b)); $('#tn-cpumode').hidden = $('#tn-cpumode-l').hidden = S.tnGoal === 'gpu'; $('#tn-gpumode').hidden = $('#tn-gpumode-l').hidden = S.tnGoal === 'cpu'; };
+  $('#tn-gpumode').onclick = e => { const b = e.target.closest('[data-m]'); if (!b) return; S.tnGpuMode = b.dataset.m; $$('#tn-gpumode button').forEach(x => x.classList.toggle('on', x === b)); };
+  $('#tn-cpumode').onclick = e => { const b = e.target.closest('[data-m]'); if (!b) return; S.tnCpuMode = b.dataset.m; $$('#tn-cpumode button').forEach(x => x.classList.toggle('on', x === b)); };
+  $('#tn-budget').onchange = e => { S.tnBudget = num(e.target.value, 45); };
+  $('#tn-style').onclick = e => { const b = e.target.closest('[data-s]'); if (!b) return; S.tnStyle = b.dataset.s; tnDraftSave(); $('#tn-context').placeholder = S.tnStyle === 'custom' ? 'Describe your goal (required for Custom), e.g. as quiet as possible while gaming at 4K' : 'Notes for the AI (optional), e.g. fans never above 50%; stability over the last few MHz'; tnGoHint(!!S.tuning?.ai?.running); $$('#tn-style button').forEach(x => { x.classList.toggle('on', x === b); x.setAttribute('aria-checked', x === b); }); };
+  $('#tn-context').oninput = e => { if (e.target.value.length > TN_CTX_MAX) e.target.value = e.target.value.slice(0, TN_CTX_MAX); S.tnContext = e.target.value; tnDraftSave(); tnCtxCount(); };
+  tnCtxCount();
+  $('#tn-ai-start').onclick = () => {
+    const context = tnContext().trim().slice(0, TN_CTX_MAX);
+    if (tnStyle() === 'custom' && !context) { toast('Custom goal: describe your goal in the box first', 'error'); $('#tn-context').focus(); return; }
+    // goal = quiet / balanced / performance / custom (the notes box is the goal for Custom), target = all / gpu / cpu
+    const args = { goal: tnStyle(), target: S.tnGoal ?? 'all', budgetMinutes: S.tnBudget ?? 45, context, cpuMode: S.tnCpuMode ?? 'performance', gpuMode: S.tnGpuMode ?? 'performance' };
+    if (tnStyle() === 'custom') args.goalText = context.slice(0, TN_GT_MAX);
+    tuningAsk('aiStart', args);
+  };
+
+  $('#tn-ai-stop').onclick = () => tuningAsk('aiStop');
+  $('#tn-monitor').onclick = () => tuningAsk('monitor');
+  $('#tn-history').onclick = e => {
+    const b = e.target.closest('[data-hp]'); if (!b || b.disabled) return;
+    tnSetPage(b.dataset.hp === 'prev' ? tnHist.page - 1 : b.dataset.hp === 'next' ? tnHist.page + 1 : num(b.dataset.hp));
+  };
+  $('#tn-history').onchange = e => { if (e.target.id === 'tn-psize') { tnHist.size = clamp(num(e.target.value, 15), 5, 100); tnHist.page = 0; tnSave(); tnAskHistory(); } };
+  $('#tn-pm').onclick = () => openProfileManager();
+  manBind();
+  $('#tn-apply').onclick = () => tuningAsk('applySaved');
+  $('#tn-stock').onclick = () => tuningAsk('stock');
+  $('#tn-adv').ontoggle = e => { S.tnAdvOpen = e.target.open; };
+  $('#tn-adv-prof').onchange = e => { const m = manState(); m.prof = e.target.value; liveMan(); liveCoEdit(); };
+  $('#tn-co-save').onclick = () => { const p = $('#tn-m-prof')?.value; const v = $$('#tn-coedit input').map(i => clamp(Math.round(num(i.value, 0)), -50, 0)); if (p) tuningAsk('saveCpu', { profile: p, values: v }); };
+  $('#tn-co-clear').onclick = () => { const p = $('#tn-m-prof')?.value; if (p && confirm(`Remove the CPU undervolt saved for "${p}"? Its CPU runs at the BIOS values.`)) tuningAsk('saveCpu', { profile: p, values: null }); };
+  $('#tn-fans-link').onclick = e => { e.preventDefault(); const p = $('#tn-m-prof')?.value; if (p && own(S.cfg.profiles, p)) S.profile = p; go('cooling'); };
+
+  liveTuning();
+}
+function liveTuning() {
+  const m = S.tuning; if (!m || !T_CFG().enabled || !$('#tn-log')) return;
+  const st = m.status ?? {}, ai = m.ai ?? {}, g = st.gpu, cr = m.crashes ?? {};
+  const pm = v => (num(v) >= 0 ? '+' : '') + num(v);
+  $('#tn-ai-sub').textContent = ai.running ? `Tuning ${ai.goal ?? ''}… (${ai.cli === 'wsl' ? 'Claude Code in WSL' : 'Claude Code'})`
+    : !ai.cli ? 'Claude Code not found (Windows or WSL). Install it from claude.ai/code and sign in once with "claude".'
+    : ai.error ? 'Last run: ' + ai.error : ai.summary ? 'Last run finished' : `Your Claude Code login (${ai.cli === 'wsl' ? 'WSL' : 'Windows'}) · only Glint's tuning tools`;
+
+  const log = $('#tn-log'), atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 20;
+  const html = TF.timeline(ai, st) + (st.busy && st.progress ? `<div class="tf-note">… ${esc(st.progress)}</div>` : '');
+  log.innerHTML = html; log.hidden = !html;
+  if (atEnd) log.scrollTop = log.scrollHeight;
+  $('#tn-gpu-name').textContent = g ? g.name : 'GPU';
+  $('#tn-gpu-sub').textContent = g ? `Driver ${g.driver} · ${num(g.vramGiB)} GB · power limit ${num(g.powerLimitW?.now)} W now · ${num(g.powerLimitW?.default)} W default · ${num(g.powerLimitW?.max)} W card maximum` : (st.gpuError ?? 'No NVIDIA GPU found');
+  $('#tn-gpu-sub').hidden = !!g;
+  $('#tn-gpu-chips').innerHTML = g ? [`Driver ${esc(g.driver)}`, `${num(g.vramGiB)} GB`, g.vbios ? `VBIOS ${esc(g.vbios)}` : '', g.workstation ? 'Workstation' : ''].filter(Boolean).map(x => `<span class="tn-chip">${x}</span>`).join('') : '';
+  $('#tn-ws-row').style.display = g?.workstation ? '' : 'none';
+  const sv = st.saved, L = st.limits ?? {};
+  const lv = st.live, pw = g?.powerLimitW ?? {}, slow = g?.slowdownC, emC = num(L.emergencyCoreC, 90);
+  const T0 = 30, T1 = Math.max(emC, 95) + 5, tPct = t => (num(t) - T0) / (T1 - T0) * 100;
+  $('#tn-gpu').innerHTML = !g ? '' : `
+    ${st.reverted ? `<div class="tn-warn">${esc(st.reverted)} <button class="btn small" id="tn-clear">Allow again</button></div>` : ''}
+    ${g.blocked ? `<div class="tn-warn">${esc(g.blocked)}</div>` : ''}
+    <div class="tn-tiles">
+      ${tnTile('Core offset', `${pm(g.offsets?.core)}<small>MHz</small>`, num(g.offsets?.core) / Math.max(1, num(L.maxCore, 500)) * 100,
+        sv ? [{ at: num(sv.core) / Math.max(1, num(L.maxCore, 500)) * 100, cls: 'sv', title: 'saved ' + pm(sv.core) }] : [], '',
+        `saved ${sv ? pm(sv.core) : '—'} · limit ${pm(L.maxCore)}`)}
+      ${tnTile('Memory offset', `${pm(g.offsets?.memAb)}<small>AB</small>`, num(g.offsets?.memAb) / Math.max(1, num(L.maxMemAb, 3000)) * 100,
+        sv ? [{ at: num(sv.memAb) / Math.max(1, num(L.maxMemAb, 3000)) * 100, cls: 'sv', title: 'saved ' + pm(sv.memAb) }] : [], '',
+        `saved ${sv ? pm(sv.memAb) : '—'} · limit ${pm(L.maxMemAb)}`)}
+      ${tnTile('Power limit', `${num(pw.now)}<small>W</small>`, num(pw.now) / Math.max(1, num(pw.max, 1)) * 100,
+        [{ at: num(pw.default) / Math.max(1, num(pw.max, 1)) * 100, cls: 'sv', title: 'default ' + num(pw.default) + ' W' }], num(pw.now) > num(pw.default) ? 'warn' : '',
+        `default ${num(pw.default)} W · card max ${num(pw.max)} W${L.unlockPower ? ' · unlocked' : ''}`)}
+      ${tnTile('Temperature', lv?.coreC != null ? `${num(lv.coreC).toFixed(0)}<small>°C</small>` : `<span class="muted">idle</span>`, lv?.coreC != null ? tPct(lv.coreC) : 0,
+        [...(slow != null ? [{ at: tPct(slow), cls: '', title: 'card slows down at ' + num(slow) + ' °C' }] : []), { at: tPct(emC), cls: 'bad', title: 'emergency stop ' + emC + ' °C' }],
+        lv?.coreC != null && slow != null && num(lv.coreC) >= num(slow) ? 'warn' : 'good',
+        `slows down at ${slow != null ? num(slow) + ' °C' : 'its own limit'} · emergency stop at ${emC} °C / ${num(L.emergencyMemC)} °C memory`)}
+    </div>
+    ${g.eccCorrected != null ? `<div class="muted tn-small" style="margin-top:8px">ECC corrected errors: ${num(g.eccCorrected)}</div>` : ''}`;
+  $('#tn-clear')?.addEventListener('click', () => tuningAsk('clearRevert'));
+  $('#tn-res-sub').textContent = g ? g.name : (st.gpuError ?? 'No NVIDIA GPU found');
+  $('#tn-res-now').innerHTML = !g ? '' : `<span>Now</span><b>${num(g.offsets?.core) || num(g.offsets?.memAb) ? `core ${pm(g.offsets?.core)} · memory ${pm(g.offsets?.memAb)}` : 'stock'}</b>
+    <span>Saved (${esc(st.activeProfile ?? '')})</span><b>${sv ? `core ${pm(sv.core)} · memory ${pm(sv.memAb)}` : 'stock'}</b>`;
+  const dot = (id, on) => { const d = $('#tn-dot-' + id); if (d) d.hidden = !on; };
+  tnStatus(m, st, ai); liveCoEdit();
+  dot('cpu', m.cpu?.phase === 'searching'); dot('safety', !!st.reverted || (cr.events ?? []).length > 0);
+  liveMan(); liveProfileOc();
+  const brief = TF.aiBrief(ai), rb = $('#tn-ai-ran');
+  rb.textContent = brief ? `${ai.running ? 'This run' : 'Last run'}: ${brief}` : '';
+  $('#tn-apply').disabled = !sv || !!st.busy; 
+  const cp = m.cpu ?? {}, ci = cp.cpu ?? {}, co = cp.curveOptimizer ?? {}, sr = cp.search;
+  $('#tn-cpu-name').textContent = ci.name ?? 'CPU';
+  $('#tn-cpu-sub').textContent = co.supported ? `${ci.label ?? ''} · per-core Curve Optimizer${ci.tempC != null ? ` · ${num(ci.tempC).toFixed(0)} °C now` : ''}` : (ci.label ?? '');
+  const vals = sr?.values ?? [];
+  const sm = cp.smu, abort = num(co.abortC, 90), temp = ci.tempC, fails = sr?.failedCores ?? {};
+  const final = sr?.final ?? null, minStart = Math.min(-1, num(co.minStart, -50));
+  const grid = Array.from({ length: Math.floor(Math.abs(minStart) / 10) }, (_, k) => (k + 1) * 10).map(v => `<div class="tn-gl" style="top:${(v / Math.abs(minStart) * 100).toFixed(1)}%"><span>-${v}</span></div>`).join('');
+  const coreBars = `<div class="tn-chart">${grid}<div class="tn-gl zero" style="top:0"><span>0</span></div><div class="tn-cols">` + vals.map((v, i) => {
+    const h = Math.min(1, Math.abs(Math.min(0, num(v))) / Math.abs(minStart)) * 100, f = num(own(fails, String(i)) ?? 0);
+    const fin = final ? Math.min(1, Math.abs(Math.min(0, num(final[i]))) / Math.abs(minStart)) * 100 : null;
+    return `<span class="tn-core${f ? ' fail' : ''}" title="core ${i}: ${num(v)}${final ? ` (final ${num(final[i])}, with safety margin)` : ''}${f ? ` · ${f} error${f === 1 ? '' : 's'}` : ''}"><i style="height:${h.toFixed(1)}%"></i>${fin != null ? `<s style="top:${fin.toFixed(1)}%"></s>` : ''}<b style="top:calc(${h.toFixed(1)}% + 4px)">${num(v)}</b><em>C${i}</em></span>`;
+  }).join('') + `</div></div>`;
+  $('#tn-cpu').innerHTML = (ci.advisory ? `<div class="tn-warn">${esc(ci.advisory)}</div>` : '')
+    + (co.why ? `<div class="muted" style="font-size:13px;margin-top:10px">${esc(co.why)}</div>` : '')
+    + (sm && !sm.ok ? smuLine(sm) : '')
+    + (cp.stoppedReason ? `<div class="tn-warn">Stopped: ${esc(cp.stoppedReason)}</div>` : '')
+    + `<div class="tn-tiles">`
+    + tnTile('Temperature', temp != null ? `${num(temp).toFixed(0)}<small>°C</small>` : '—', temp != null ? num(temp) / Math.max(abort + 10, 100) * 100 : 0,
+        [{ at: abort / Math.max(abort + 10, 100) * 100, cls: 'bad', title: 'search stops at ' + abort + ' °C' }], temp != null && num(temp) >= abort - 5 ? 'warn' : 'good',
+        `search stops at ${abort} °C${sr?.peakC ? ` · peak ${num(sr.peakC).toFixed(0)} °C` : ''}`)
+    + tnTile('Search', sr ? (sr.running ? 'running' : esc(cp.phase ?? '')) : '<span class="muted">not started</span>', sr && vals.length ? (vals.length - Object.keys(fails).length) / vals.length * 100 : 0, [], sr?.running ? '' : 'good',
+        sr ? `${num(sr.adjustments)} adjustment${sr.adjustments === 1 ? '' : 's'} · started at ${num(sr.startValue)}` : esc(co.expect ?? ''))
+    + (sm?.ok ? `<div class="mg tn-tile" id="tn-smu"><div class="mg-label">Curve Optimizer access</div><div class="mg-val tn-ok">Yes</div><div class="mg-sub">${esc(`from Windows · Memory Integrity ${sm.memoryIntegrity == null ? 'unknown' : sm.memoryIntegrity ? 'on' : 'off'} · PawnIO ${sm.pawnIo ? 'installed' : 'missing'}`)}</div></div>`
+        : tnTile('Curve Optimizer access', sm ? '<span class="tn-bad">blocked</span>' : '<span class="muted">not checked</span>', 0, [], '', sm ? 'see the note above' : 'Check access reads it, changes nothing'))
+    + tnTile('Hardware errors', `${num(sr?.wheaSinceStart ?? 0)}`, 0, [], '', 'WHEA events since the search started')
+    + `</div>`
+    + (sr ? `<div class="tn-section"><div class="row between"><div class="label">Curve Optimizer per core</div><div class="muted tn-small"><span class="tn-key"></span>found <span class="tn-key fin"></span>final (safety margin) <span class="tn-key bad"></span>had errors</div></div>
+        <div class="tn-cores tn-chartwrap">${coreBars}</div></div>`
+      : co.supported && !co.why ? `<div class="muted" style="font-size:13px;margin-top:14px">Not started. Tune with AI → CPU starts the per-core search (${esc(co.expect ?? 'takes hours')}).</div>` : '')
+    + `<div class="tn-2col tn-section">`
+    + `<div>${cp.goal || cp.goalPlan ? `<div class="label">Goal plan</div>` + cpuPlan(cp) : ''}</div>`
+    + `<div>${sr?.biosSheet ? `<details class="tn-more" open><summary>BIOS sheet <span class="muted">(${(final ?? vals).length} values to enter)</span><button class="btn small tn-copy" id="tn-sheet-copy">Copy</button></summary><pre class="tn-sheet">${esc(sr.biosSheet)}</pre></details>` : ''}</div>`
+    + `</div>`;
+  const cpb = $('#tn-sheet-copy'); if (cpb) cpb.onclick = e => { e.preventDefault(); try { navigator.clipboard.writeText(sr.biosSheet).then(() => toast('BIOS sheet copied'), () => toast('Couldn\'t copy', 'error')); } catch { toast('Couldn\'t copy', 'error'); } };
+  const ev = cr.events ?? [], cores = Object.entries(cr.cpuCoresToLoosen ?? {});
+  $('#tn-crash-sub').textContent = cr.watching ? 'Watching (an overclock is applied)' : 'Idle: only watches while an overclock is applied';
+  const KIND = { gpu_tdr: 'GPU driver reset', gpu_app_crash: 'Game crash in the NVIDIA driver', whea_corrected: 'CPU hardware error (corrected)', whea_fatal: 'CPU hardware error', unexpected_shutdown: 'Unexpected shutdown', bugcheck: 'Bluescreen' };
+  $('#tn-crashes').innerHTML = (cores.length ? `<div class="tn-warn">CPU errors on core ${cores.map(([k, n]) => esc(k) + ' (' + num(n) + '×)').join(', ')}: loosen its Curve Optimizer value by 2.</div>` : '')
+    + (ev.length ? `<table class="tn-table"><tbody>${ev.slice(0, 8).map(e => `<tr><td>${esc(new Date(e.time).toLocaleString())}</td><td>${esc(own(KIND, e.kind) ?? e.kind)}</td><td class="muted">${esc(e.actionText ?? '')}</td></tr>`).join('')}</tbody></table>` : '<div class="muted" style="font-size:12px;margin-top:8px">No crashes recorded.</div>');
+  $('#tn-cmp').innerHTML = g ? tnCompare(st.compare) : '';
+  liveHistory();
+}
+
+/* The tuner card: one state (Ready / Tuning… / Done / Stock), progress, and live numbers for whatever is running. All text via esc()/num(). */
+function tnStatus(m, st, ai) {
+  const cp = m.cpu ?? {}, sr = cp.search, lv = sr?.live, cpuRun = cp.phase === 'searching', busy = !!ai.running || !!st.busy || cpuRun;
+  const stock = !!st.stockMode;
+  $('#tn-h-ai-v').innerHTML = busy ? '<span class="tn-pulse"></span>Tuning…' : !ai.cli ? '<span class="muted">Claude Code not found</span>' : stock ? 'Stock' : ai.summary || ai.error ? 'Done' : 'Ready';
+  const start = $('#tn-ai-start'), stop = $('#tn-ai-stop');
+  start.hidden = busy; stop.hidden = !busy; start.disabled = busy || !ai.cli;
+  start.textContent = 'Tune';
+  tnGoHint(busy);
+  const pr = $('#tn-h-ai-p'), t = st.testing;
+  let pct = null, live = '';
+  if (st.busy && t?.startedAt && t.seconds) {
+    pct = (Date.now() - new Date(t.startedAt).getTime()) / 1000 / t.seconds * 100;
+    const l = st.live ?? {};
+    live = `GPU test · core ${num(t.core) >= 0 ? '+' : ''}${num(t.core)} / memory +${num(t.memAb)}` + (l.coreC != null ? ` · ${num(l.coreC).toFixed(0)} °C` : '') + (l.mhz ? ` · ${num(l.mhz)} MHz` : '') + (l.powerW ? ` · ${num(l.powerW).toFixed(0)} W` : '');
+  } else if (cpuRun && lv) {
+    pct = lv.coresTotal ? num(lv.coresDone) / num(lv.coresTotal) * 100 : null;
+    live = `CPU undervolt search · ${num(lv.coresDone)}/${num(lv.coresTotal)} cores done` + (lv.core != null ? ` · testing core ${num(lv.core)} at ${num(lv.value)} (pass ${num(lv.pass)}/${num(lv.passesNeeded)}, ${num(lv.elapsed).toFixed(0)}/${num(lv.seconds).toFixed(0)} s)` : ' · starting') + (lv.tempC != null ? ` · ${num(lv.tempC).toFixed(0)} °C` : '');
+  }
+  pr.hidden = pct == null; if (pct != null) pr.firstChild.style.width = Math.max(0, Math.min(100, pct)).toFixed(1) + '%';
+  $('#tn-live').textContent = live;
+  if (cpuRun && !ai.running) $('#tn-ai-sub').textContent = 'The CPU undervolt search runs on its own and saves into the profile when it finishes. Stop ends it.';
+}
+
+/* Advanced: the per-core CPU editor for the profile picked under "Save to" (rebuilt only when that profile or its values change). */
+function liveCoEdit() {
+  const el = $('#tn-coedit'); if (!el) return;
+  const p = $('#tn-m-prof')?.value ?? S.cfg.activeProfile, cores = num(S.tuning?.cpu?.cpu?.cores, 0) || (S.tuning?.cpu?.search?.cores ?? 0);
+  const saved = own(S.tuning?.status?.cpuProfiles ?? {}, p);
+  const key = p + '|' + cores + '|' + JSON.stringify(saved ?? null);
+  if (el._key === key) return;
+  el._key = key;
+  const vals = Array.from({ length: cores }, (_, i) => Array.isArray(saved) ? num(saved[i], 0) : 0);
+  el.innerHTML = cores ? vals.map((v, i) => `<label class="tn-coin"><span>C${i}</span><input type="number" class="input" min="-50" max="0" step="1" value="${v}" aria-label="Core ${i} Curve Optimizer"></label>`).join('')
+    : '<div class="muted tn-small">No supported Ryzen CPU detected.</div>';
+}
+
+/* A stat tile: label, big value (trusted HTML built from num()/esc()), bar 0..100 with markers, tone, sub text (HTML). */
+function tnTile(label, valueHtml, pct, marks, tone, sub) {
+  const p = Math.max(0, Math.min(100, num(pct)));
+  return `<div class="mg tn-tile"><div class="mg-label">${esc(label)}</div><div class="mg-val">${valueHtml}</div>
+    <div class="mg-bar"><i class="${esc(tone ?? '')}" style="width:${p.toFixed(1)}%"></i>${(marks ?? []).map(m => `<b class="mk ${esc(m.cls ?? '')}" style="left:${Math.max(0, Math.min(100, num(m.at))).toFixed(1)}%" title="${esc(m.title ?? '')}"></b>`).join('')}</div>
+    <div class="mg-sub">${sub ?? ''}</div></div>`;
+}
+
+/* The read-only Curve Optimizer access check (SMU): verdict, current offsets or the fix (all text escaped). */
+function smuLine(sm) {
+  if (!sm) return '';
+  const env = `Memory Integrity ${sm.memoryIntegrity == null ? 'unknown' : sm.memoryIntegrity ? 'on' : 'off'} · PawnIO ${sm.pawnIo ? 'installed' : 'missing'}`;
+  return sm.ok
+    ? `<div class="tn-kv" id="tn-smu"><span>Curve Optimizer access</span><b><span class="tn-ok">yes, from Windows</span> <span class="muted tn-small" title="Current per-core values">(now ${(sm.offsets ?? []).map(v => num(v)).join(', ')})</span><br><span class="muted tn-small">${esc(env)}</span></b></div>`
+    : `<div class="tn-warn" id="tn-smu">${esc(sm.summary ?? '')}${sm.fix ? `<br>${esc(sm.fix)}` : ''}<div class="muted" style="font-size:12px">${esc(env)}</div></div>`;
+}
+
+/* The CPU card's goal plan: what the goal means for the BIOS values besides the Curve Optimizer (all text escaped). */
+function cpuPlan(cp) {
+  const g = cp.goal, pl = cp.goalPlan ?? {}, row = (k, v) => v == null || v === '' ? '' : `<span>${k}</span><b>${esc(String(v))}</b>`;
+  return `<div class="tn-kv" id="tn-cpu-plan">${row('Goal', g ? g.kind + (g.text ? ' (' + g.text + ')' : '') : pl.goal)}${row('Undervolt', pl.undervolt)}${row('Power limits (PBO)', pl.pbo)}${row('Boost override', pl.boostOverride)}${row('Platform limit', pl.platformLimitC != null ? pl.platformLimitC + (typeof pl.platformLimitC === 'number' ? ' °C' : '') : null)}${row('Fans', pl.fans)}${pl.advisoryOnly ? row('Mode', 'advisory only: Glint changes nothing') + row('Why', pl.note) : ''}</div>`
+    + (cp.curveOptimizerNote ? `<div class="muted" style="font-size:12.5px;margin-top:8px" id="tn-co-note">${esc(cp.curveOptimizerNote)}</div>` : '');
+}
+
+/* Stock vs tuned: bars per metric, % delta (green = better, amber = costs more power / heat). */
+function tnCompare(cp) {
+  const head = '<div class="label">Stock vs tuned</div>';
+  if (!cp?.stock) return head + '<div class="muted" style="font-size:12.5px;margin-top:6px" id="tn-cmp-empty">No stock baseline yet. Run Tune with AI: it measures stock first.</div>';
+  if (!cp.tuned) return head + `<div class="muted" style="font-size:12.5px;margin-top:6px" id="tn-cmp-empty">Stock is measured (${cp.stock.loadMhz ? num(cp.stock.loadMhz) + ' MHz' : '—'}${cp.stock.rate ? ', ' + num(cp.stock.rate).toFixed(0) + ' G ops/s' : ''}). No passing tuned result to compare yet.</div>`;
+  const a = cp.stock, b = cp.tuned;
+  const rows = [
+    ['Clock under load', 'loadMhz', v => num(v).toFixed(0) + ' MHz', true],
+    ['Compute', 'rate', v => num(v).toFixed(0) + ' G/s', true],
+    ['VRAM bandwidth', 'gBps', v => num(v).toFixed(0) + ' GB/s', true],
+    ['Power', 'powerW', v => num(v).toFixed(0) + ' W', false],
+    ['Peak temp', 'peakCoreC', v => num(v).toFixed(0) + ' °C', false],
+  ].filter(([, k]) => num(a[k]) > 0 && num(b[k]) > 0);
+  const pmv = v => (num(v) >= 0 ? '+' : '−') + Math.abs(num(v));
+  return head + `<div class="tn-cmp-legend"><span><i style="background:#5b6478"></i>Stock</span><span><i style="background:var(--accent)"></i>Tuned (core ${pmv(b.core)} / memory ${pmv(b.memAb)})</span></div>`
+    + rows.map(([label, k, f, perf]) => {
+      const av = num(a[k]), bv = num(b[k]), mx = Math.max(av, bv), d = (bv - av) / av * 100;
+      const cls = Math.abs(d) < 0.5 ? 'flat' : perf ? (d > 0 ? 'gain' : 'cost') : (d > 0 ? 'cost' : 'gain');
+      return `<div class="cmp-row" data-cmp="${esc(k)}"><span class="lbl">${esc(label)}</span><div class="cmp-bars">
+        <div class="cmp-bar cmp-stock"><i style="width:${(av / mx * 100).toFixed(1)}%"></i><span>${esc(f(av))}</span></div>
+        <div class="cmp-bar cmp-tuned"><i style="width:${(bv / mx * 100).toFixed(1)}%"></i><span>${esc(f(bv))}</span></div></div>
+        <span class="cmp-delta ${cls}">${d >= 0 ? '+' : '−'}${Math.abs(d).toFixed(1)}%</span></div>`;
+    }).join('');
+}
+
+/* Test history: every saved test, paginated through the host (history op). The page and size survive refreshes and re-renders. */
+const tnHist = (() => {
+  let page = 0, size = 15;
+  try { page = clamp(Math.round(num(sessionStorage.getItem('glint.tn.page'), 0)), 0, 100000); size = clamp(Math.round(num(localStorage.getItem('glint.tn.psize'), 15)), 5, 100); } catch { }
+  return { page, size, data: null };
+})();
+function tnSave() { try { sessionStorage.setItem('glint.tn.page', String(tnHist.page)); localStorage.setItem('glint.tn.psize', String(tnHist.size)); } catch { } }
+function tnAskHistory() { if (T_CFG().enabled) tuningAsk('history', { offset: tnHist.page * tnHist.size, limit: tnHist.size }); }
+function tnSetPage(p) {
+  const last = Math.max(0, Math.ceil(num(tnHist.data?.total) / tnHist.size) - 1);
+  tnHist.page = clamp(Math.round(num(p)), 0, last); tnSave(); tnAskHistory(); liveHistory();
+}
+function liveHistory() {
+  const el = $('#tn-history'); if (!el) return;
+  const d = tnHist.data, pm = v => (num(v) >= 0 ? '+' : '') + num(v);
+  const items = d?.items ?? (S.tuning?.status?.history ?? []).slice(tnHist.page * tnHist.size, (tnHist.page + 1) * tnHist.size);
+  const total = d ? num(d.total) : (S.tuning?.status?.history ?? []).length;
+  if (!items.length) { el.innerHTML = '<div class="muted" style="font-size:12px;margin-top:8px">No tests yet.</div>'; return; }
+  const pages = Math.max(1, Math.ceil(total / tnHist.size)), cur = Math.min(tnHist.page, pages - 1);
+  const nums = [...new Set([0, cur - 1, cur, cur + 1, pages - 1].filter(x => x >= 0 && x < pages))].sort((x, y) => x - y);
+  let prev = -1; const btns = [];
+  for (const n of nums) { if (prev >= 0 && n > prev + 1) btns.push('<span class="muted">…</span>'); btns.push(`<button class="btn small ${n === cur ? 'cur' : ''}" data-hp="${n}">${n + 1}</button>`); prev = n; }
+  const first = cur * tnHist.size + 1;
+  el.innerHTML = `<div style="overflow-x:auto"><table class="tn-table"><thead><tr><th>When</th><th>Core</th><th>Memory</th><th>Length</th><th>Result</th><th>Clock</th><th>Compute</th><th>VRAM</th><th>Power</th><th>Peak</th><th title="Average / peak fan duty during the test: a noise proxy">Fans</th><th>Notes</th></tr></thead><tbody>${items.map(r => `
+    <tr><td>${esc(new Date(r.time).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }))}</td><td>${pm(r.core)}</td><td>${pm(r.memAb)}</td><td>${num(r.seconds)} s${r.light ? ' light' : ''}</td>
+      <td class="${r.ok ? 'tn-pass' : 'tn-fail'}">${r.ok ? 'pass' : 'fail'}</td>
+      <td>${r.loadMhz ? num(r.loadMhz) + ' MHz' : '—'}</td><td>${r.rate ? num(r.rate).toFixed(0) + ' G/s' : '—'}</td><td>${r.gBps ? num(r.gBps).toFixed(0) + ' GB/s' : '—'}</td>
+      <td>${r.powerW ? num(r.powerW).toFixed(0) + ' W' : '—'}</td><td>${r.peakCoreC ? num(r.peakCoreC).toFixed(0) + ' °C' : '—'}</td>
+      <td class="tn-fans">${r.avgFanPct != null ? `<span class="fan-chip ${num(r.avgFanPct) < 40 ? 'low' : num(r.avgFanPct) < 65 ? 'mid' : 'high'}" title="${r.avgFanRpm ? esc(num(r.avgFanRpm).toFixed(0)) + ' rpm average' : 'average fan duty'}">${num(r.avgFanPct).toFixed(0)}%</span><span class="muted"> / ${num(r.peakFanPct).toFixed(0)}%</span>` : '—'}${TN_STYLES.some(x => x[0] === r.goal) ? ` <span class="muted" title="The goal of the run that made this test">${esc(r.goal)}</span>` : ''}</td>
+      <td>${TF.limitChips(r)}${r.why ? ` <span class="muted">${esc(r.why)}</span>` : ''}</td></tr>`).join('')}</tbody></table></div>
+    <div class="tn-pager"><button class="btn small" data-hp="prev" ${cur <= 0 ? 'disabled' : ''}>‹ Newer</button>${btns.join('')}<button class="btn small" data-hp="next" ${cur >= pages - 1 ? 'disabled' : ''}>Older ›</button>
+      <span class="info" id="tn-hinfo">${first}–${first + items.length - 1} of ${total} tests · page ${cur + 1} of ${pages}</span>
+      <select id="tn-psize" class="input" title="Tests per page">${[15, 30, 50].map(n => `<option value="${n}" ${n === tnHist.size ? 'selected' : ''}>${n} / page</option>`).join('')}</select></div>`;
+}
+
+/* ------------------------------------------------------------------ profiles: manager, per-profile overclocks, manual overclocking */
+
+// Same rules as the host (ConfigValidator.ProfileNameError + uniqueness): the host re-checks everything.
+function profileNameError(name, except) {
+  const n = String(name ?? '');
+  if (!n.trim()) return 'Give the profile a name';
+  if (n.length > 40) return 'At most 40 characters';
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(n)) return 'No control characters';
+  if (n.trim().toLowerCase() === 'stock') return '"Stock" is reserved (it means no overclock)';
+  if (Object.keys(S.cfg.profiles).some(k => k !== except && k.trim().toLowerCase() === n.trim().toLowerCase())) return 'A profile with that name already exists';
+  return '';
+}
+const pmv = v => (num(v) >= 0 ? '+' : '−') + Math.abs(num(v));
+/* A profile's overclock from the tuning status: {kind: 'stock' | 'tested' | 'untested', text, driver, when}. */
+function profileOc(name) {
+  const o = own(S.tuning?.status?.profiles, name);
+  if (!o || (num(o.core) === 0 && num(o.memAb) === 0 && o.powerPct == null)) return { kind: 'stock', text: 'stock' };
+  const tested = num(o.testedCore) >= num(o.core) && num(o.testedMemAb) >= num(o.memAb);
+  return { kind: tested ? 'tested' : 'untested', text: `core ${pmv(o.core)} · memory ${pmv(o.memAb)}${o.powerPct != null ? ` · power ${num(o.powerPct)}%` : ''}`, driver: o.driver, when: o.when };
+}
+const ocBadge = oc => oc.kind === 'stock' ? '<span class="muted">stock</span>'
+  : `${esc(oc.text)} <span class="oc-tag ${oc.kind}" title="${oc.kind === 'tested' ? 'Passed a full stress test at or above these offsets' : 'Saved without a passing full test: it may be unstable'}">${oc.kind}</span>`;
+const tuningOn = () => !!S.cfg?.tuning?.enabled;
+const aiKind = name => { const k = own(S.tuning?.status?.aiProfiles, name); return typeof k === 'string' ? k : null; };
+const aiBadge = name => aiKind(name) ? ` <span class="oc-tag ai" title="Made by a tune (${esc(aiKind(name))} goal). Tuning the same goal again rebuilds it; rename it to keep it.">AI</span>` : '';
+
+/* Manager (a dialog from the header button): create a copy, rename, reorder, delete, switch, clear the overclock. */
+function openProfileManager() {
+  if (S.pm) return;
+  S.pm = { rename: null, err: '', prevFocus: document.activeElement };
+  const d = document.createElement('div');
+  d.id = 'pm'; d.className = 'pm-back';
+  d.innerHTML = '<div class="pm-card" role="dialog" aria-modal="true" aria-labelledby="pm-title"></div>';
+  document.body.append(d);
+  d.addEventListener('mousedown', e => { if (e.target === d) closeProfileManager(); });
+  if (tuningOn()) tuningAsk();
+  pmRender();
+  $('#pm-new')?.focus();
+}
+function closeProfileManager() {
+  const f = S.pm?.prevFocus; $('#pm')?.remove(); S.pm = null;
+  try { f?.focus?.(); } catch { }
+}
+function pmRender() {
+  const card = $('#pm .pm-card'); if (!card) return;
+  const keep = { new: $('#pm-new')?.value ?? '', from: $('#pm-from')?.value, ren: $('#pm-ren')?.value };
+  const af = document.activeElement, afId = af && card.contains(af) ? af.id : '', afSel = afId && af.selectionStart != null ? [af.selectionStart, af.selectionEnd] : null;
+  const names = Object.keys(S.cfg.profiles), act = S.cfg.activeProfile, oc = tuningOn();
+  const row = (p, i) => {
+    const isAct = p === act, o = profileOc(p), editing = S.pm.rename === p;
+    return `<tr data-prow="${esc(p)}" class="${isAct ? 'act' : ''}">
+      <td class="pm-name">${editing ? `<input type="text" id="pm-ren" maxlength="60" value="${esc(keep.ren ?? p)}" aria-label="New name for ${esc(p)}" spellcheck="false" autocomplete="off"><button class="btn small primary" data-pm="rename-ok">Save</button><button class="btn small" data-pm="rename-no">Cancel</button>`
+        : `<b>${esc(p)}</b>${aiBadge(p)}${isAct ? ' <span class="oc-tag active">active</span>' : ''}`}</td>
+      <td class="muted">${num(S.cfg.profiles[p]?.length)} rule${S.cfg.profiles[p]?.length === 1 ? '' : 's'}</td>
+      ${oc ? `<td>${ocBadge(o)}</td>` : ''}
+      <td class="pm-act">
+        <button class="icon-btn small" data-pm="up" data-p="${esc(p)}" title="Move up" ${i === 0 ? 'disabled' : ''}>▲</button>
+        <button class="icon-btn small" data-pm="down" data-p="${esc(p)}" title="Move down" ${i === names.length - 1 ? 'disabled' : ''}>▼</button>
+        <button class="btn small" data-pm="switch" data-p="${esc(p)}" ${isAct ? 'disabled' : ''}>Switch</button>
+        <button class="btn small" data-pm="rename" data-p="${esc(p)}">Rename</button>
+        <button class="btn small danger" data-pm="delete" data-p="${esc(p)}" ${isAct ? 'disabled title="The active profile can\'t be deleted: switch to another one first"' : ''}>Delete</button>
+      </td></tr>`;
+  };
+  const html = `
+    <div class="row between" style="align-items:flex-start;gap:12px"><div style="flex:1;min-width:0"><div class="card-title" id="pm-title">Fan profiles</div><div class="card-sub">Each profile has its own fan rules${oc ? ' and its own GPU overclock' : ''}. Switching applies both.${Object.keys(S.cfg.profiles).some(aiKind) ? ' <span class="oc-tag ai">AI</span> profiles were made by Tune with AI: renaming or deleting them is fine, tuning the same goal again recreates them.' : ''}</div></div>
+      <button class="icon-btn" data-pm="close" aria-label="Close">${IC.x}</button></div>
+    <div style="overflow-x:auto"><table class="tn-table pm-table"><thead><tr><th>Profile</th><th>Rules</th>${oc ? '<th>Overclock</th>' : ''}<th></th></tr></thead><tbody>${names.map(row).join('')}</tbody></table></div>
+    <div class="pm-new row" style="gap:8px;flex-wrap:wrap">
+      <input type="text" id="pm-new" maxlength="60" placeholder="New profile name" value="${esc(keep.new)}" aria-label="New profile name" spellcheck="false" autocomplete="off">
+      <span class="muted" style="font-size:12.5px">as a copy of</span>
+      <select id="pm-from" aria-label="Copy of">${names.map(p => `<option value="${esc(p)}" ${p === (keep.from && own(S.cfg.profiles, keep.from) ? keep.from : act) ? 'selected' : ''}>${esc(p)}</option>`).join('')}</select>
+      <button class="btn primary small" data-pm="create">Create</button>
+    </div>
+    <div class="pm-err" id="pm-err" role="alert"></div>`;
+  if (card._html !== html) { card._html = html; card.innerHTML = html; }     // the tuning poll must not rebuild an unchanged dialog under the user's click
+  $('#pm-err').textContent = S.pm.err;
+  const back = afId && document.getElementById(afId);
+  if (back) { back.focus(); if (afSel) try { back.setSelectionRange(...afSel); } catch { } }
+  else if (S.pm.rename != null) { const r = $('#pm-ren'); if (r) { r.focus(); r.select(); } }
+}
+function pmError(t) { S.pm.err = t; const e = $('#pm-err'); if (e) e.textContent = t; }
+document.addEventListener('click', e => {
+  const b = e.target.closest('#pm [data-pm]'); if (!b || b.disabled) return;
+  const op = b.dataset.pm, p = b.dataset.p;
+  if (op === 'close') return closeProfileManager();
+  if (op === 'switch') { switchProfile(p); return pmRender(); }
+  if (op === 'rename') { S.pm.rename = p; S.pm.err = ''; return pmRender(); }
+  if (op === 'rename-no') { S.pm.rename = null; S.pm.err = ''; return pmRender(); }
+  if (op === 'rename-ok') {
+    const from = S.pm.rename, to = $('#pm-ren').value.trim(), err = to === from ? '' : profileNameError(to, from);
+    if (err) return pmError(err);
+    S.pm.rename = null; S.pm.err = '';
+    if (to !== from) { flushCommit(); S.ovrLocalUntil = 0; send({ type: 'profileRename', from, to }); }      // the host renames the profile, its overclock and activeProfile together
+    return pmRender();
+  }
+  if (op === 'create') {
+    const name = $('#pm-new').value.trim(), from = $('#pm-from').value, err = profileNameError(name);
+    if (err) return pmError(err);
+    if (!own(S.cfg.profiles, from)) return pmError('Pick a profile to copy');
+    S.cfg.profiles[name] = structuredClone(S.cfg.profiles[from]);
+    S.pm.err = ''; $('#pm-new').value = '';
+    commit(true); renderProfiles(); return pmRender();
+  }
+  if (op === 'delete') {
+    if (p === S.cfg.activeProfile) return pmError('The active profile can\'t be deleted: switch to another one first');
+    if (Object.keys(S.cfg.profiles).length <= 1) return pmError('There must be at least one profile');
+    if (!confirm(`Delete the profile "${p}"${profileOc(p).kind !== 'stock' ? ' and its saved overclock' : ''}? Its fan rules can't be recovered.${aiKind(p) ? ' (Tuning the same goal with AI again recreates it.)' : ''}`)) return;
+    delete S.cfg.profiles[p]; if (S.profile === p) S.profile = S.cfg.activeProfile;
+    S.pm.err = ''; commit(true); renderProfiles(); return pmRender();
+  }
+  if (op === 'up' || op === 'down') {
+    const ks = Object.keys(S.cfg.profiles), i = ks.indexOf(p), j = i + (op === 'up' ? -1 : 1);
+    if (i < 0 || j < 0 || j >= ks.length) return;
+    [ks[i], ks[j]] = [ks[j], ks[i]];
+    S.cfg.profiles = Object.fromEntries(ks.map(k => [k, S.cfg.profiles[k]]));
+    commit(true); renderProfiles(); return pmRender();
+  }
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && S.pm) { e.stopPropagation(); if (S.pm.rename != null) { S.pm.rename = null; S.pm.err = ''; pmRender(); } else closeProfileManager(); }
+  if (e.key === 'Enter' && e.target.id === 'pm-new') $('#pm [data-pm="create"]')?.click();
+  if (e.key === 'Enter' && e.target.id === 'pm-ren') $('#pm [data-pm="rename-ok"]')?.click();
+});
+
+/* Tuning page: every profile with its overclock, and what you can do with it. */
+function liveProfileOc() {
+  const el = $('#tn-profiles'); if (!el) return;
+  const act = S.cfg.activeProfile, st = S.tuning?.status ?? {}, cpuP = st.cpuProfiles ?? {}, stock = !!st.stockMode, ps = st.profileStats ?? {}, base = ps.stock;
+  const tuned = Object.keys(S.cfg.profiles).filter(p => { const co = own(cpuP, p); return aiKind(p) || profileOc(p).kind !== 'stock' || (Array.isArray(co) && co.length); });
+  const delta = (v, b, invert) => { if (v == null || !b) return ''; const d = (num(v) / num(b) - 1) * 100; if (!isFinite(d) || Math.abs(d) < 0.05) return ''; const good = invert ? d < 0 : d > 0; return `<em class="${good ? 'up' : 'dn'}">${d > 0 ? '+' : ''}${d.toFixed(1)}%</em>`; };
+  const metric = (k, v, d = '') => v == null || v === '' ? '' : `<span class="tn-m"><i>${k}</i><b>${v}</b>${d}</span>`;
+  const pctOf = (v, b) => v == null || !b ? null : (num(v) / num(b) - 1) * 100;
+  const full = (r, b) => !r ? '' : [r.loadMhz != null ? `Clock ${num(r.loadMhz)} MHz` : '', r.rate != null ? `compute ${num(r.rate).toFixed(0)} G/s` : '', r.gBps != null ? `VRAM ${num(r.gBps).toFixed(0)} GB/s` : '', r.powerW != null ? `power ${num(r.powerW).toFixed(0)} W` : '', r.peakCoreC != null ? `peak ${num(r.peakCoreC).toFixed(0)} °C` : '', r.avgFanPct != null ? `fan ${num(r.avgFanPct).toFixed(0)}%` : ''].filter(Boolean).join(' · ') + (r.runs > 1 ? ` (average of ${num(r.runs)} runs)` : '') + (b ? ` (stock ${num(b.loadMhz)} MHz, ${num(b.powerW).toFixed(0)} W, ${num(b.peakCoreC).toFixed(0)} °C)` : '');
+  const gpuStats = (r, b, pair) => {
+    if (pair && !pair.tuned && pair.note) return `<span class="tn-gain" title="${esc(pair.note)}">GPU at stock</span>`;
+    if (pair?.tuned && pair.stock) { r = pair.tuned; b = pair.stock; }
+    if (!r) return '';
+    const g = pair?.gain != null ? num(pair.gain) : pctOf(r.rate ?? r.loadMhz, b?.rate ?? b?.loadMhz);
+    const effic = pair?.tuned?.powerPct != null;
+    if (effic && g != null) return `<span class="tn-gain" title="${esc(`Efficiency mode, tested back to back with stock: ${g.toFixed(1)}% more work per watt at a ${num(pair.tuned.powerPct)}% power limit. ` + full(r, b))}">+${g.toFixed(1)}% GPU per watt</span>`;
+    return `<span class="tn-gain ${g != null && g < 0 ? 'dn' : ''}" title="${esc((pair?.gain != null ? 'Tested back to back with stock (75% compute, 25% VRAM bandwidth). ' : '') + full(r, b))}">${g == null ? 'GPU tuned' : `${g >= 0 ? '+' : ''}${g.toFixed(1)}% GPU`}</span>`
+      + `<span class="tn-facts" title="${esc(full(r, b))}">${[r.peakCoreC != null ? `${num(r.peakCoreC).toFixed(0)} °C` : '', r.powerW != null ? `${num(r.powerW).toFixed(0)} W` : ''].filter(Boolean).join(' · ')}</span>`;
+  };
+  const pctTxt = (v, b) => { const d = pctOf(v, b); return d == null ? null : `${d >= 0 ? '+' : ''}${d.toFixed(1)}%`; };
+  const cpuPill = (co, cb) => {
+    const s = cb?.stock, t = cb?.tuned, all = t && s ? pctOf(t.allCore, s.allCore) : null, one = t && s ? pctOf(t.single, s.single) : null;
+    const avgCo = co ? (co.reduce((a, v) => a + num(v), 0) / co.length).toFixed(0) : null;
+    if (all == null && one == null) return co ? cpuBars(co) : '';
+    const head = all ?? one, tip = [all != null ? `all-core ${pctTxt(t.allCore, s.allCore)}` : '', one != null ? `single-core ${pctTxt(t.single, s.single)}` : '',
+      t.clockMhz && s.clockMhz ? `clock ${num(s.clockMhz).toFixed(0)} → ${num(t.clockMhz).toFixed(0)} MHz` : '', t.peakC != null && s.peakC != null ? `peak ${num(s.peakC).toFixed(0)} → ${num(t.peakC).toFixed(0)} °C` : '',
+      t.powerW && s.powerW ? `power ${num(s.powerW).toFixed(0)} → ${num(t.powerW).toFixed(0)} W` : '', avgCo != null ? `undervolt avg ${avgCo}` : ''].filter(Boolean).join(' · ');
+    return `<span class="tn-gain cpu ${head < 0 ? 'dn' : ''}" title="CPU vs stock: ${esc(tip)}">${head >= 0 ? '+' : ''}${head.toFixed(1)}% CPU</span>`;
+  };
+  const cpuBars = co => `<span class="tn-gain cpu" title="Curve Optimizer per core: ${esc(co.join(', '))}. The % change shows once the tune has measured it.">${(co.reduce((a, v) => a + num(v), 0) / co.length).toFixed(0)} CPU</span>`;
+  const fansTxt = () => '';
+  const row = (key, name, sum, stats, isAct, btn, tip) => `<div class="tn-prof ${isAct ? 'act' : ''}" ${key}><span class="tn-pdot"></span><div class="tn-pmain"><b>${name}</b>${stats ? `<span class="tn-pstats">${stats}</span>` : ''}<span class="tn-psum" title="${esc(tip)}">${sum}</span></div>${isAct ? '<span class="tn-pinuse">In use</span>' : btn}</div>`;
+  const stockStats = base ? `<span class="tn-facts" title="${esc(full(base, null))}">${[base.peakCoreC != null ? `${num(base.peakCoreC).toFixed(0)} °C` : '', base.powerW != null ? `${num(base.powerW).toFixed(0)} W` : ''].filter(Boolean).join(' · ')}</span>` : '';
+  const html = `<div class="tn-plist">${row('data-stockrow', 'Stock', 'factory clocks, BIOS CPU settings', stockStats, stock, '<button class="btn small" data-stock>Use</button>', 'factory clocks, BIOS CPU settings')}${tuned.map(p => {
+    const o = profileOc(p), co = own(cpuP, p), hasCo = Array.isArray(co) && co.length, r = own(ps.profiles ?? {}, p);
+    const coAvg = hasCo ? `CPU undervolt ${(co.reduce((a, v) => a + num(v), 0) / co.length).toFixed(0)}` : '';
+    const parts = [o.kind === 'stock' ? '' : `GPU ${esc(o.text)}${o.kind === 'untested' ? ' <span class="tn-warnmark" title="Saved without a passing full test: it may be unstable">untested</span>' : ''}`, coAvg].filter(Boolean);
+    const tip = [o.kind === 'stock' ? '' : `GPU ${o.text}${o.kind === 'untested' ? ' (untested)' : ''}`, coAvg].filter(Boolean).join(' · ') || 'tuning not finished yet';   // plain text, escaped once in row()
+    const pb = own(st.pboProfiles ?? {}, p);
+    const sv = own(st.profiles ?? {}, p), gp = own(st.gpuBench ?? {}, p);
+    const pairOk = gp && (gp.tuned ? !!sv && gp.tuned.core === sv.core && gp.tuned.memAb === sv.memAb : !sv);   // stale once the offsets change
+    const stats = gpuStats(r, base, pairOk ? gp : null) + cpuPill(hasCo ? co : null, own(st.cpuBench ?? {}, p)) + (pb?.short ? `<span class="tn-facts tn-pbo" title="${esc('Recommendation from the load test (Glint can\'t read or change the BIOS): ' + (pb.detail ?? ''))}">${esc(String(pb.short).replace(/^PBO:\s*/, 'PBO tip: '))}</span>` : '') + fansTxt(p);
+    const nt = own(st.notes ?? {}, p), when = nt?.time ? new Date(nt.time) : null;
+    const notes = nt?.text ? `<details class="tn-pnotes" data-pnotes="${esc(p)}" ${S.tnNotesOpen?.has(p) ? 'open' : ''}><summary>What this tune set${when && !isNaN(when) ? ` <span class="muted">· ${esc(when.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }))}</span>` : ''}</summary><div class="tf tn-pnotes-body">${TF.md(String(nt.text))}</div></details>` : '';
+    return row(`data-ocrow="${esc(p)}"`, esc(p) + aiBadge(p), parts.length ? parts.join(' · ') : 'tuning not finished yet', stats, p === act && !stock, `<button class="btn small" data-pswitch="${esc(p)}">Use</button>`, tip) + notes;
+  }).join('')}</div>${tuned.length ? '' : '<div class="muted tn-small" style="margin-top:10px">Press Tune: the result shows up here as a profile.</div>'}`;
+  if (el._html !== html) { el._html = html; el.innerHTML = html; }     // the 3 s refresh must not rebuild (and swallow clicks on) an unchanged list
+}
+document.addEventListener('toggle', e => {          // remember which profiles' notes are open across refreshes
+  const d = e.target; if (!(d instanceof HTMLElement) || !d.matches?.('details[data-pnotes]')) return;
+  S.tnNotesOpen ??= new Set(); d.open ? S.tnNotesOpen.add(d.dataset.pnotes) : S.tnNotesOpen.delete(d.dataset.pnotes);
+}, true);
+document.addEventListener('click', e => {
+  if (e.target.closest('#tn-restore')) tuningAsk('profileRestore');
+  const sw = e.target.closest('#tn-profiles [data-pswitch]'), cl = e.target.closest('#tn-profiles [data-pclear]'), so = e.target.closest('#tn-profiles [data-stock]');
+  if (sw && !sw.disabled && own(S.cfg.profiles, sw.dataset.pswitch)) tuningAsk('useProfile', { profile: sw.dataset.pswitch });
+  if (so) tuningAsk('stockAll');
+  if (cl && !cl.disabled) {
+    const p = cl.dataset.pclear;
+    if (own(S.cfg.profiles, p) && confirm(`Clear the overclock saved for "${p}"? Its GPU runs at stock clocks and its CPU at the BIOS values${p === S.cfg.activeProfile ? ' from now' : ''}. Its fan curves stay.`)) tuningAsk('clearProfile', { profile: p });
+  }
+});
+
+/* Manual overclocking (GPU card). The sliders live outside the polled markup so a refresh never moves them. */
+const MAN_UNITS = { core: 'MHz', mem: '' };
+const manState = () => (S.tnMan ??= { core: 0, mem: 0, prof: null });
+const manClamp = (v, max) => clamp(Math.round(num(v, 0)), 0, Math.max(0, num(max, 0)));
+function manLimits() { const L = S.tuning?.status?.limits ?? {}; return { core: num(L.maxCore, 0), mem: num(L.maxMemAb, 0) }; }
+/* Proven = a passing full (not light) test at or above these offsets on this driver (this page's recent history and the
+   profiles' saved tested levels). The host decides for real: this only decides whether to ask first. */
+function manProven(core, mem) {
+  if (core <= 0 && mem <= 0) return true;
+  const st = S.tuning?.status ?? {}, drv = st.gpu?.driver;
+  if (!drv) return false;
+  if ((st.history ?? []).some(h => h.ok && !h.light && h.driver === drv && num(h.core) >= core && num(h.memAb) >= mem)) return true;
+  return Object.values(st.profiles ?? {}).some(o => o.driver === drv && num(o.testedCore) >= core && num(o.testedMemAb) >= mem && (num(o.testedCore) > 0 || num(o.testedMemAb) > 0));
+}
+function manMarkup() {
+  const m = manState();
+  return `<div class="tn-man" id="tn-man"><div class="card-title">GPU overclock</div><div class="card-sub">Clock offsets for this profile. Untested settings ask first.</div>
+    <div style="height:12px"></div>
+    <div class="man-row"><label for="tn-m-core">Core</label><input type="range" id="tn-m-core" min="0" max="500" step="5" value="${m.core}"><input type="number" class="input tn-num" id="tn-m-core-n" min="0" max="500" step="5" value="${m.core}" aria-label="Core offset in MHz"><span class="muted">MHz</span></div>
+    <div class="man-row"><label for="tn-m-mem">Memory</label><input type="range" id="tn-m-mem" min="0" max="3000" step="50" value="${m.mem}"><input type="number" class="input tn-num" id="tn-m-mem-n" min="0" max="3000" step="50" value="${m.mem}" aria-label="Memory offset (Afterburner units)"><span class="muted">AB</span></div>
+    <div class="tn-man-meta" id="tn-m-info"></div>
+    <div class="tn-btnrow"><button class="btn" id="tn-m-test" title="A 60 second stress test at these offsets; the card goes back to stock after it">Test 60 s</button><button class="btn" id="tn-m-apply" title="Apply now, until reboot or another profile">Apply</button>
+      <span class="tn-man-save"><select id="tn-m-prof" aria-label="Profile to save to"></select></span><button class="btn primary" id="tn-m-save">Save to profile</button></div>
+    <div class="muted tn-small tn-note" id="tn-m-power"></div></div>`;
+}
+function manBind() {
+  const m = manState();
+  const set = (k, v) => {
+    const max = manLimits()[k]; v = manClamp(v, max); m[k] = v;
+    $(`#tn-m-${k === 'core' ? 'core' : 'mem'}`).value = v; $(`#tn-m-${k === 'core' ? 'core' : 'mem'}-n`).value = v; liveMan();
+  };
+  $('#tn-m-core').oninput = e => set('core', e.target.value); $('#tn-m-mem').oninput = e => set('mem', e.target.value);
+  $('#tn-m-core-n').onchange = e => set('core', e.target.value); $('#tn-m-mem-n').onchange = e => set('mem', e.target.value);
+  $('#tn-m-prof').onchange = e => { m.prof = e.target.value; liveMan(); };
+  $('#tn-m-test').onclick = () => tuningAsk('test', { core: m.core, memAb: m.mem, seconds: 60 });
+  const ask = (what, extra) => {
+    const proven = manProven(m.core, m.mem), args = { core: m.core, memAb: m.mem, ...extra };
+    if (!proven) {
+      if (!confirm(`Untested overclock\n\ncore ${pmv(m.core)} MHz / memory ${pmv(m.mem)} has not passed a full stress test on this driver. An untested overclock can crash games, reset the GPU driver or blue-screen the PC. Glint's crash watch will back it off, but only after a crash.\n\nRun "Test 60 s" first unless you accept that risk.\n\n${what} anyway?`)) return;
+      args.force = true;                                                // the only place the dashboard ever sends force
+    }
+    return args;
+  };
+  $('#tn-m-apply').onclick = () => { const a = ask('Apply'); if (a) tuningAsk('manualApply', a); };
+  $('#tn-m-save').onclick = () => {
+    const p = $('#tn-m-prof').value; if (!own(S.cfg.profiles, p)) return;
+    const a = ask(`Save for "${p}"`, { profile: p }); if (a) tuningAsk('manualSave', a);
+  };
+}
+function liveMan() {
+  const box = $('#tn-man'); if (!box) return;
+  const m = manState(), st = S.tuning?.status ?? {}, g = st.gpu, L = manLimits();
+  for (const [k, id] of [['core', 'core'], ['mem', 'mem']]) {
+    const max = L[k] || (k === 'core' ? 500 : 3000);
+    for (const sfx of ['', '-n']) $(`#tn-m-${id}${sfx}`).max = max;
+    m[k] = manClamp(m[k], max);
+    $(`#tn-m-${id}`).value = m[k]; if (document.activeElement !== $(`#tn-m-${id}-n`)) $(`#tn-m-${id}-n`).value = m[k];
+    $(`#tn-m-${id}`).style.setProperty('--p', (max ? m[k] / max * 100 : 0) + '%');
+  }
+  const names = Object.keys(S.cfg.profiles);
+  if (!names.includes(m.prof)) m.prof = S.cfg.activeProfile;
+  const sel = $('#tn-m-prof'), want = names.join('\u0001');
+  if (sel.dataset.sig !== want) { sel.dataset.sig = want; sel.innerHTML = names.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join(''); }
+  sel.value = m.prof;
+  const proven = manProven(m.core, m.mem), busy = !!st.busy, ok = !!g && g.tunable !== false && !g.blocked;
+  const o = g?.offsets ?? {};
+  $('#tn-m-info').innerHTML = `<span>Applied now: <b>core ${esc(pmv(o.core))} MHz · memory ${esc(pmv(o.memAb))}</b></span>${proven ? '<span class="oc-tag tested" title="At or below a setting that passed a full stress test">proven by a full test</span>' : '<span class="oc-tag untested" title="Applying or saving asks first">untested</span>'}`;
+  const pl = g?.powerLimitW ?? {}, unlocked = !!st.limits?.unlockPower;
+  $('#tn-m-power').textContent = g ? (unlocked ? `Power limit unlocked to the card's maximum (${num(pl.max)} W) while overclocked.` : `Power limit stays at the default (${num(pl.default)} W). "Unlock power limit" raises it to ${num(pl.max)} W.`) : '';
+  const ap = $('#tn-adv-prof'); if (ap) { if (ap.dataset.sig !== want) { ap.dataset.sig = want; ap.innerHTML = sel.innerHTML; } ap.value = m.prof; }
+  for (const id of ['#tn-m-test', '#tn-m-apply', '#tn-m-save', '#tn-m-core', '#tn-m-mem', '#tn-m-core-n', '#tn-m-mem-n', '#tn-m-prof']) $(id).disabled = busy || !ok;
 }
 
 /* Game overlay page */

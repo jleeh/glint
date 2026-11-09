@@ -32,3 +32,6 @@ node_modules/
 !/tools/*.js
 !/tools/package.json
 !/tools/package-lock.json
+!/tools/fetch-corecycler.ps1
+# CoreCycler (+ y-cruncher) is fetched by tools/fetch-corecycler.ps1 at build time, never committed
+src/Glint/third_party/

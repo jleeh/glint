@@ -62,6 +62,9 @@ public static class Cli
 
     static readonly Dictionary<string, (string method, JsonObject schema)> Tools = Build();
 
+    /// <summary>Is there an MCP tool of this name (tests check the AI tuner only asks for tools that exist).</summary>
+    public static bool HasTool(string name) => Tools.ContainsKey(name);
+
     static Dictionary<string, (string, JsonObject)> Build()
     {
         JsonObject Obj(params (string name, string type, string desc, bool req)[] props)
@@ -135,6 +138,7 @@ public static class Cli
         T("curves.remove", Obj(("name", "string", "Curve name (refused while a rule uses it)", true)));
         T("profiles.create", Obj(("name", "string", "New profile name", true), ("from", "string", "Profile to copy (default: the active one)", false)));
         T("profiles.remove", Obj(("name", "string", "Profile name (not the active one)", true)));
+        T("profiles.rename", Obj(("from", "string", "Current profile name", true), ("to", "string", "New name (1-40 characters, unique, not 'Stock')", true)));
         T("profile.set", Obj(("name", "string", "Fan profile name", true)));
         T("config.get", Obj());
         T("config.schema", Obj());
@@ -160,7 +164,36 @@ public static class Cli
         T("overlay.stats", Obj());
         T("ha.status", Obj());
         T("setup.check", Obj());
+        T("tuning.status", Obj());
+        T("tuning.gpu.test", Obj(("core", "integer", "Core clock offset, MHz (0..tuning.status limits.maxCore)", true), ("memAb", "integer", "Memory offset in MSI Afterburner units (0..limits.maxMemAb)", true),
+                                 ("seconds", "number", "Test length 10-300 (default 60)", false), ("powerPct", "integer", "Power limit, % of the card's default (50-100): efficiency mode only", false), ("light", "boolean", "Low-load test at top boost clocks (default false)", false)));
+        T("tuning.history", Obj(("offset", "integer", "Skip this many (newest first, default 0)", false), ("limit", "integer", "Up to this many (default 30, max 100)", false)));
+        T("tuning.wait", Obj(("seconds", "number", "Max seconds to wait (default 20, max 25)", false)));
+        T("tuning.stop", Obj());
+        T("tuning.gpu.apply", Obj(("core", "integer", "Core offset MHz", true), ("memAb", "integer", "Memory offset, Afterburner units", true)));
+        T("tuning.gpu.verify", Obj());
+        T("tuning.gpu.save", Obj(("core", "integer", "Core offset MHz", true), ("memAb", "integer", "Memory offset, Afterburner units", true), ("powerPct", "integer", "Power limit, % of the card's default (50-100): efficiency mode only", false)));
+        T("tuning.gpu.stock", Obj());
+        T("tuning.cpu.status", Obj());
+        T("tuning.cpu.start", Obj(("startValue", "integer", "Curve Optimizer value every core starts at, -50..0 (Ryzen 5000: -30 at most); see tuning.cpu.status curveOptimizer.startHint", true)));
+        T("tuning.cpu.finish", Obj(("force", "boolean", "Use the values found so far even though the search hasn't finished (untested cores keep the start value). Default false", false)));
+        T("tuning.cpu.stop", Obj());
+        T("tuning.cpu.check", Obj());
+        T("tuning.cpu.loadtest", Obj(("seconds", "integer", "How long to load all cores, 20-90 (default 45)", false)));
+        T("tuning.crashes", Obj());
+        var curvePts = JsonNode.Parse("""{"type":"array","description":"[[tempC, duty%], ...]: 2-10 points, temperatures strictly increasing within 20-110, duty never decreasing 0-100 (inside the rule's min/max duty), 100% reached at or below the emergency temperature minus 5 C, at least 30% from 60 C up","items":{"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2}}""")!.AsObject();
+        var sc = Obj(("profile", "string", "The AI's profile name, e.g. 'Quiet (tuned)'", true), ("rule", "string", "Rule name from tuning.fans.status (must be editable)", true),
+                     ("input", "string", "Input index (0, 1, ...) or sensor, needed when the rule has several inputs", false));
+        sc["properties"]!["points"] = curvePts; ((JsonArray)sc["required"]!).Add("points");
+        T("tuning.fans.history", Obj(("hours", "number", "How far back, 0.5-24 (default 24)", false)));
+        T("tuning.fans.status", Obj(("profile", "string", "Profile to read (default: the active one)", false)));
+        T("tuning.fans.setCurve", sc);
+        T("tuning.profile.prepare", Obj(("goal", "string", "quiet | balanced | performance | custom", true), ("goalText", "string", "For custom: the user's description of the goal", false),
+                                         ("from", "string", "Profile to copy the first time (default: the active one)", false)));
+        T("tuning.profile.restore", Obj());
+        T("tuning.ai.status", Obj());
         T("update.status", Obj());
+        T("update.check", Obj());
         T("update.install", Obj(("confirm", "boolean", "Must be true, and only after the user agreed: installs the newer verified release and restarts Glint", true)));
         T("log", Obj(("lines", "number", "How many recent lines (default 100)", false)));
         T("app.restart", Obj());
@@ -174,8 +207,13 @@ public static class Cli
         o.WriteLine(text);
     }
 
-    public static int Mcp()
+    /// <summary>Tool names the restricted "tuning" MCP server offers (the AI tuner's whole world).</summary>
+    public static bool IsTuningTool(string method) => method.StartsWith("tuning.", StringComparison.Ordinal) && !method.StartsWith("tuning.ai.", StringComparison.Ordinal);
+
+    /// <param name="only">"tuning" = offer and accept only the tuning tools (what "Tune with AI" runs), null = everything.</param>
+    public static int Mcp(string? only = null)
     {
+        var tools = only == "tuning" ? Tools.Where(t => IsTuningTool(t.Value.method)).ToDictionary(t => t.Key, t => t.Value) : Tools;
         var input = new StreamReader(Console.OpenStandardInput(), new UTF8Encoding(false));
         var output = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true };
         void Send(object o) => output.WriteLine(JsonSerializer.Serialize(o));
@@ -208,13 +246,13 @@ public static class Cli
                 case "ping": result = new { }; break;
                 case "tools/list":
                     var help = ControlServer.Methods.ToDictionary(m => m.Method, m => m.Help);
-                    result = new { tools = Tools.Select(t => new { name = t.Key, description = help.GetValueOrDefault(t.Value.method, ""), inputSchema = t.Value.schema }) };
+                    result = new { tools = tools.Select(t => new { name = t.Key, description = help.GetValueOrDefault(t.Value.method, ""), inputSchema = t.Value.schema }) };
                     break;
                 case "tools/call":
                     {
                         var name = (string?)msg!["params"]?["name"] ?? "";
                         var args = msg["params"]?["arguments"]?.DeepClone();
-                        if (!Tools.TryGetValue(name, out var tool)) { error = new { code = -32602, message = "unknown tool " + name }; break; }
+                        if (!tools.TryGetValue(name, out var tool)) { error = new { code = -32602, message = "unknown tool " + name }; break; }
                         var resp = ControlServer.Call(tool.method, args, tool.method == "app.restart" ? 5000 : 30000);
                         if (resp == null) { result = new { content = new[] { new { type = "text", text = "Glint is not running (start it from the Start menu or the 'Glint' scheduled task)." } }, isError = true }; break; }
                         var node = JsonNode.Parse(resp)!;

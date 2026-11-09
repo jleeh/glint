@@ -54,6 +54,16 @@ public static class ConfigValidator
     /// <summary>Errors only, with no knowledge of the live system (syntax, ranges, references inside the config).</summary>
     public static List<string> Validate(GlintConfig cfg) => Check(cfg, null).Errors;
 
+    /// <summary>Why this is not an acceptable profile name (null = fine): non-empty, at most 40 characters, no control characters, not "Stock".</summary>
+    public static string? ProfileNameError(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return "a profile has an empty name";
+        if (name.Length > 40) return $"profile name \"{name[..20]}…\" is longer than 40 characters";
+        if (name.Any(char.IsControl)) return "a profile name contains control characters";
+        if (name.Trim().Equals("Stock", StringComparison.OrdinalIgnoreCase)) return "\"Stock\" is reserved (it means no overclock)";
+        return null;
+    }
+
     public static ValidationResult Check(GlintConfig cfg, ValidationContext? ctx)
     {
         var errors = new List<string>(); var warnings = new List<string>();
@@ -96,9 +106,11 @@ public static class ConfigValidator
         c.Profiles ??= new();
         if (c.Profiles.Count == 0) E.Add("profiles: there must be at least one fan profile");
         else if (!c.Profiles.ContainsKey(c.ActiveProfile ?? "")) E.Add($"activeProfile \"{c.ActiveProfile}\" is not one of the profiles ({string.Join(", ", c.Profiles.Keys)})");
+        foreach (var dup in c.Profiles.Keys.GroupBy(k => k.Trim(), StringComparer.OrdinalIgnoreCase).Where(g => g.Count() > 1))
+            E.Add($"profiles: names must be unique ignoring case ({string.Join(", ", dup.Select(x => "\"" + x + "\""))})");
         foreach (var (pname, rules) in c.Profiles)
         {
-            if (string.IsNullOrWhiteSpace(pname)) E.Add("profiles: a profile has an empty name");
+            if (ProfileNameError(pname) is { } pe) E.Add($"profiles: {pe}");
             if (rules == null) { E.Add($"profile \"{pname}\" is null (use [] for an empty profile)"); continue; }
             foreach (var dup in rules.GroupBy(r => r.Name).Where(g => g.Count() > 1)) E.Add($"profile \"{pname}\": rule name \"{dup.Key}\" is used {dup.Count()} times (names must be unique)");
             foreach (var dup in rules.SelectMany(r => r.Fans.Select(f => (f, r.Name))).GroupBy(x => x.f, StringComparer.OrdinalIgnoreCase).Where(g => g.Count() > 1))
@@ -182,6 +194,19 @@ public static class ConfigValidator
                 E.Add($"openRgb.host \"{c.OpenRgb.Host}\" must be a host name or IP address (e.g. 127.0.0.1)");
             if (c.OpenRgb.Exclude == null) E.Add("openRgb.exclude is missing (use [] for none)");
             else if (c.OpenRgb.Exclude.Any(string.IsNullOrWhiteSpace)) E.Add("openRgb.exclude has an empty entry");
+        }
+
+        // ---- tuning (overclocking; off by default)
+        if (c.Tuning == null) E.Add("tuning is missing (use {} for the defaults)");
+        else
+        {
+            var t = c.Tuning;
+            if (!(t.EmergencyCoreC >= Glint.Tuning.TuningLimits.MinEmergencyC && t.EmergencyCoreC <= Glint.Tuning.TuningLimits.MaxEmergencyCoreC))
+                E.Add($"tuning.emergencyCoreC must be {Glint.Tuning.TuningLimits.MinEmergencyC}..{Glint.Tuning.TuningLimits.MaxEmergencyCoreC} °C");
+            if (!(t.EmergencyMemC >= Glint.Tuning.TuningLimits.MinEmergencyC + 10 && t.EmergencyMemC <= Glint.Tuning.TuningLimits.MaxEmergencyMemC))
+                E.Add($"tuning.emergencyMemC must be {Glint.Tuning.TuningLimits.MinEmergencyC + 10}..{Glint.Tuning.TuningLimits.MaxEmergencyMemC} °C");
+            Range("tuning.maxCrashes", t.MaxCrashes, 1, 20);
+            Range("tuning.crashWindowDays", t.CrashWindowDays, 1, 90);
         }
 
         // ---- overlay
@@ -428,6 +453,19 @@ public static class ConfigValidator
             {
                 ["check"] = F("boolean", "Ask GitHub for the latest release (one request to the releases/latest API at startup and every 24 h; no other network, no telemetry). Shown on the Setup check page, Settings and the tray menu.", true, false),
                 ["autoInstall"] = F("boolean", "Install a newer verified release by itself: only after 10 minutes without keyboard/mouse input, with no fullscreen game in front and not on battery; at most one attempt per version per day. Needs check. Off by default.", false, true),
+            }),
+            ["tuning"] = F("object", "Overclocking, AI-driven: GPU core/memory offsets verified by Glint's own CUDA stress test with the power limit raised to the card's own maximum (never voltage), per-core Ryzen Curve Optimizer, and crash watch with automatic back-off. Everything is off by default; tuning.status shows the hardware, limits, results and crashes.", fields: new JsonObject
+            {
+                ["enabled"] = F("boolean", "Show the Tuning page and allow tests. Off = Glint never touches clocks.", false, true),
+                ["allowWorkstation"] = F("boolean", "Allow tuning a workstation / data-centre GPU (RTX PRO, RTX A, Quadro). They're validated at stock clocks, so this is an explicit opt-in.", false, true),
+                ["applyAtStartup"] = F("boolean", "No longer used (kept for old configs): the active profile's overclock and undervolt always re-apply at startup, never right after a crash; repeated crashes revert them.", false, true),
+                ["emergencyCoreC"] = F("number", "Emergency stop for tests (GPU back to stock). Reaching the card's own thermal limit is not a failure: it throttles and the tuner looks for the best sustained performance. Never more than 3 °C past the card's slowdown point.", 90, 90, Glint.Tuning.TuningLimits.MinEmergencyC, Glint.Tuning.TuningLimits.MaxEmergencyCoreC),
+                ["emergencyMemC"] = F("number", "Emergency stop on memory-junction temperature.", 100, 100, Glint.Tuning.TuningLimits.MinEmergencyC + 10, Glint.Tuning.TuningLimits.MaxEmergencyMemC),
+                ["unlockPower"] = F("boolean", "Raise the GPU power limit to the card's own maximum (its firmware ceiling) during tests and while a result is applied; back to default at stock. No voltage control.", true, true),
+                ["crashWatch"] = F("boolean", "While an overclock is applied, watch the event log for driver resets, hardware errors and bugchecks.", true, true),
+                ["autoBackoff"] = F("boolean", "On a GPU crash with an overclock applied, lower it a step (core -15 MHz, then memory -250).", true, true),
+                ["maxCrashes"] = F("integer", "This many GPU crashes within crashWindowDays puts the GPU back to stock.", 3, 3, 1, 20),
+                ["crashWindowDays"] = F("integer", "Window for maxCrashes, in days.", 7, 7, 1, 90),
             }),
             ["openRgb"] = F("object", "OpenRGB bridge (off by default; takes effect after app.restart). When enabled and an OpenRGB SDK server is reachable at startup, its devices become Glint lighting devices ('orgb-...'). Devices Glint already drives natively are skipped so two drivers never fight. Check with setup.check.", fields: new JsonObject
             {

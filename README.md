@@ -1,10 +1,10 @@
 <p align="center">
-  <img src="docs/brand/social-preview.png" alt="Glint: free, lightweight RGB and fan control" width="820">
+  <img src="docs/brand/social-preview.png" alt="Glint: free RGB, fan control and AI overclocking" width="820">
 </p>
 
 <p align="center">
-  <b>Free, open-source RGB lighting, fan control and hardware monitoring for Windows.</b><br>
-  Tiny footprint. AI-ready. Add support for your own hardware with a single JavaScript file.
+  <b>Free, open-source RGB lighting, fan control, hardware monitoring and AI overclocking for Windows.</b><br>
+  Tiny footprint. AI-native. Add support for your own hardware with a single JavaScript file.
 </p>
 
 <p align="center">
@@ -26,6 +26,14 @@
   open. Effects are rendered once per frame and devices are only written when their colours change.
 - **Fans that think about the whole PC.** Every fan curve can take several sensors at once: CPU, GPU, liquid,
   drives, anything. The hottest one wins (or average / weighted). Radiators can follow the GPU and the CPU.
+- **AI overclocking, only if you want it.** Off by default. Turn it on, pick a goal (quiet, balanced, performance or
+  your own words) and press **Tune**: Claude (your own Claude Code login, on Windows or in WSL) finds the fastest (or most
+  efficient) stable GPU offsets with Glint's own CUDA stress test, undervolts a Ryzen CPU per core, shapes the fan curves
+  and saves it all as a profile. It looks for the best sustained performance and stability: temperature
+  and power throttling are limits it optimises under, not failures. Glint enforces the rest itself: clock offsets only
+  (no voltage control; the GPU power limit stays between 50% of its default and the card's own maximum), emergency temperature stops,
+  back to stock after every test, and **crash watch** backs the overclock off on its own after a driver reset or
+  bluescreen. A small **tuning monitor** window shows the live test, gauges and the AI's reasoning.
 - **Lighting like a pro suite.** 18 built-in effects painted across a 2D layout of your PC, per-device and
   per-fan overrides, presets, audio-reactive and temperature-reactive effects, and effect plugins.
 - **AI-native.** A built-in **MCP server** and CLI let an AI agent read sensors, tune fan curves, change lighting
@@ -47,8 +55,46 @@
 | **Sensors**: every sensor with min/max, HWMonitor-style | **Plugins**: search, enable, approve, write your own |
 | ![Per-device lighting](docs/screenshots/lighting-scoped.png) | ![Game overlay settings](docs/screenshots/settings-overlay.png) |
 | **Per-device effects** on the layout canvas | **Game overlay**: pick any sensor, position, hotkey |
+| ![Tuning](docs/screenshots/tuning.png) | |
+| **Tuning** (opt-in): Tune with AI, stock vs tuned, crash watch, paginated test history, live monitor window | |
 | ![Setup check](docs/screenshots/setup-check.png) | ![Devices](docs/screenshots/devices.png) |
 | **Setup check**: drivers, admin rights, conflicting apps, with fixes | **Devices**: names, LED counts and a test pattern |
+
+## Overclocking (opt-in)
+
+Tuning is **off until you turn it on** (Tuning page). Then:
+
+- **Tune with AI** runs Claude Code headless with your own login. It gets no shell, file or web tools: only Glint's
+  tuning tools (read the hardware, run a stress test, apply/save a result), over a restricted MCP server.
+- **GPU** (NVIDIA): core and memory clock offsets through NVIDIA's NVML. Every test checks the GPU's results bit for bit
+  against a stock run, watches temperatures, driver resets and (on workstation cards) ECC-corrected memory errors,
+  holds the GPU fans up, and puts the card back to stock when it ends. The setting under test is written to disk first,
+  so a test that crashes the PC is recorded as unstable on the next start. Limits come from the card's own driver range,
+  capped at +500 MHz core / +3000 memory. A card that reaches its own temperature or power limit just throttles: the test
+  is flagged thermal-/power-limited and the AI picks the best sustained performance under that limit. Only emergency
+  temperatures (core 90 °C, memory 100 °C by default, never above the card's slowdown point + 3 °C) stop a test. The
+  GPU power limit is raised to the card's own maximum (its firmware ceiling) while testing and while a result is applied
+  (switch **Unlock power limit** off to keep the default); voltage is never touched. Workstation cards (RTX PRO,
+  RTX A, Quadro) need an extra opt-in.
+- **Goals and modes**: each tune has a goal (quiet / balanced / performance / custom text) and a **Performance** or
+  **Efficiency** mode for the GPU and the CPU. Efficiency looks for the most work per watt: a lower GPU power limit
+  (down to 50% of the card's default) with a core offset, or the CPU undervolt with the best speed per watt within 5% of
+  stock. Every GPU result is checked back to back against stock before it counts.
+- **CPU** (AMD Ryzen 5000/7000/9000): a Curve Optimizer undervolt applied from Windows through the SMU (PawnIO; it
+  resets with the PC, so nothing is permanent). About 30-40 minutes: a sweep inside one running y-cruncher picks the value
+  by effective clock (separate benchmark launches differ too much to compare), each core is checked alone, then a
+  5-minute all-core soak; the result is benchmarked against your BIOS values in the same runs. The CPU's power table
+  (PPT/TDC limits and use) drives the PBO advice, which stays a BIOS setting for you to change. CPU power limits and
+  voltages are never raised.
+- **Profiles**: a tune saves its GPU offsets, CPU undervolt and fan curves into a profile ("Balanced (tuned)"), re-applied
+  whenever that profile is active and at startup (not after a crash). Each profile keeps a short record of what its tune
+  set and why. Fan curves are shaped from up to 24 h of temperature history, not just the stress tests.
+- **Crash watch**: while an overclock is applied, Glint subscribes to Windows' event log (driver resets, WHEA hardware
+  errors, bluescreens, game crashes in the NVIDIA driver). A GPU crash backs the overclock off a step; repeated crashes
+  put it back to stock. CPU errors name the core whose Curve Optimizer value needs loosening.
+
+Overclocking runs hardware beyond its factory settings: crashes during tests are expected, and some manufacturers
+don't cover overclocking under warranty. The tuning code is ported from [Headroom](https://github.com/eviljarv89-ctrl/Headroom) (MIT).
 
 ## Install
 
@@ -229,7 +275,7 @@ calls it from a terminal, and `Glint.exe mcp` serves every method as an MCP tool
 - `fans.setRule` / `fans.removeRule`: create, update (partial fields merge) or delete a rule by name.
 - `curves.set` / `curves.remove`: named curves (`[[tempC, duty%], ...]`); removing one that is in use is refused.
 - `fans.override`: manual duty for a rule, or `null` for automatic. Clamped to the rule's min/max; the fail-safe still wins.
-- `profiles.create` (copy of a profile) / `profiles.remove` (not the active one), `profile.set`.
+- `profiles.create` (copy of a profile) / `profiles.rename` (its overclock follows) / `profiles.remove` (not the active one), `profile.set`. Names: 1-40 characters, no control characters, unique ignoring case, not "Stock". The dashboard (profile manager in the header) manages the same profiles.
 - `config.schema`: every config field with type, range, default and example. `config.validate` checks a config without saving.
 - `lighting.autoLayout` needs `confirm=true` because it overwrites a hand-tuned layout. The old layout is saved to
   `layout-backups\` in the config folder (last 10); `lighting.layoutBackups` and `lighting.restoreLayout` bring it back.

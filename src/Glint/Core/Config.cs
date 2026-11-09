@@ -38,6 +38,8 @@ public sealed class GlintConfig
     public UpdateOptions Updates { get; set; } = new();
     /// <summary>OpenRGB SDK bridge (off by default): drive devices an OpenRGB server on this PC knows.</summary>
     public OpenRgbConfig OpenRgb { get; set; } = new();
+    /// <summary>Overclocking (GPU auto-OC, Curve Optimizer guide, crash watch). Everything is off until the user turns it on.</summary>
+    public TuningConfig Tuning { get; set; } = new();
 
     // ------------------------------------------------------------------ io
 
@@ -289,6 +291,34 @@ public sealed class OpenRgbConfig
     public int Port { get; set; } = 6742;
     /// <summary>OpenRGB devices to leave alone: device name (or part of it) or Glint id ("orgb-...").</summary>
     public List<string> Exclude { get; set; } = new();
+}
+
+/// <summary>
+/// Overclocking. Off by default: nothing is tested, applied or watched until <see cref="Enabled"/> is turned on and the
+/// user starts a test. Results live in tuning-state.json next to config.json, not here.
+/// </summary>
+public sealed class TuningConfig
+{
+    /// <summary>Show the Tuning page and allow tests. Off = Glint never touches clocks (and resets nothing it didn't set).</summary>
+    public bool Enabled { get; set; }
+    /// <summary>Allow tuning a workstation / data-centre GPU (RTX PRO, RTX A, Quadro...). They're validated at stock, so this is an explicit opt-in.</summary>
+    public bool AllowWorkstation { get; set; }
+    /// <summary>No longer used: the active profile's overclock and undervolt always re-apply at startup (never right after a crash; repeated
+    /// crashes revert them). Kept so older config files still load.</summary>
+    public bool ApplyAtStartup { get; set; }
+    /// <summary>Emergency stops (back to stock). Reaching the card's own thermal limit is NOT a failure: it throttles, and
+    /// the tuner picks the best sustained performance under it. Clamped to hard limits and the card's slowdown point + 3 °C.</summary>
+    public double EmergencyCoreC { get; set; } = 90;
+    public double EmergencyMemC { get; set; } = 100;
+    /// <summary>Raise the GPU power limit to the card's own maximum (its firmware ceiling) during tests and while a result is applied.</summary>
+    public bool UnlockPower { get; set; } = true;
+    /// <summary>Watch Windows' event log for driver resets, hardware errors and bugchecks while an overclock is applied.</summary>
+    public bool CrashWatch { get; set; } = true;
+    /// <summary>On a GPU crash with an overclock applied: lower it a step (core first, then memory).</summary>
+    public bool AutoBackoff { get; set; } = true;
+    /// <summary>This many GPU crashes within <see cref="CrashWindowDays"/> puts the GPU back to stock.</summary>
+    public int MaxCrashes { get; set; } = 3;
+    public int CrashWindowDays { get; set; } = 7;
 }
 
 public sealed class SensorOptions

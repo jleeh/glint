@@ -13,6 +13,12 @@ these open-source projects; each plugin names the reference it follows:
 | [liquidctl](https://github.com/liquidctl/liquidctl) | GPL-3.0 | Corsair Commander Pro, Hydro Platinum, NZXT Smart Device / Kraken |
 | [OpenLinkHub](https://github.com/jurkovic-nikola/OpenLinkHub) | GPL-3.0 | Corsair Commander Core / Core XT / ST, iCUE LINK |
 
+## Ported code
+
+| Project | License | Used for |
+|---|---|---|
+| [Headroom](https://github.com/eviljarv89-ctrl/Headroom) (Copyright (c) 2026 Headroom contributors) | MIT | GPU tuning: NVML offsets, the CUDA stress test and its PTX kernels, crash classification, and the CPU Curve Optimizer search driver (CoreCycler config, log parsing, BIOS sheet, watchdog) (ported to C# in `src/Glint/Tuning/`) |
+
 ## Bundled binaries and libraries
 
 | Component | License |
@@ -23,6 +29,8 @@ these open-source projects; each plugin names the reference it follows:
 | [Jint](https://github.com/sebastienros/jint) | BSD-2-Clause |
 | [Microsoft ClearScript](https://github.com/microsoft/ClearScript) (V8) | MIT |
 | [NAudio](https://github.com/naudio/NAudio) | MIT |
+| [CoreCycler](https://github.com/sp00n/CoreCycler) v0.11.0.3 (unmodified files, trimmed: only the scripts, helpers, tools and y-cruncher it needs; fetched by `tools/fetch-corecycler.ps1`, SHA-256 pinned; used for the CPU Curve Optimizer search) | CC BY-NC-SA 4.0 (non-commercial, share-alike) |
+| [y-cruncher](https://www.numberworld.org/y-cruncher/) (the stress program inside CoreCycler's `test_programs`) | Freeware by Alexander J. Yee, redistributed unmodified as CoreCycler ships it |
 | [Microsoft WebView2 SDK](https://www.nuget.org/packages/Microsoft.Web.WebView2) | Microsoft license (BSD-style) |
 
 Product names and trademarks belong to their owners. Glint is not affiliated with or endorsed by any hardware vendor.
