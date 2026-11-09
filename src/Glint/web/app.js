@@ -2316,19 +2316,20 @@ function liveProfileOc() {
   };
   const cpuBars = co => `<span class="tn-gain cpu" title="Curve Optimizer per core: ${esc(co.join(', '))}. The % change shows once the tune has measured it.">${(co.reduce((a, v) => a + num(v), 0) / co.length).toFixed(0)} CPU</span>`;
   const fansTxt = () => '';
-  const row = (key, name, sum, stats, isAct, btn) => `<div class="tn-prof ${isAct ? 'act' : ''}" ${key}><span class="tn-pdot"></span><div class="tn-pmain"><b>${name}</b>${stats ? `<span class="tn-pstats">${stats}</span>` : ''}<span class="tn-psum" title="${esc(sum.replace(/<[^>]*>/g, '').replace(/[<>]/g, ''))}">${sum}</span></div>${isAct ? '<span class="tn-pinuse">In use</span>' : btn}</div>`;
+  const row = (key, name, sum, stats, isAct, btn, tip) => `<div class="tn-prof ${isAct ? 'act' : ''}" ${key}><span class="tn-pdot"></span><div class="tn-pmain"><b>${name}</b>${stats ? `<span class="tn-pstats">${stats}</span>` : ''}<span class="tn-psum" title="${esc(tip)}">${sum}</span></div>${isAct ? '<span class="tn-pinuse">In use</span>' : btn}</div>`;
   const stockStats = base ? `<span class="tn-facts" title="${esc(full(base, null))}">${[base.peakCoreC != null ? `${num(base.peakCoreC).toFixed(0)} °C` : '', base.powerW != null ? `${num(base.powerW).toFixed(0)} W` : ''].filter(Boolean).join(' · ')}</span>` : '';
-  const html = `<div class="tn-plist">${row('data-stockrow', 'Stock', 'factory clocks, BIOS CPU settings', stockStats, stock, '<button class="btn small" data-stock>Use</button>')}${tuned.map(p => {
+  const html = `<div class="tn-plist">${row('data-stockrow', 'Stock', 'factory clocks, BIOS CPU settings', stockStats, stock, '<button class="btn small" data-stock>Use</button>', 'factory clocks, BIOS CPU settings')}${tuned.map(p => {
     const o = profileOc(p), co = own(cpuP, p), hasCo = Array.isArray(co) && co.length, r = own(ps.profiles ?? {}, p);
-    const parts = [o.kind === 'stock' ? '' : `GPU ${esc(o.text)}${o.kind === 'untested' ? ' <span class="tn-warnmark" title="Saved without a passing full test: it may be unstable">untested</span>' : ''}`,
-      hasCo ? `CPU undervolt ${(co.reduce((a, v) => a + num(v), 0) / co.length).toFixed(0)}` : ''].filter(Boolean);
+    const coAvg = hasCo ? `CPU undervolt ${(co.reduce((a, v) => a + num(v), 0) / co.length).toFixed(0)}` : '';
+    const parts = [o.kind === 'stock' ? '' : `GPU ${esc(o.text)}${o.kind === 'untested' ? ' <span class="tn-warnmark" title="Saved without a passing full test: it may be unstable">untested</span>' : ''}`, coAvg].filter(Boolean);
+    const tip = [o.kind === 'stock' ? '' : `GPU ${o.text}${o.kind === 'untested' ? ' (untested)' : ''}`, coAvg].filter(Boolean).join(' · ') || 'tuning not finished yet';   // plain text, escaped once in row()
     const pb = own(st.pboProfiles ?? {}, p);
     const sv = own(st.profiles ?? {}, p), gp = own(st.gpuBench ?? {}, p);
     const pairOk = gp && (gp.tuned ? !!sv && gp.tuned.core === sv.core && gp.tuned.memAb === sv.memAb : !sv);   // stale once the offsets change
     const stats = gpuStats(r, base, pairOk ? gp : null) + cpuPill(hasCo ? co : null, own(st.cpuBench ?? {}, p)) + (pb?.short ? `<span class="tn-facts tn-pbo" title="${esc('Recommendation from the load test (Glint can\'t read or change the BIOS): ' + (pb.detail ?? ''))}">${esc(String(pb.short).replace(/^PBO:\s*/, 'PBO tip: '))}</span>` : '') + fansTxt(p);
     const nt = own(st.notes ?? {}, p), when = nt?.time ? new Date(nt.time) : null;
     const notes = nt?.text ? `<details class="tn-pnotes" data-pnotes="${esc(p)}" ${S.tnNotesOpen?.has(p) ? 'open' : ''}><summary>What this tune set${when && !isNaN(when) ? ` <span class="muted">· ${esc(when.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }))}</span>` : ''}</summary><div class="tf tn-pnotes-body">${TF.md(String(nt.text))}</div></details>` : '';
-    return row(`data-ocrow="${esc(p)}"`, esc(p) + aiBadge(p), parts.length ? parts.join(' · ') : 'tuning not finished yet', stats, p === act && !stock, `<button class="btn small" data-pswitch="${esc(p)}">Use</button>`) + notes;
+    return row(`data-ocrow="${esc(p)}"`, esc(p) + aiBadge(p), parts.length ? parts.join(' · ') : 'tuning not finished yet', stats, p === act && !stock, `<button class="btn small" data-pswitch="${esc(p)}">Use</button>`, tip) + notes;
   }).join('')}</div>${tuned.length ? '' : '<div class="muted tn-small" style="margin-top:10px">Press Tune: the result shows up here as a profile.</div>'}`;
   if (el._html !== html) { el._html = html; el.innerHTML = html; }     // the 3 s refresh must not rebuild (and swallow clicks on) an unchanged list
 }
