@@ -5,7 +5,7 @@ using Glint.Core;
 namespace Glint.Tuning;
 
 /// <summary>
-/// The AI's fan tools: its own profile ("AI · Quiet" ...), a copy of a base profile, and curve edits on that copy only.
+/// The AI's fan tools: its own profile ("Quiet (tuned)" ...), a copy of a base profile, and curve edits on that copy only.
 /// Everything the AI sends is validated here (never trusted): the profile must be AI-owned, the rule must belong to the
 /// goal's device (GPU or CPU) and not be a pump, and the curve must keep the fans safe (100% before the emergency
 /// temperature, a duty floor from 60 °C up, rule limits respected). Changes go through <see cref="ConfigValidator"/> and the
@@ -77,7 +77,7 @@ public sealed class AiFans
 
     /// <summary>Create (first use) or reuse the AI's profile for a goal and switch Glint to it for the run. The user's profile is left alone and reported in
     /// previousProfile; <see cref="Restore"/> switches back.</summary>
-    public object Prepare(string? goal, string? text, string? from)
+    public object Prepare(string? goal, string? text, string? from, bool fresh = false)
     {
         var (g, _) = TuningGoal.Parse(goal, text, "gpu");
         if (g == null) throw new ArgumentException("goal must be quiet, balanced, performance or custom");
@@ -91,11 +91,18 @@ public sealed class AiFans
             if (exists && !_tuning.IsAiProfile(name))
                 throw new InvalidOperationException($"a profile named \"{name}\" already exists and isn't the AI's: rename or delete it first (the AI never edits your own profiles)");
             bool active = cur.ActiveProfile == name;
-            if (exists && active) return new { profile = name, created = false, switched = false, previousProfile = _tuning.PreviousProfile, owned = true };
+            if (exists && active && !fresh) return new { profile = name, created = false, switched = false, previousProfile = _tuning.PreviousProfile, owned = true };
             WriteGap();
             var c = Clone(cur);
             string? previous = _tuning.IsAiProfile(cur.ActiveProfile) ? _tuning.PreviousProfile : cur.ActiveProfile;
-            if (!exists)
+            if (fresh || !exists)
+            {
+                var (rules, curves) = FreshRules(g.Kind, name);
+                foreach (var k in c.Curves.Keys.Where(k => k.StartsWith(CurvePrefix + name + "|", StringComparison.Ordinal)).ToList()) c.Curves.Remove(k);
+                foreach (var (k, v) in curves) c.Curves[k] = v;
+                if (rules.Count > 0) c.Profiles[name] = rules;
+            }
+            if (!c.Profiles.ContainsKey(name))
             {
                 var baseName = string.IsNullOrWhiteSpace(from) ? cur.ActiveProfile : from!;
                 if (!c.Profiles.TryGetValue(baseName, out var baseRules)) throw new KeyNotFoundException($"no profile \"{baseName}\" to copy from (profiles: {string.Join(", ", c.Profiles.Keys)})");
@@ -107,6 +114,72 @@ public sealed class AiFans
             return new { profile = name, created = !exists, switched = true, previousProfile = previous, owned = true,
                          note = "Glint is now on the AI's profile. When the run is over, tuning.profile.restore switches back to your own profile (or the user can pick it in the dashboard)." };
         }
+    }
+
+    /// <summary>Starting fan curves per goal (temperature °C → duty %): each reaches 100% before the emergency limits and runs at
+    /// least 30% from 60 °C, the same rules the AI's own curve changes must follow.</summary>
+    public static readonly IReadOnlyDictionary<string, (double[][] Cpu, double[][] Gpu, double[][] Liquid)> Templates = new Dictionary<string, (double[][], double[][], double[][])>
+    {
+        ["quiet"] = (new[] { new[] { 45.0, 20 }, new[] { 60.0, 30 }, new[] { 72.0, 55 }, new[] { 78.0, 100 } },
+                     new[] { new[] { 50.0, 20 }, new[] { 60.0, 30 }, new[] { 75.0, 60 }, new[] { 84.0, 100 } },
+                     new[] { new[] { 30.0, 20 }, new[] { 42.0, 25 }, new[] { 47.0, 35 }, new[] { 51.0, 60 }, new[] { 54.0, 100 } }),
+        ["balanced"] = (new[] { new[] { 40.0, 25 }, new[] { 60.0, 35 }, new[] { 70.0, 60 }, new[] { 78.0, 100 } },
+                        new[] { new[] { 45.0, 25 }, new[] { 60.0, 35 }, new[] { 74.0, 65 }, new[] { 82.0, 100 } },
+                        new[] { new[] { 30.0, 20 }, new[] { 40.0, 25 }, new[] { 45.0, 35 }, new[] { 49.0, 60 }, new[] { 53.0, 100 } }),
+        ["performance"] = (new[] { new[] { 35.0, 35 }, new[] { 55.0, 50 }, new[] { 66.0, 75 }, new[] { 75.0, 100 } },
+                           new[] { new[] { 40.0, 35 }, new[] { 58.0, 55 }, new[] { 70.0, 80 }, new[] { 80.0, 100 } },
+                           new[] { new[] { 30.0, 25 }, new[] { 38.0, 35 }, new[] { 43.0, 50 }, new[] { 47.0, 75 }, new[] { 51.0, 100 } }),
+    };
+
+    /// <summary>The case / radiator fans' CPU input when the CPU is liquid-cooled: a safety net only (the coolant curve drives them;
+    /// radiator fans can't pull a CPU's temperature below what its power and cold plate set). 30% floor from 60 °C, 100% by 85 °C.</summary>
+    public static readonly double[][] LiquidCpuSafety = { new[] { 50.0, 20 }, new[] { 60.0, 30 }, new[] { 80.0, 35 }, new[] { 85.0, 100 } };
+
+    /// <summary>The case / radiator fans' GPU input: gentler than the GPU's own fans (they only help clear the card's heat from the case).</summary>
+    public static readonly IReadOnlyDictionary<string, double[][]> CaseGpuTemplates = new Dictionary<string, double[][]>
+    {
+        ["quiet"] = new[] { new[] { 55.0, 20 }, new[] { 60.0, 30 }, new[] { 78.0, 45 }, new[] { 84.0, 100 } },
+        ["balanced"] = new[] { new[] { 50.0, 20 }, new[] { 60.0, 30 }, new[] { 76.0, 45 }, new[] { 82.0, 100 } },
+        ["performance"] = new[] { new[] { 45.0, 30 }, new[] { 58.0, 40 }, new[] { 72.0, 60 }, new[] { 80.0, 100 } },
+    };
+
+    /// <summary>
+    /// A tuned profile's own fan rules, built from the fans Glint detects (nothing copied from the user's profiles): pumps run at a
+    /// fixed 100% (the AI never edits it), GPU fans follow the GPU, every other fan follows whichever of CPU / GPU /
+    /// liquid is hottest. Curves are the goal's starting curves, named after the profile so nothing else shares them.
+    /// </summary>
+    public (List<FanRule> Rules, Dictionary<string, List<double[]>> Curves) FreshRules(string kind, string profile)
+    {
+        var ctx = _ctx();
+        var sensors = (ctx.Sensors ?? Array.Empty<string>()).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var fans = (ctx.Fans ?? Array.Empty<string>()).Distinct().ToList();
+        var names = _fanNames();
+        bool Pumpish(string id) => id.Contains("pump", StringComparison.OrdinalIgnoreCase) || (names.TryGetValue(id, out var n) && n.Contains("pump", StringComparison.OrdinalIgnoreCase));
+        var t = Templates.TryGetValue(kind, out var tt) ? tt : Templates["balanced"];
+        var curves = new Dictionary<string, List<double[]>>();
+        string Curve(string key, double[][] pts) { var n = $"{CurvePrefix}{profile}|{key}"; curves[n] = pts.Select(p => p.ToArray()).ToList(); return n; }
+        var pumps = fans.Where(Pumpish).ToList();
+        var gpuFans = fans.Where(f => !Pumpish(f) && f.StartsWith("gpu", StringComparison.OrdinalIgnoreCase)).ToList();
+        var other = fans.Where(f => !pumps.Contains(f) && !gpuFans.Contains(f)).ToList();
+        var rules = new List<FanRule>();
+        if (pumps.Count > 0)
+            rules.Add(new FanRule { Name = "Pump", Fans = pumps, Fixed = 100 });   // pumps run flat out: the safest cooling, and the AI never edits it
+        if (gpuFans.Count > 0)
+        {
+            var r = new FanRule { Name = "GPU fans", Fans = gpuFans, Combine = Combine.Max };
+            r.Inputs.Add(new FanInput { Sensor = "gpu", Curve = Curve("gpu", t.Gpu) });
+            if (sensors.Contains("gpu.hotspot")) r.Inputs.Add(new FanInput { Sensor = "gpu.hotspot", Curve = Curve("gpu-hotspot", t.Gpu.Select(p => new[] { p[0] + 12, p[1] }).ToArray()) });
+            rules.Add(r);
+        }
+        if (other.Count > 0)
+        {
+            var r = new FanRule { Name = "Case & radiator fans", Fans = other, Combine = Combine.Max };
+            if (sensors.Contains("liquid")) r.Inputs.Add(new FanInput { Sensor = "liquid", Curve = Curve("liquid", t.Liquid) });
+            r.Inputs.Add(new FanInput { Sensor = "cpu", Curve = Curve("cpu", sensors.Contains("liquid") ? LiquidCpuSafety : t.Cpu), SmoothingSec = 4 });
+            if (sensors.Contains("gpu")) r.Inputs.Add(new FanInput { Sensor = "gpu", Curve = Curve("case-gpu", CaseGpuTemplates.TryGetValue(kind, out var cg) ? cg : CaseGpuTemplates["balanced"]) });
+            rules.Add(r);
+        }
+        return (rules, curves);
     }
 
     /// <summary>Switch back to the profile that was active before the AI's.</summary>

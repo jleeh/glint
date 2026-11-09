@@ -308,6 +308,8 @@ public sealed class Rig : IDisposable
 
     /// <summary>Keep the full catalog live for the next 3 s (the dashboard calls this every second while the
     /// Sensors page is open, like <see cref="LightingEngine.WantField"/>). Costs nothing once it lapses.</summary>
+    /// <summary>The CPU's power limits and use from its SMU power table (Ryzen, admin), or null.</summary>
+    public Glint.Tuning.PmLimits? ReadPm() => _lhm == null ? null : Glint.Tuning.RyzenPm.Read(_lhm.Hardware);
     public void WantCatalog() => Interlocked.Exchange(ref _catalogUntil, Environment.TickCount64 + 3000);
     public bool CatalogWanted => Environment.TickCount64 < Interlocked.Read(ref _catalogUntil);
     /// <summary>Value of one catalog sensor by id (keeps the catalog live while someone keeps asking, e.g. the game overlay).</summary>

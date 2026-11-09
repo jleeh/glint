@@ -38,29 +38,29 @@ public static class AiGoalTests
 
             // ---- the AI's profile: created once, owned, a copy; the user's profile is untouched
             var prep = Json(fans.Prepare("quiet", null, null));
-            C("prepare creates the AI profile, switches to it and reports the previous profile", cfg.Profiles.ContainsKey("AI · Quiet") && cfg.ActiveProfile == "AI · Quiet" && prep.Contains("\"previousProfile\":\"Balanced\"") && prep.Contains("\"created\":true"), prep);
-            C("the AI profile is marked AI-owned (and survives in tuning-state.json)", tuning.IsAiProfile("AI · Quiet") && !tuning.IsAiProfile("Balanced") && JsonSerializer.Deserialize<TuningState>(File.ReadAllText(Path.Combine(dir, "state.json")), GlintConfig.Json)!.AiProfiles.ContainsKey("AI · Quiet"));
-            C("the AI profile is a deep copy of the base profile", cfg.Profiles["AI · Quiet"].Count == cfg.Profiles["Balanced"].Count && !ReferenceEquals(cfg.Profiles["AI · Quiet"][0], cfg.Profiles["Balanced"][0]));
+            C("prepare creates the AI profile, switches to it and reports the previous profile", cfg.Profiles.ContainsKey("Quiet (tuned)") && cfg.ActiveProfile == "Quiet (tuned)" && prep.Contains("\"previousProfile\":\"Balanced\"") && prep.Contains("\"created\":true"), prep);
+            C("the AI profile is marked AI-owned (and survives in tuning-state.json)", tuning.IsAiProfile("Quiet (tuned)") && !tuning.IsAiProfile("Balanced") && JsonSerializer.Deserialize<TuningState>(File.ReadAllText(Path.Combine(dir, "state.json")), GlintConfig.Json)!.AiProfiles.ContainsKey("Quiet (tuned)"));
+            C("the AI profile is a deep copy of the base profile", cfg.Profiles["Quiet (tuned)"].Count == cfg.Profiles["Balanced"].Count && !ReferenceEquals(cfg.Profiles["Quiet (tuned)"][0], cfg.Profiles["Balanced"][0]));
             C("the user's profile and curves are untouched by prepare", Json(cfg.Profiles["Balanced"]) == userProfile && Json(cfg.Curves) == userCurves);
             C("prepare is idempotent while active (no new write)", applies == 1 && Err(() => fans.Prepare("quiet", null, null)) == "" && applies == 1);
             Tick();
             var rest = Json(fans.Restore());
             C("restore switches back to the user's profile", cfg.ActiveProfile == "Balanced" && rest.Contains("\"restored\":true"), rest);
             Tick(); fans.Prepare("quiet", null, null);
-            C("re-tuning the same goal reuses the profile (no duplicate)", cfg.Profiles.Keys.Count(k => k.StartsWith("AI · ")) == 1 && applies == 3);
+            C("re-tuning the same goal reuses the profile (no duplicate)", cfg.Profiles.Keys.Count(k => k.EndsWith(" (tuned)")) == 1 && applies == 3);
             Tick(); fans.Restore(); Tick();
-            cfg.Profiles["AI · Balanced"] = new() { new FanRule { Name = "mine", Fans = new() { "x" }, Inputs = new() { new() { Sensor = "cpu", Curve = "cpu-balanced" } } } };
-            C("a user profile with the AI's name is never taken over", Err(() => fans.Prepare("balanced", null, null)).Contains("isn't the AI's") && !tuning.IsAiProfile("AI · Balanced"));
-            cfg.Profiles.Remove("AI · Balanced");
+            cfg.Profiles["Balanced (tuned)"] = new() { new FanRule { Name = "mine", Fans = new() { "x" }, Inputs = new() { new() { Sensor = "cpu", Curve = "cpu-balanced" } } } };
+            C("a user profile with the AI's name is never taken over", Err(() => fans.Prepare("balanced", null, null)).Contains("isn't the AI's") && !tuning.IsAiProfile("Balanced (tuned)"));
+            cfg.Profiles.Remove("Balanced (tuned)");
             C("custom goal needs a description; unknown goals are refused", Err(() => fans.Prepare("custom", null, null)).Contains("description") && Err(() => fans.Prepare("ludicrous", null, null)).Contains("goal must be"));
             tuning.CurrentGoal = new TuningGoal("quiet", null, "gpu");
             C("while a quiet run is going only its own profile can be prepared", Err(() => fans.Prepare("performance", null, null)).Contains("quiet"));
             Tick(); fans.Prepare("quiet", null, null); Tick();
-            tuning.PruneAiProfiles(new[] { "Balanced", "AI · Quiet" });
-            C("a marker for a deleted profile is pruned", Err(() => { tuning.MarkAiProfile("AI · Ghost", "quiet"); tuning.PruneAiProfiles(new[] { "Balanced", "AI · Quiet" }); }) == "" && !tuning.IsAiProfile("AI · Ghost") && tuning.IsAiProfile("AI · Quiet"));
+            tuning.PruneAiProfiles(new[] { "Balanced", "Quiet (tuned)" });
+            C("a marker for a deleted profile is pruned", Err(() => { tuning.MarkAiProfile("AI · Ghost", "quiet"); tuning.PruneAiProfiles(new[] { "Balanced", "Quiet (tuned)" }); }) == "" && !tuning.IsAiProfile("AI · Ghost") && tuning.IsAiProfile("Quiet (tuned)"));
 
             // ---- status
-            var st = Json(fans.Status("AI · Quiet"));
+            var st = Json(fans.Status("Quiet (tuned)"));
             C("fans.status: GPU and CPU rules, pump flagged untouchable, live duty, curve rules", st.Contains("\"name\":\"GPU fans\"") && st.Contains("\"name\":\"CPU fan\"") && st.Contains("\"name\":\"AIO pump\"") && st.Contains("\"untouchable\":true")
                 && st.Contains("\"duty\":41") && st.Contains("\"rpm\":1100") && st.Contains("reach100AtOrBelowC") && !st.Contains("Drive fan"), st[..Math.Min(300, st.Length)]);
             C("fans.status: a user profile is read-only (editable false, with the reason)", Json(fans.Status("Balanced")).Contains("isn't the AI's"));
@@ -71,54 +71,54 @@ public static class AiGoalTests
             void Refuse(string what, Action act, string frag) { int ap = applies; var snap = Json(cfg); var e = Err(act); C("setCurve refuses " + what, e.Contains(frag, StringComparison.OrdinalIgnoreCase) && applies == ap && Json(cfg) == snap, e == "" ? "ACCEPTED" : e); }
             Tick();
             Refuse("a user profile", () => fans.SetCurve("Balanced", "GPU fans", null, good), "isn't the AI's");
-            Refuse("a pump rule", () => fans.SetCurve("AI · Quiet", "AIO pump", null, good), "pump: never touched");
-            Refuse("an unrelated rule (storage sensor)", () => fans.SetCurve("AI · Quiet", "Drive fan", null, good), "not a GPU or CPU");
-            Refuse("a CPU rule during a GPU-target run", () => fans.SetCurve("AI · Quiet", "CPU fan", null, good), "target");
-            Refuse("a rule whose maxDuty is below 100", () => fans.SetCurve("AI · Quiet", "Limited GPU", null, good), "maxDuty");
-            Refuse("an unknown rule", () => fans.SetCurve("AI · Quiet", "Nope", null, good), "no rule");
-            Refuse("a multi-input rule without saying which input", () => fans.SetCurve("AI · Quiet", "Case fans", null, good), "which");
-            Refuse("a non-GPU input of a shared rule", () => fans.SetCurve("AI · Quiet", "Case fans", "cpu", good), "isn't about");
+            Refuse("a pump rule", () => fans.SetCurve("Quiet (tuned)", "AIO pump", null, good), "pump: never touched");
+            Refuse("an unrelated rule (storage sensor)", () => fans.SetCurve("Quiet (tuned)", "Drive fan", null, good), "not a GPU or CPU");
+            Refuse("a CPU rule during a GPU-target run", () => fans.SetCurve("Quiet (tuned)", "CPU fan", null, good), "target");
+            Refuse("a rule whose maxDuty is below 100", () => fans.SetCurve("Quiet (tuned)", "Limited GPU", null, good), "maxDuty");
+            Refuse("an unknown rule", () => fans.SetCurve("Quiet (tuned)", "Nope", null, good), "no rule");
+            Refuse("a multi-input rule without saying which input", () => fans.SetCurve("Quiet (tuned)", "Case fans", null, good), "which");
+            Refuse("a non-GPU input of a shared rule", () => fans.SetCurve("Quiet (tuned)", "Case fans", "cpu", good), "isn't about");
             double[] P(double t, double d) => new[] { t, d };
-            Refuse("1 point", () => fans.SetCurve("AI · Quiet", "GPU fans", null, new[] { P(82, 100) }), "points");
-            Refuse("11 points", () => fans.SetCurve("AI · Quiet", "GPU fans", null, Enumerable.Range(0, 11).Select(i => P(30 + i * 5, i == 10 ? 100 : 30 + i)).ToList()), "points");
-            Refuse("no points at all", () => fans.SetCurve("AI · Quiet", "GPU fans", null, null), "points");
-            Refuse("a temperature below 20", () => fans.SetCurve("AI · Quiet", "GPU fans", null, new[] { P(10, 30), P(60, 35), P(82, 100) }), "20");
-            Refuse("a temperature above 110", () => fans.SetCurve("AI · Quiet", "GPU fans", null, new[] { P(40, 30), P(60, 35), P(120, 100) }), "110");
-            Refuse("temperatures that don't strictly increase", () => fans.SetCurve("AI · Quiet", "GPU fans", null, new[] { P(40, 30), P(40, 35), P(82, 100) }), "strictly");
-            Refuse("duty that decreases", () => fans.SetCurve("AI · Quiet", "GPU fans", null, new[] { P(40, 40), P(60, 35), P(82, 100) }), "decrease");
-            Refuse("duty above 100", () => fans.SetCurve("AI · Quiet", "GPU fans", null, new[] { P(40, 30), P(60, 35), P(82, 120) }), "0..100");
-            Refuse("duty below 0", () => fans.SetCurve("AI · Quiet", "GPU fans", null, new[] { P(40, -5), P(60, 35), P(82, 100) }), "0..100");
-            Refuse("duty below the rule's minDuty", () => fans.SetCurve("AI · Quiet", "GPU fans", null, new[] { P(40, 10), P(60, 35), P(82, 100) }), "rule's");
-            Refuse("a NaN point", () => fans.SetCurve("AI · Quiet", "GPU fans", null, new[] { P(40, 30), P(double.NaN, 35), P(82, 100) }), "must be [");
-            Refuse("a curve that never reaches 100%", () => fans.SetCurve("AI · Quiet", "GPU fans", null, new[] { P(40, 30), P(60, 40), P(82, 90) }), "100%");
-            Refuse("100% only after emergency minus 5 °C (85 °C on 90)", () => fans.SetCurve("AI · Quiet", "GPU fans", null, new[] { P(40, 30), P(60, 40), P(86, 100) }), "100%");
-            Refuse("duty under the 30% floor at 60 °C", () => fans.SetCurve("AI · Quiet", "GPU fans", null, new[] { P(30, 20), P(70, 20), P(80, 100) }), "30%");
+            Refuse("1 point", () => fans.SetCurve("Quiet (tuned)", "GPU fans", null, new[] { P(82, 100) }), "points");
+            Refuse("11 points", () => fans.SetCurve("Quiet (tuned)", "GPU fans", null, Enumerable.Range(0, 11).Select(i => P(30 + i * 5, i == 10 ? 100 : 30 + i)).ToList()), "points");
+            Refuse("no points at all", () => fans.SetCurve("Quiet (tuned)", "GPU fans", null, null), "points");
+            Refuse("a temperature below 20", () => fans.SetCurve("Quiet (tuned)", "GPU fans", null, new[] { P(10, 30), P(60, 35), P(82, 100) }), "20");
+            Refuse("a temperature above 110", () => fans.SetCurve("Quiet (tuned)", "GPU fans", null, new[] { P(40, 30), P(60, 35), P(120, 100) }), "110");
+            Refuse("temperatures that don't strictly increase", () => fans.SetCurve("Quiet (tuned)", "GPU fans", null, new[] { P(40, 30), P(40, 35), P(82, 100) }), "strictly");
+            Refuse("duty that decreases", () => fans.SetCurve("Quiet (tuned)", "GPU fans", null, new[] { P(40, 40), P(60, 35), P(82, 100) }), "decrease");
+            Refuse("duty above 100", () => fans.SetCurve("Quiet (tuned)", "GPU fans", null, new[] { P(40, 30), P(60, 35), P(82, 120) }), "0..100");
+            Refuse("duty below 0", () => fans.SetCurve("Quiet (tuned)", "GPU fans", null, new[] { P(40, -5), P(60, 35), P(82, 100) }), "0..100");
+            Refuse("duty below the rule's minDuty", () => fans.SetCurve("Quiet (tuned)", "GPU fans", null, new[] { P(40, 10), P(60, 35), P(82, 100) }), "rule's");
+            Refuse("a NaN point", () => fans.SetCurve("Quiet (tuned)", "GPU fans", null, new[] { P(40, 30), P(double.NaN, 35), P(82, 100) }), "must be [");
+            Refuse("a curve that never reaches 100%", () => fans.SetCurve("Quiet (tuned)", "GPU fans", null, new[] { P(40, 30), P(60, 40), P(82, 90) }), "100%");
+            Refuse("100% only after emergency minus 5 °C (85 °C on 90)", () => fans.SetCurve("Quiet (tuned)", "GPU fans", null, new[] { P(40, 30), P(60, 40), P(86, 100) }), "100%");
+            Refuse("duty under the 30% floor at 60 °C", () => fans.SetCurve("Quiet (tuned)", "GPU fans", null, new[] { P(30, 20), P(70, 20), P(80, 100) }), "30%");
             C("the validator limit for the CPU is its own (CPU emergency 85 -> 80)", Err(() => AiFans.CheckPoints(new[] { P(40, 30), P(60, 40), P(82, 100) }, new FanRule(), 85)).Contains("80 °C") && Err(() => AiFans.CheckPoints(good, new FanRule(), 90)) == "");
 
             // ---- setCurve accepts a valid curve: through the validated path, copy-on-write
-            var ok = Json(fans.SetCurve("AI · Quiet", "GPU fans", null, good));
-            var inp = cfg.Profiles["AI · Quiet"].First(r => r.Name == "GPU fans").Inputs[0];
+            var ok = Json(fans.SetCurve("Quiet (tuned)", "GPU fans", null, good));
+            var inp = cfg.Profiles["Quiet (tuned)"].First(r => r.Name == "GPU fans").Inputs[0];
             C("a valid curve lands through the validated apply", applies == a0 + 1 && ok.Contains("\"ok\":true"), ok);
-            C("copy-on-write: the AI's input points at a curve of its own", inp.Curve == "ai:AI · Quiet|GPU fans|0" && cfg.Curves[inp.Curve!].Count == 4 && cfg.Curves[inp.Curve!][3][0] == 82);
+            C("copy-on-write: the AI's input points at a curve of its own", inp.Curve == "ai:Quiet (tuned)|GPU fans|0" && cfg.Curves[inp.Curve!].Count == 4 && cfg.Curves[inp.Curve!][3][0] == 82);
             var sharedNow = Json(cfg.Curves.Where(k => !k.Key.StartsWith("ai:")).ToDictionary(k => k.Key, k => k.Value));
             C("copy-on-write: the user's profile and the shared curves are unchanged", Json(cfg.Profiles["Balanced"]) == userProfile && sharedNow == userCurves
                 && cfg.Profiles["Balanced"].First(r => r.Name == "GPU fans").Inputs[0].Curve == "gpu-balanced");
-            Refuse("a second write within 5 s (rate limit)", () => fans.SetCurve("AI · Quiet", "GPU fans", null, good), "rate limited");
+            Refuse("a second write within 5 s (rate limit)", () => fans.SetCurve("Quiet (tuned)", "GPU fans", null, good), "rate limited");
             Tick();
-            C("after the gap the next write goes through", Err(() => fans.SetCurve("AI · Quiet", "GPU fans", null, good)) == "" && applies == a0 + 2);
+            C("after the gap the next write goes through", Err(() => fans.SetCurve("Quiet (tuned)", "GPU fans", null, good)) == "" && applies == a0 + 2);
             // a config the validator rejects never reaches apply
             Tick(); withPrevious = false;
-            cfg.Profiles["AI · Quiet"].First(r => r.Name == "GPU fans").RampUpPerSec = 0;   // invalid and, without a Previous, an error
+            cfg.Profiles["Quiet (tuned)"].First(r => r.Name == "GPU fans").RampUpPerSec = 0;   // invalid and, without a Previous, an error
             int a1 = applies;
-            var vErr = Err(() => fans.SetCurve("AI · Quiet", "GPU fans", null, good));
+            var vErr = Err(() => fans.SetCurve("Quiet (tuned)", "GPU fans", null, good));
             C("a change the validator rejects is never applied", vErr.Contains("refused") && applies == a1, vErr);
-            cfg.Profiles["AI · Quiet"].First(r => r.Name == "GPU fans").RampUpPerSec = 25; withPrevious = true;
+            cfg.Profiles["Quiet (tuned)"].First(r => r.Name == "GPU fans").RampUpPerSec = 25; withPrevious = true;
             // pump detection by fan name too
             cfg.FanNames["gpu:fan0"] = "Radiator Pump";
-            Refuse("a rule whose fan is named pump", () => fans.SetCurve("AI · Quiet", "GPU fans", null, good), "pump: never touched");
+            Refuse("a rule whose fan is named pump", () => fans.SetCurve("Quiet (tuned)", "GPU fans", null, good), "pump: never touched");
             cfg.FanNames.Remove("gpu:fan0");
             tuning.CurrentGoal = null; Tick();
-            Refuse("everything when no goal run is active", () => fans.SetCurve("AI · Quiet", "GPU fans", null, good), "no AI tuning goal");
+            Refuse("everything when no goal run is active", () => fans.SetCurve("Quiet (tuned)", "GPU fans", null, good), "no AI tuning goal");
 
             // ---- goal-based GPU tests: the fans follow the curve, duty recorded, no fixed boost
             var gpuF = new SimulatedGpu(new SimConfig());
@@ -132,7 +132,7 @@ public static class AiGoalTests
             boostsG.Clear();
             svc.CurrentGoal = new TuningGoal("quiet", null, "gpu");
             C("a goal run on a user profile is refused (prepare first)", Err(() => svc.StartGpuTest(0, 0, 10, false)).Contains("tuning.profile.prepare"));
-            svc.MarkAiProfile("AI · Quiet", "quiet"); cfg.ActiveProfile = "AI · Quiet";
+            svc.MarkAiProfile("Quiet (tuned)", "quiet"); cfg.ActiveProfile = "Quiet (tuned)";
             svc.StartGpuTest(0, 0, 10, false); svc.Wait(25);
             var rec = (GpuTestRecord)svc.LastResult!;
             C("goal run: the fixed boost is NOT used (fans follow the AI profile's curve)", !boostsG.Contains(85) && boostsG.All(b => b == null), string.Join(",", boostsG));
@@ -141,20 +141,20 @@ public static class AiGoalTests
             svc.StartGpuTest(0, 0, 10, false); svc.Wait(25);
             var rec2 = (GpuTestRecord)svc.LastResult!;
             C("goal run without a fan probe falls back to the card's own fan reading", rec2.AvgFanPct is > 0 && rec2.AvgFanRpm == null, rec2.AvgFanPct?.ToString() ?? "null");
-            C("the saved overclock only goes into the AI profile during a goal run", Err(() => svc.SaveResult(0, 0, "Balanced")).Contains("only saves into its own profile") && Err(() => svc.SaveResult(0, 0)) == "" && svc.State.Profiles.ContainsKey("AI · Quiet") && !svc.State.Profiles.ContainsKey("Balanced"));
+            C("the saved overclock only goes into the AI profile during a goal run", Err(() => svc.SaveResult(0, 0, "Balanced")).Contains("only saves into its own profile") && Err(() => svc.SaveResult(0, 0)) == "" && svc.State.Profiles.ContainsKey("Quiet (tuned)") && !svc.State.Profiles.ContainsKey("Balanced"));
             var sj = Json(svc.Status());
-            C("tuning.status carries the goal, AI profiles and previous profile", sj.Contains("\"goal\":{\"kind\":\"quiet\"") && sj.Contains("\"aiProfiles\":{\"AI · Quiet\"") && sj.Contains("\"activeIsAi\":true") && sj.Contains("avgFanPct"), sj[..Math.Min(200, sj.Length)]);
+            C("tuning.status carries the goal, AI profiles and previous profile", sj.Contains("\"goal\":{\"kind\":\"quiet\"") && sj.Contains("\"aiProfiles\":{\"Quiet (tuned)\"") && sj.Contains("\"activeIsAi\":true") && sj.Contains("avgFanPct"), sj[..Math.Min(200, sj.Length)]);
             svc.Dispose(); tuning.Dispose();
 
             // ---- CPU goals: undervolt, PBO limits, boost override
-            var z5 = CpuFamilies.For("AMD Ryzen 9 9950X 16-Core Processor"); var x3d = CpuFamilies.For("AMD Ryzen 7 9800X3D 8-Core Processor");
+            var z5 = CpuFamilies.For("AMD Ryzen 9 9950X 16-Core Processor"); var x3d = CpuFamilies.For("AMD Ryzen 7 7800X3D 8-Core Processor");
             var co = new[] { -20, -18, -25, -15 };
             string Sheet(CpuFamily f, string? g) => CpuSearchTools.BiosSheet("Test Board", "asus", f, co, 8, g);
             var perf = Sheet(z5, "performance"); var quiet = Sheet(z5, "quiet"); var bal = Sheet(z5, "balanced"); var none = Sheet(z5, null);
             C("performance sheet: PBO limits = Motherboard, boost override listed, undervolt rows", perf.Contains("Motherboard") && perf.Contains("Boost Clock Override") && perf.Contains($"{z5.BoostOverrideMhz}") && perf.Contains("Negative 25") && perf.Contains("UNDERVOLT"), perf);
             C("quiet sheet: reduced PPT/TDC/EDC limits, no boost override", quiet.Contains("Manual") && quiet.Contains($"{CpuSearchTools.QuietLimitPct}%") && quiet.Contains("PPT / TDC / EDC") && !quiet.Contains("Boost Clock Override ......... Enabled") && !quiet.Contains("Motherboard"), quiet);
             C("balanced sheet (and no goal): stock PBO behaviour, never raised", bal.Contains("Auto") && bal.Contains("do NOT raise") && none.Contains("do NOT raise") && !bal.Contains("Motherboard"));
-            C("performance on X3D: no boost override (not allowed there)", !Sheet(x3d, "performance").Contains("Enabled (Positive)") && Sheet(x3d, "performance").Contains("not available"));
+            C("performance on 7000X3D: no boost override (not allowed there)", !Sheet(x3d, "performance").Contains("Enabled (Positive)") && Sheet(x3d, "performance").Contains("not available"));
             C("every sheet says voltages are never raised", new[] { perf, quiet, bal, none }.All(s => s.Contains("Never raise any voltage")));
             var cpu = new CpuTuning(() => cfg, () => 50, Path.Combine(dir, "nocc"), Path.Combine(dir, "cpu.json"), null, () => "AMD Ryzen 9 9950X 16-Core Processor", () => null, () => ("ASUSTeK COMPUTER INC.", "ROG"), () => 8, _ => 0, () => DateTime.Now);
             cpu.Goal = new TuningGoal("performance", null, "cpu");
@@ -176,6 +176,10 @@ public static class AiGoalTests
             }
             C("the quiet and performance objectives differ (fan duty vs ramp harder)", goals[0].Objective.Contains("lowest fan duty") && TuningGoal.Parse("performance", null, "gpu").Goal!.Objective.Contains("ramp harder"));
             C("prompt for cpu goals mentions the fan tools (never the pump)", AiTuner.Prompt("cpu", 30, goals[2], null).Contains("never the pump"));
+            var sumP = AiTuner.SystemPrompt + AiTuner.Prompt("cpu", 30, goals[2], null);
+            C("prompt: the summary is the profile's record: changes and why only (before → after, the numbers), no intro or explainers; the CPU search is one line Glint completes",
+                sumP.Contains("SUMMARY (your final message)") && sumP.Contains("<before> → <after>") && sumP.Contains("no intro") && sumP.Contains("Glint adds the result here")
+                && !sumP.Contains("explain in a few sentences") && !sumP.Contains("Tell the user plainly"));
             C("system prompt: fan-curve rules and safety constraints", sp.Contains("never touch the user's profiles", StringComparison.OrdinalIgnoreCase) && sp.Contains("minus 5 C") && sp.Contains("30% from 60 C") && sp.Contains("pump") && sp.Contains("rate limited") && sp.Contains("fail-safe") && sp.Contains("undervolts", StringComparison.OrdinalIgnoreCase) && sp.Contains("Voltages are never raised"));
             C("system prompt: preferences guide trade-offs but can never override safety", sp.Contains("can NEVER override Glint's safety rules or limits") && sp.Contains("Glint refuses such requests server-side"));
             C("the AI's tool list has the four new tools, all existing MCP tools", new[] { "glint_tuning_fans_status", "glint_tuning_fans_setCurve", "glint_tuning_profile_prepare", "glint_tuning_profile_restore" }.All(AiTuner.Tools.Contains) && AiTuner.Tools.All(Cli.HasTool),
@@ -212,6 +216,49 @@ public static class AiGoalTests
             var (pg, ptgt) = TuningGoal.Parse("custom", "  quiet\u0000 please\n  ", "all");
             C("goal parse: custom text sanitised, legacy gpu/cpu/all = no goal, default target gpu", pg!.Text == "quiet please" && ptgt == "all" && TuningGoal.Parse("cpu", null, null) is (null, "cpu") && TuningGoal.Parse("balanced", null, null).Target == "gpu"
                 && TuningGoal.Parse("custom", new string('a', 900), null).Goal!.Text!.Length == TuningGoal.MaxText);
+
+            // ---- a tune builds its own profile from the detected fans (nothing copied from the user's profiles)
+            {
+                var rig = GlintConfig.Defaults(); rig.Tuning.Enabled = true; rig.ActiveProfile = "Balanced";
+                var userJson = Json(rig.Profiles) + Json(rig.Curves);
+                var detected = new[] { "st:pump", "st:fan1", "st:fan2", "xt:fan1", "gpu:Fan 1", "gpu:Fan 2", "mb:Fan #3" };
+                var fnow = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+                using var tf = new TuningService(() => rig, () => new SimulatedGpu(new SimConfig()), x => new SimulatedStress((SimulatedGpu)x), () => null, _ => { }, _ => Array.Empty<string>(), () => Array.Empty<string>(), Path.Combine(dir, "fresh.json"));
+                tf.ActiveProfile = () => rig.ActiveProfile;
+                var ff = new AiFans(() => rig, c => rig = c, () => new ValidationContext { Sensors = new[] { "cpu", "gpu", "gpu.hotspot", "liquid" }, Fans = detected },
+                    tf, () => new Dictionary<string, int>(), () => new Dictionary<string, int>(), () => 85, () => new Dictionary<string, string> { ["mb:Fan #3"] = "Water pump" }, () => fnow);
+                ff.Prepare("quiet", null, null, fresh: true);
+                var pr = rig.Profiles.GetValueOrDefault("Quiet (tuned)");
+                C("fresh: the tune's profile is named after the goal and made active", pr != null && rig.ActiveProfile == "Quiet (tuned)" && tf.IsAiProfile("Quiet (tuned)"));
+                var pump = pr?.FirstOrDefault(r => r.Name == "Pump"); var gf = pr?.FirstOrDefault(r => r.Name == "GPU fans"); var ot = pr?.FirstOrDefault(r => r.Name == "Case & radiator fans");
+                C("fresh: pumps (by id or by name) get their own rule at a fixed 100%",
+                    pump != null && pump.Fans.OrderBy(x => x).SequenceEqual(new[] { "mb:Fan #3", "st:pump" }) && pump.Fixed == 100 && pump.Inputs.Count == 0, Json(pump ?? new FanRule()));
+                C("fresh: GPU fans follow the GPU (and its hotspot)", gf != null && gf.Fans.SequenceEqual(new[] { "gpu:Fan 1", "gpu:Fan 2" }) && gf.Inputs.Select(i => i.Sensor).SequenceEqual(new[] { "gpu", "gpu.hotspot" }));
+                C("fresh: every other fan follows the hottest of liquid / CPU / GPU", ot != null && ot.Fans.SequenceEqual(new[] { "st:fan1", "st:fan2", "xt:fan1" }) && ot.Inputs.Select(i => i.Sensor).SequenceEqual(new[] { "liquid", "cpu", "gpu" }) && ot.Combine == Combine.Max);
+                C("fresh: every fan detected is in exactly one rule", pr != null && pr.SelectMany(r => r.Fans).OrderBy(x => x).SequenceEqual(detected.OrderBy(x => x)));
+                C("fresh: curves are the profile's own (named after it), none shared with the user's profiles",
+                    pr != null && pr.SelectMany(r => r.Inputs).All(i => i.Curve!.StartsWith("ai:Quiet (tuned)|") && rig.Curves.ContainsKey(i.Curve)) && pr.SelectMany(r => r.Inputs).Any());
+                C("fresh: the user's profiles and curves are untouched", Json(rig.Profiles.Where(k => k.Key != "Quiet (tuned)").ToDictionary(k => k.Key, k => k.Value)) + Json(rig.Curves.Where(k => !k.Key.StartsWith("ai:")).ToDictionary(k => k.Key, k => k.Value)) == userJson);
+                foreach (var kind in new[] { "quiet", "balanced", "performance" })
+                {
+                    var t = AiFans.Templates[kind];
+                    C($"fresh: the {kind} starting curves pass the same checks as the AI's own changes (100% before the emergency limit, 30% from 60 °C)",
+                        Err(() => { AiFans.CheckPoints(t.Cpu, new FanRule(), 85); AiFans.CheckPoints(t.Gpu, new FanRule(), 90); AiFans.CheckPoints(t.Liquid, new FanRule(), 85); AiFans.CheckPoints(AiFans.LiquidCpuSafety, new FanRule(), 90); foreach (var cg in AiFans.CaseGpuTemplates.Values) AiFans.CheckPoints(cg, new FanRule(), 90); }) == "");
+                }
+                // the AI changes a curve, then the goal is tuned again: the profile is rebuilt from scratch
+                tf.CurrentGoal = TuningGoal.Parse("quiet", null, "all").Goal;
+                fnow = fnow.AddSeconds(6);
+                ff.SetCurve("Quiet (tuned)", "GPU fans", "gpu", new[] { new[] { 40.0, 40 }, new[] { 60.0, 50 }, new[] { 80.0, 100 } });
+                var edited = Json(rig.Curves["ai:Quiet (tuned)|GPU fans|0"]);
+                fnow = fnow.AddSeconds(6);
+                ff.Prepare("quiet", null, null, fresh: true);
+                C("fresh: tuning the same goal again rebuilds the profile (old AI curves removed, starting curves back)",
+                    !rig.Curves.ContainsKey("ai:Quiet (tuned)|GPU fans|0") && rig.Profiles["Quiet (tuned)"].First(r => r.Name == "GPU fans").Inputs[0].Curve == "ai:Quiet (tuned)|gpu" && edited.Contains("40"));
+                fnow = fnow.AddSeconds(6);
+                var again = Json(ff.Prepare("quiet", null, null));
+                C("fresh: the AI's own prepare call during the run doesn't rebuild it", again.Contains("\"created\":false") || again.Contains("\"switched\":false"), again);
+                C("fresh: a pump rule can never be edited by the AI", Err(() => { fnow = fnow.AddSeconds(6); ff.SetCurve("Quiet (tuned)", "Pump", null, new[] { new[] { 30.0, 60 }, new[] { 40.0, 100 } }); }).Contains("pump"));
+            }
         }
         finally { try { Directory.Delete(dir, true); } catch { } }
     }

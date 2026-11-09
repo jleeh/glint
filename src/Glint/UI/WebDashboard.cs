@@ -31,8 +31,10 @@ public sealed class WebDashboard : Form
         _svc = svc;
         _openMonitor = openMonitor;
         Text = "Glint";
-        Size = new Size(1320, 860);
-        MinimumSize = new Size(980, 640);
+        // sizes are in 96-dpi units: PerMonitorV2 makes Size physical pixels, so 1320 px was only ~880 wide on a 4K screen at 150 %
+        var wa = Screen.FromPoint(Cursor.Position).WorkingArea;
+        Size = WindowFit.Fit(1560, 960, DeviceDpi, wa);
+        MinimumSize = WindowFit.Fit(980, 640, DeviceDpi, wa);
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = Color.FromArgb(12, 13, 18);
         Icon = TrayApp.AppIcon;
@@ -146,6 +148,19 @@ public sealed class WebDashboard : Form
 
     static object? Open(Action a) { a(); return null; }
 
+    /// <summary>Run a slow tuning action (stops that join threads, SMU tool calls) off the UI thread; errors come back as a toast,
+    /// and the page gets a fresh status when it's done.</summary>
+    object? Slow(Func<object?> work)
+    {
+        _ = Task.Run(() =>
+        {
+            string? err = null;
+            try { work(); } catch (Exception e) { err = e.Message; }
+            try { if (!IsDisposed) BeginInvoke(() => { if (err != null) Push(new { type = "toast", kind = "error", text = err }); Push(TuningMessage()); }); } catch { }
+        });
+        return null;
+    }
+
     /// <summary>One page of the saved test history for the Tuning page's pagination.</summary>
     object HistoryMessage(int offset, int limit)
     {
@@ -242,15 +257,18 @@ public sealed class WebDashboard : Form
                         {
                             "status" => null,
                             // goal = quiet | balanced | performance | custom (goalText for custom), target = gpu | cpu | all, context = the user's wishes
-                            "aiStart" => _svc.Config.Tuning?.Enabled == true ? _svc.Ai.Start((string?)a["goal"] ?? "balanced", (int?)(double?)a["budgetMinutes"] ?? 45, (string?)a["context"], (string?)a["target"], (string?)a["goalText"]) : throw new InvalidOperationException("turn tuning on first"),
+                            "aiStart" => _svc.StartTune((string?)a["goal"] ?? "balanced", (int?)(double?)a["budgetMinutes"] ?? 45, (string?)a["context"], (string?)a["target"], (string?)a["goalText"], (string?)a["cpuMode"], (string?)a["gpuMode"]),
                             // back to the profile that was active before the AI switched to its own
                             "profileRestore" => _svc.AiFans.Restore(),
-                            "aiStop" => _svc.Ai.Stop(),
+                            "aiStop" => Slow(() => _svc.StopAll()),
+                            "stockAll" => Slow(() => _svc.UseStock()),
+                            "useProfile" => Slow(() => _svc.UseProfile((string?)a["profile"] ?? throw new ArgumentException("profile is required"))),
+                            "saveCpu" => Slow(() => _svc.SaveCpu((string?)a["profile"] ?? throw new ArgumentException("profile is required"), a["values"] is System.Text.Json.Nodes.JsonArray arr ? arr.Select(x => x is JsonValue v && v.TryGetValue<double>(out var d) && double.IsFinite(d) ? (int)Math.Round(d) : throw new ArgumentException("values must be numbers")).ToArray() : null)),
                             "history" => Open(() => Push(HistoryMessage(Math.Max(0, (int?)(double?)a["offset"] ?? 0), Math.Clamp((int?)(double?)a["limit"] ?? 15, 1, 100)))),
                             "monitor" => Open(() => _openMonitor?.Invoke()),
-                            "stop" => _svc.Tuning.Stop(),
+                            "stop" => Slow(() => _svc.StopAll()),
                             "stock" => _svc.Tuning.Stock(),
-                            "applySaved" => _svc.Tuning.ActiveSaved is { } sv ? _svc.Tuning.Apply(sv.Core, sv.MemAb) : throw new InvalidOperationException("no saved result for this profile yet"),
+                            "applySaved" => new { applied = true, note = _svc.Tuning.ApplySaved() },   // as a profile switch: its power limit, untested-but-saved results too
                             // manual overclocking: force = the user confirmed an untested setting in the dashboard (never from the AI / MCP)
                             "manualApply" => _svc.Tuning.Apply(I("core"), I("memAb"), (bool?)a["force"] ?? false),
                             "manualSave" => _svc.Tuning.SaveResult(I("core"), I("memAb"), (string?)a["profile"], (bool?)a["force"] ?? false),
@@ -260,10 +278,11 @@ public sealed class WebDashboard : Form
                             "clearRevert" => _svc.Tuning.ClearRevert(),
                             "cpuFinish" => _svc.Cpu.Finish((bool?)a["force"] ?? false),
                             "cpuStop" => _svc.Cpu.Stop(),
+                            "cpuCheck" => Slow(() => _svc.Cpu.ProbeSmu()),
                             _ => throw new InvalidOperationException("unknown tuning action " + op),
                         };
                     }
-                    catch (Exception e) when (e is InvalidOperationException or ArgumentException) { Push(new { type = "toast", kind = "error", text = e.Message }); }
+                    catch (Exception e) when (e is InvalidOperationException or ArgumentException or KeyNotFoundException or FormatException or InvalidCastException or NullReferenceException) { Push(new { type = "toast", kind = "error", text = e.Message }); }
                     Push(TuningMessage());
                     break;
                 }
@@ -459,5 +478,16 @@ public sealed class WebDashboard : Form
         _svc.Lighting.WantField();
         var field = _svc.Lighting.Field;
         return new { type = "preview", rgb = Convert.ToBase64String(bytes), field = field == null ? null : Convert.ToBase64String(field), fw = LightingEngine.FieldW, fh = LightingEngine.FieldH };
+    }
+}
+
+/// <summary>A window size given in 96-dpi units, scaled to the monitor's DPI and kept inside 94 % of its working area.</summary>
+public static class WindowFit
+{
+    public static Size Fit(int w, int h, int dpi, Rectangle workArea)
+    {
+        double k = Math.Max(dpi, 96) / 96.0;
+        int maxW = (int)(workArea.Width * 0.94), maxH = (int)(workArea.Height * 0.94);
+        return new Size(Math.Max(320, Math.Min((int)Math.Round(w * k), maxW)), Math.Max(320, Math.Min((int)Math.Round(h * k), maxH)));
     }
 }

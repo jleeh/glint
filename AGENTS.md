@@ -53,7 +53,9 @@ new checks fail against broken code.
 3. **Overclocking safety.** Tuning is off by default and every limit lives in `TuningService` / `TuningLimits` /
    `Nvml.CheckOffset`, never in the caller (dashboard, CLI, MCP, AI). Tests never load `nvml.dll` / `nvcuda.dll`: use
    `SimulatedGpu`. The AI tuner gets no built-in Claude Code tools and only the `tuning.*` MCP tools. Model: clock
-   offsets only, no voltage control; the GPU power limit is raised only to the card's own maximum (`unlockPower`);
+   offsets only, no voltage control; the GPU power limit is raised only to the card's own maximum (`unlockPower`) and lowered no further than 50% of its
+   default (`TuningService.MinPowerPct`, efficiency mode); the CPU Curve Optimizer only goes negative (an undervolt), within
+   the family's floor;
    temperature/power throttling is a limit the tuner optimises under (flagged `thermalLimited` / `powerLimited`),
    and only the emergency temperatures stop a test.
 4. **Device safety.** Plugins identify the device before writing, never send firmware/bootloader/save-to-flash

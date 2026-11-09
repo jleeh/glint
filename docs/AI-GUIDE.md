@@ -151,12 +151,49 @@ CPU (AMD Ryzen 5000/7000/9000 only; Intel CPUs have nothing to tune, `tuning.cpu
 
 6. `tuning.cpu.status`: whether this CPU can be tuned (`curveOptimizer.tunable` / `why`), a sensible `startHint`, and the
    search so far (per-core `values`, `adjustments`, `failedCores`, `wheaSinceStart`, `summaryFound`, the BIOS sheet).
-7. `tuning.cpu.start { startValue }` (-50..0; Ryzen 5000 allows -30 at most) starts CoreCycler's automatic per-core search
-   with y-cruncher. It takes **hours** and resumes by itself after a freeze (the user presses reset) or reboot; Glint stops
-   the stress test at the CPU temperature limit or when the temperature sensor fails. Start it and end the run; don't poll.
-8. When `summaryFound` is true: `tuning.cpu.finish` stops CoreCycler and returns the final values (found + 3, never
-   positive) and a BIOS sheet for the board maker. Curve Optimizer can't be set permanently from Windows: the user types
-   the values into the BIOS. `tuning.cpu.stop` ends the search early (progress is kept).
+7. `tuning.cpu.start { startValue }` (-50..0; Ryzen 5000 allows -30 at most) starts the CPU tune (sweep, per-core check, soak)
+   with y-cruncher, in about 30-40 minutes, and resumes by itself after a freeze (the user presses reset) or reboot. Glint
+   stops at the CPU temperature limit or when the temperature sensor fails. Start it and end the run; don't poll.
+   How it works (all inside Glint, hidden, no console windows):
+   - **Sweep**: one all-core y-cruncher run stays up while every core is set to 0, -5, -10... in turn through the SMU (the
+     reading that spans each change is dropped, the next two kept). Separate launches of the same test differ by up to ~20%
+     on a 9950X3D; readings inside one run agree to ~1%, so values are only compared within a run. It stops at the first
+     error or when scores fall two steps in a row, re-measures no-undervolt and the best three in the same run, then measures
+     those on one core twice each, alternating, in one single-core run. Performance mode keeps the fastest value (60%
+     all-core, 40% single-core); Efficiency mode the best speed per watt within 5% of stock.
+   - **Each core alone** at that value (60 s, the full SFTv4 / FFTv4 / N63 mix, pinned to one logical CPU; an error loosens
+     that core by 3).
+   - **Soak**: every core together for 5 minutes with FFTv4 (the in-cache SFTv4 pins a whole CPU at its thermal limit within
+     seconds, so it only runs per core). Reaching 3 °C under the limit after 60% of the time counts as passed; earlier means
+     cool down and retry, twice = stop with "cooling limits it". An error loosens every core by 2.
+   - **Finish**: final = found + 3 (never positive), saved into the tune's profile, then the BIOS values and the result are
+     alternated inside one all-core and one single-core run for the profile's stock vs tuned figure (performance mode backs
+     off 5 at a time if it measures slower). A stopped search puts the BIOS values back and re-applies the active profile's.
+   A freeze mid-test is recorded before the value is set: the next start marks that value failed (sweep), loosens that core
+   (per-core) or every core (soak) and resumes after 90 s.
+8. `tuning.cpu.finish` returns the final values and a BIOS sheet for the board maker (the optional permanent route).
+   Glint applies the result through the SMU whenever that profile is active (re-applied at every start, never right after
+   a crash; two crashes in a row remove it) and puts the BIOS values back for profiles without one. `tuning.cpu.stop` ends
+   the search early.
+   Every AI run ends with its result saved: if the AI didn't save the GPU result itself, Glint saves the best full test of
+   the run, ranked by work done (compute rate, then VRAM bandwidth), never by clock. `tuning.gpu.verify` then tests it and
+   stock back to back (performance: kept if 1.5%+ faster with compute not below stock; efficiency: 5%+ more work per watt
+   and no more than 10% slower), lowering or removing it otherwise.
+   GPU efficiency mode: `tuning.gpu.test` / `tuning.gpu.save` take `powerPct` (50-100, % of the card's default power limit);
+   the saved power limit is applied with the profile.
+   `tuning.cpu.loadtest {seconds}` is an all-core y-cruncher run (20-90 s) that returns peak / sustained temperature vs the
+   limit, package power and clocks, and the PPT / TDC / EDC use from the CPU's own power table, for a PBO limits / boost
+   override recommendation (BIOS settings Glint can't set).
+   `tuning.cpu.status` `power` = the limits in effect, read from the CPU's SMU power table through LibreHardwareMonitor
+   (`raised` = the BIOS has PBO limits raised). The boost override can't be read.
+   `tuning.fans.history {hours}` = temperatures and each fan rule's duty over the last 24 h of real use (a sample every 30 s,
+   kept across restarts), with the sustained-load periods (5+ min: games, renders). Base fan curves on it.
+   The dashboard's Stock row stops everything and holds stock clocks + the BIOS CPU values (also at startup) until a profile
+   is picked or a tune starts.
+   `tuning.cpu.check` is read-only: it reads the current per-core offsets to tell whether Windows can reach the CPU's SMU on
+   this PC (`ok`, `offsets`, or why not + `fix`, with the Memory Integrity / PawnIO state), the PBO scalar and the power
+   table. Virtualization (SVM) on is fine; with Memory Integrity on, the tool needs PawnIO. It never writes and is skipped
+   while a search runs.
 
 The dashboard's **Tune with AI** button runs exactly this with Claude Code and a tuning-only MCP server
 (`Glint.exe mcp --only tuning`).

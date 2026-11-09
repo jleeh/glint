@@ -742,7 +742,25 @@ static class Program
         if (svc.Config.Tuning?.Enabled == true && File.Exists(Glint.Tuning.CpuTuning.StatePath))
             _ = Task.Run(() => { try { svc.Cpu.OnStartup(); } catch (Exception e) { svc.Rig.Log.Add("cpu tuning: " + e.Message); } });
         if (svc.Config.Tuning?.Enabled == true || File.Exists(Glint.Tuning.TuningService.StatePath))
-            _ = Task.Run(() => { try { var n = svc.Tuning.OnStartup(Glint.Tuning.TuningService.LastShutdownWasCrash()); if (n != null) svc.Rig.Log.Add("tuning: " + n); } catch (Exception e) { svc.Rig.Log.Add("tuning: " + e.Message); } });
+            _ = Task.Run(() =>
+            {
+                bool crashed = false;
+                try { crashed = Glint.Tuning.TuningService.LastShutdownWasCrash(); } catch { }
+                // the GPU step can refuse (MSI Afterburner running, no GPU...): that must never skip the CPU undervolt below
+                try { var n = svc.Tuning.OnStartup(crashed); if (n != null) svc.Rig.Log.Add("tuning: " + n); }
+                catch (Exception e) { svc.Rig.Log.Add("tuning: GPU overclock not re-applied: " + e.Message); }
+                try
+                {
+                    if (svc.Tuning.OnCpuCrash(crashed) is { } cn) svc.Rig.Log.Add("cpu tuning: " + cn);
+                    // the active profile's CPU undervolt: same rule as the GPU (always re-applied, never after a crash)
+                    if (svc.Config.Tuning is { Enabled: true } && !svc.Tuning.StockMode && svc.Tuning.CpuFor(svc.Config.ActiveProfile) is { } co)
+                    {
+                        if (crashed) svc.Rig.Log.Add("cpu tuning: undervolt not applied, the last shutdown was a crash");
+                        else svc.Rig.Log.Add("cpu tuning: " + (svc.Cpu.ApplyCo(co, "startup") ?? $"undervolt of {svc.Config.ActiveProfile} applied"));
+                    }
+                }
+                catch (Exception e) { svc.Rig.Log.Add("cpu tuning: " + e.Message); }
+            });
         Plugins.PluginHost.EffectsChanged += () => svc.Lighting.Apply(svc.Config);
         var tray = new UI.TrayApp(svc);
         var ui = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();

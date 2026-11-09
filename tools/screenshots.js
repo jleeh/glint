@@ -75,16 +75,17 @@ function fontEnv() {
   await shot('devices');
   await nav('setup'); await wait(600);                          // fictional report: one failing plugin, a few warnings
   await shot('setup-check');
-  await nav('tuning'); await wait(400); await p.click('#tn-ai-start'); await wait(500); await shot('tuning');
-  await p.evaluate(() => { const c = document.getElementById('content'); c.scrollTop = document.getElementById('tn-history').closest('.card').offsetTop - 80; });
+  await nav('tuning'); await wait(400); await p.evaluate(() => tnSetTab('overview')); await p.click('#tn-ai-start'); await wait(500); await shot('tuning');
+  await p.evaluate(() => tnSetTab('history')); await wait(300);
   await shot('tuning-history');
-  // manual overclock (GPU card) and the per-profile overclock table
-  await p.evaluate(() => { S.tnMan = { core: 140, mem: 750, prof: null }; document.getElementById('tn-man').scrollIntoView({ block: 'center' }); renderTuning(); }); await wait(500);
-  await p.evaluate(() => { document.getElementById('tn-man').scrollIntoView({ block: 'center' }); });
+  await p.evaluate(() => tnSetTab('cpu')); await wait(300);
+  await shot('tuning-cpu');
+  // manual overclock (GPU tab) and the per-profile overclock table
+  await p.evaluate(() => { S.tnMan = { core: 140, mem: 750, prof: null }; S.tnTab = 'gpu'; renderTuning(); }); await wait(500);
   await shot('tuning-manual');
   await p.evaluate(() => window.__mockConfigChanged(c => { for (const n of ['Gaming', 'Night shift', 'Streaming', 'Benchmark']) c.profiles[n] = JSON.parse(JSON.stringify(c.profiles.Balanced)); }));
   await wait(400);
-  await p.evaluate(() => { document.getElementById('tn-profiles').scrollIntoView({ block: 'center' }); });
+  await p.evaluate(() => tnSetTab('overview')); await wait(300);
   await shot('tuning-profiles');
   await p.click('#profile-manage'); await wait(300);
   await shot('profiles-manager');

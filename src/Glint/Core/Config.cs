@@ -303,7 +303,8 @@ public sealed class TuningConfig
     public bool Enabled { get; set; }
     /// <summary>Allow tuning a workstation / data-centre GPU (RTX PRO, RTX A, Quadro...). They're validated at stock, so this is an explicit opt-in.</summary>
     public bool AllowWorkstation { get; set; }
-    /// <summary>Re-apply the saved GPU result when Glint starts (skipped after a crash, a driver change or repeated crashes).</summary>
+    /// <summary>No longer used: the active profile's overclock and undervolt always re-apply at startup (never right after a crash; repeated
+    /// crashes revert them). Kept so older config files still load.</summary>
     public bool ApplyAtStartup { get; set; }
     /// <summary>Emergency stops (back to stock). Reaching the card's own thermal limit is NOT a failure: it throttles, and
     /// the tuner picks the best sustained performance under it. Clamped to hard limits and the card's slowdown point + 3 °C.</summary>

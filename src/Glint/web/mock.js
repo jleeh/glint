@@ -400,7 +400,7 @@
     }
     TN.testStart = Date.now() - 18e3;
     const kind = ['quiet', 'balanced', 'performance', 'custom'].includes(args?.goal) ? args.goal : 'balanced';
-    TN.ai = { running: true, goal: kind, target: goal, goalText: args?.goalText ?? null, objective: kind.toUpperCase() + ': demo objective', profile: 'AI · ' + kind[0].toUpperCase() + kind.slice(1), context: args?.context ?? 'Fans never above 50%; stability over the last few MHz; I game at 4K.', cli: 'windows', startedAt: tm(0), summary: null, transcript: [
+    TN.ai = { running: true, goal: kind, target: goal, goalText: args?.goalText ?? null, objective: kind.toUpperCase() + ': demo objective', profile: kind[0].toUpperCase() + kind.slice(1) + ' (tuned)', context: args?.context ?? 'Fans never above 50%; stability over the last few MHz; I game at 4K.', cli: 'windows', startedAt: tm(0), summary: null, transcript: [
       'Starting Claude Code (windows) to tune: ' + goal + ', up to 45 min',
       '→ tuning.status {}',
       'This is a **Demo GeForce RTX 4080** with a power limit that can go from 320 W to 340 W. Plan:\n\n1. Measure stock first (so every gain is measured, not guessed)\n2. Find the core edge in steps of *50 MHz*\n3. Then memory, then a long soak\n\n| Step | Setting | Why |\n|---|---|---|\n| 1 | stock | baseline |\n| 2 | core `+100` | first step up |',
@@ -415,7 +415,7 @@
   }
   // each Glint profile carries its own overclock (a fictional demo: Balanced is proven, Quiet was saved untested, the rest run at stock)
   const tnSaved = (core, memAb, tc, tm) => ({ core, memAb, when: new Date(Date.now() - 86400e3).toISOString(), driver: '999.99', vbios: 'DEMO.00', testedCore: tc, testedMemAb: tm });
-  TN.aiProfiles = {}; TN.prev = null;
+  TN.aiProfiles = {}; TN.prev = null; TN.cpuP = { Balanced: [-19, -22, -16, -22, -21, -18, -22, -20] }; TN.stock = false;
   TN.profiles = { Balanced: tnSaved(120, 750, 120, 750), Quiet: tnSaved(200, 250, 150, 250) };
   const tnProven = (c, m) => (c <= 0 && m <= 0) || tnHistory().some(h => h.ok && !h.light && h.driver === '999.99' && h.core >= c && h.memAb >= m);
   const activeName = () => (window.__lastConfig ?? INIT.config).activeProfile;
@@ -437,6 +437,9 @@
       TN.profiles[a.profile ?? activeName()] = tnSaved(a.core, a.memAb, best?.core ?? 0, best?.memAb ?? 0);
     }
     if (m.op === 'clearProfile') { delete TN.profiles[a.profile]; if (a.profile === activeName()) TN.offsets = { core: 0, memAb: 0 }; }
+    if (m.op === 'useProfile' && a.profile) { TN.stock = false; window.__mockConfigChanged(c => { if (c.profiles[a.profile]) c.activeProfile = a.profile; }); }
+    if (m.op === 'stockAll') { TN.stock = true; TN.offsets = { core: 0, memAb: 0 }; TN.ai = { ...TN.ai, running: false }; TN.testStart = null; }
+    if (m.op === 'saveCpu' && a.profile) { if (a.values && a.values.some(v => v !== 0)) TN.cpuP[a.profile] = a.values.slice(); else delete TN.cpuP[a.profile]; }
     if (m.op === 'applySaved') { const sv = TN.profiles[activeName()]; if (sv) TN.offsets = { core: sv.core, memAb: sv.memAb }; }
     if (m.op === 'stock') TN.offsets = { core: 0, memAb: 0 };
   }
@@ -445,9 +448,10 @@
     if (m.op === 'profileRestore' && TN.prev) { const p = TN.prev; TN.prev = null; window.__mockConfigChanged(c => { if (c.profiles[p]) c.activeProfile = p; }); }
     if (m.op === 'aiStart') {
       tnStartRun(m.args?.target ?? 'gpu', m.args);
-      // like the host: the AI works in its own profile (a copy of the active one), switches to it and remembers where it came from
-      const name = TN.ai.profile, prev = activeName();
-      if (prev !== name) { TN.prev = prev; TN.aiProfiles[name] = TN.ai.goal; window.__mockConfigChanged(c => { c.profiles[name] ??= JSON.parse(JSON.stringify(c.profiles[prev])); c.activeProfile = name; }); }
+      // like the host: Glint builds the goal's own profile ("Quiet (tuned)"; fresh fan rules) and switches to it
+      const name = TN.ai.profile;
+      TN.aiProfiles[name] = TN.ai.goal;
+      window.__mockConfigChanged(c => { c.profiles[name] = [{ name: 'Case & radiator fans', fans: ['st:fan1', 'st:fan2'], inputs: [{ sensor: 'cpu', curve: 'ai:' + name + '|cpu' }], combine: 'max', minDuty: 20, maxDuty: 100 }]; c.curves['ai:' + name + '|cpu'] = [[40, 25], [60, 35], [70, 60], [78, 100]]; c.activeProfile = name; });
     }
     if (m.op === 'aiStop' || m.op === 'stop') { TN.ai = { ...TN.ai, running: false, transcript: [...TN.ai.transcript, 'Stopped by the user'] }; TN.testStart = null; }
     const h = tnHistory(), running = TN.ai.running, t = Date.now() / 1000;
@@ -459,14 +463,15 @@
       compare: window.__mockNoStock ? { stock: null, tuned: null, savedCore: null, savedMemAb: null } : { stock, tuned, savedCore: 120, savedMemAb: 750 },
       testing: running && TN.testStart ? { core: 150, memAb: 500, seconds: 45, light: false, startedAt: new Date(TN.testStart).toISOString() } : null,
       live: running ? { coreC: +(71 + 2 * Math.sin(t / 3)).toFixed(1), memC: +(84 + Math.sin(t / 5)).toFixed(1), mhz: 2985 + Math.round(20 * Math.sin(t)), memMhz: 11200, powerW: 336, utilPct: 99, fanPct: 85, throttle: ['power cap'] } : null,
-      saved: TN.profiles[activeName()] ?? null, activeProfile: activeName(), profiles: TN.profiles, aiProfiles: TN.aiProfiles, previousProfile: TN.prev, activeIsAi: !!TN.aiProfiles[activeName()], goal: TN.ai.running || TN.ai.goal ? { kind: TN.ai.goal, text: TN.ai.goalText ?? null, target: TN.ai.target, profile: TN.ai.profile, objective: TN.ai.objective } : null, reverted: null, history: h.slice(0, 30) },
+      saved: TN.profiles[activeName()] ?? null, activeProfile: activeName(), profiles: TN.profiles, aiProfiles: TN.aiProfiles, cpuProfiles: TN.cpuP, cpuBench: { Balanced: { stock: { allCore: 9.0e10, single: 7.5e9, clockMhz: 5100, peakC: 88, powerW: 182 }, tuned: { allCore: 9.28e10, single: 7.71e9, clockMhz: 5250, peakC: 83, powerW: 176 } } }, notes: { Balanced: { time: '2026-11-09T09:04:01Z', goal: 'balanced', target: 'all', text: '- **GPU core offset:** +0 → +120. Why: +120 held 2985 MHz under load, +150 crashed.\n- **Result:** 2790 → 2985 MHz, 434 → 452 G ops/s\n\n**CPU undervolt:** BIOS → **−25 on all 8 cores**\n- Why: the sweep picked −28 (−33 failed).' } }, pboProfiles: { Balanced: { short: 'PBO: Auto', detail: 'Thermal-limited: more power would only add heat, leave PBO limits at Auto (all-core load test: peak 88 °C of 90 °C, 182 W, 5120 MHz). A BIOS setting: Glint doesn\'t change it.' } }, stockMode: !!TN.stock, profileStats: { stock: { core: 0, memAb: 0, loadMhz: stock.loadMhz, rate: stock.rate, gBps: stock.gBps, powerW: stock.powerW, peakCoreC: stock.peakCoreC, avgFanPct: 41 }, profiles: { Balanced: { core: 120, memAb: 750, loadMhz: tuned.loadMhz, rate: tuned.rate, gBps: tuned.gBps, powerW: tuned.powerW, peakCoreC: tuned.peakCoreC, avgFanPct: 47 }, Quiet: { core: 200, memAb: 250, loadMhz: 3010, rate: 452, gBps: 925, powerW: 318, peakCoreC: 66, avgFanPct: 38 } } }, previousProfile: TN.prev, activeIsAi: !!TN.aiProfiles[activeName()], goal: TN.ai.running || TN.ai.goal ? { kind: TN.ai.goal, text: TN.ai.goalText ?? null, target: TN.ai.target, profile: TN.ai.profile, objective: TN.ai.objective } : null, reverted: null, history: h.slice(0, 30) },
       ai: TN.ai, crashes: { watching: false, events: [], cpuCoresToLoosen: {} },
-      cpu: { enabled: true, phase: 'searching', stoppedReason: null, goal: { kind: 'quiet', text: null, target: 'cpu' },
+      cpu: { enabled: true, phase: window.__mockCpuSearch ? 'searching' : 'done', stoppedReason: null, goal: { kind: 'quiet', text: null, target: 'cpu' },
         goalPlan: { goal: 'quiet', undervolt: 'deepest stable Curve Optimizer undervolt per core', pbo: 'Manual: PPT, TDC and EDC about 75% of the CPU\'s default (all three together)', boostOverride: 'not used (Auto)', platformLimitC: 85, fans: 'quiet curve: ramp late, cap at 60%', advisoryOnly: false },
         curveOptimizerNote: 'Curve Optimizer negative values ARE per-core undervolts (less voltage than stock). Voltages are never raised.',
         cpu: { name: 'Demo Ryzen 7 9700X', family: 'amd-zen5', label: 'AMD Ryzen 9000 (Zen 5)', vendor: 'amd', cores: 8, microcode: null, advisory: null, tempC: 71 },
         curveOptimizer: { supported: true, tunable: true, why: null, startHint: -25, abortC: 90, expect: 'takes several hours' },
-        search: { startValue: -25, running: false, summaryFound: true, cores: 8, values: [-22, -25, -19, -25, -24, -21, -25, -23], adjustments: 9, failedCores: {}, wheaSinceStart: 0, peakC: 78,
+        smu: window.__mockSmu ?? { ok: true, summary: 'Curve Optimizer can be read and set from Windows (through the SMU)', fix: null, offsets: [0, 0, 0, 0, 0, 0, 0, 0], memoryIntegrity: true, pawnIo: true },
+        search: { startValue: -25, running: !!window.__mockCpuSearch, summaryFound: !window.__mockCpuSearch, cores: 8, passesNeeded: 2, live: !window.__mockCpuSearch ? null : { core: 5, value: -21, elapsed: (Date.now() / 1000) % 180, seconds: 180, pass: 2, passesNeeded: 2, stage: "confirming", deepest: -21, coresDone: 5, coresTotal: 8, done: [true, true, true, true, true, false, false, false], running: true, tempC: 71 }, values: [-22, -25, -19, -25, -24, -21, -25, -23], adjustments: 9, failedCores: {}, wheaSinceStart: 0, peakC: 78,
           final: [-19, -22, -16, -22, -21, -18, -22, -20], margin: 3, biosSheet: 'Demo board - enter these in the BIOS (Del):\n  Advanced > AMD Overclocking > Precision Boost Overdrive\n  Core 0 Curve Optimizer ........... Negative 19\n  Core 7 Curve Optimizer ........... Negative 20' } } };
   }
   window.mockBridge = {

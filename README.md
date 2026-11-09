@@ -26,11 +26,12 @@
   open. Effects are rendered once per frame and devices are only written when their colours change.
 - **Fans that think about the whole PC.** Every fan curve can take several sensors at once: CPU, GPU, liquid,
   drives, anything. The hottest one wins (or average / weighted). Radiators can follow the GPU and the CPU.
-- **AI overclocking, only if you want it.** Off by default. Turn it on and press **Tune with AI**: Claude (your own
-  Claude Code login, on Windows or in WSL) finds the fastest stable GPU core/memory offsets with Glint's own CUDA stress
-  test, and guides the Ryzen Curve Optimizer. It looks for the best sustained performance and stability: temperature
+- **AI overclocking, only if you want it.** Off by default. Turn it on, pick a goal (quiet, balanced, performance or
+  your own words) and press **Tune**: Claude (your own Claude Code login, on Windows or in WSL) finds the fastest (or most
+  efficient) stable GPU offsets with Glint's own CUDA stress test, undervolts a Ryzen CPU per core, shapes the fan curves
+  and saves it all as a profile. It looks for the best sustained performance and stability: temperature
   and power throttling are limits it optimises under, not failures. Glint enforces the rest itself: clock offsets only
-  (no voltage control; the GPU power limit is raised only up to the card's own maximum), emergency temperature stops,
+  (no voltage control; the GPU power limit stays between 50% of its default and the card's own maximum), emergency temperature stops,
   back to stock after every test, and **crash watch** backs the overclock off on its own after a driver reset or
   bluescreen. A small **tuning monitor** window shows the live test, gauges and the AI's reasoning.
 - **Lighting like a pro suite.** 18 built-in effects painted across a 2D layout of your PC, per-device and
@@ -75,12 +76,22 @@ Tuning is **off until you turn it on** (Tuning page). Then:
   GPU power limit is raised to the card's own maximum (its firmware ceiling) while testing and while a result is applied
   (switch **Unlock power limit** off to keep the default); voltage is never touched. Workstation cards (RTX PRO,
   RTX A, Quadro) need an extra opt-in.
-- **CPU** (AMD Ryzen 5000/7000/9000): per-core Curve Optimizer search with a bundled CoreCycler; Glint writes the BIOS
-  values to enter. CPU power limits and voltages are never raised.
+- **Goals and modes**: each tune has a goal (quiet / balanced / performance / custom text) and a **Performance** or
+  **Efficiency** mode for the GPU and the CPU. Efficiency looks for the most work per watt: a lower GPU power limit
+  (down to 50% of the card's default) with a core offset, or the CPU undervolt with the best speed per watt within 5% of
+  stock. Every GPU result is checked back to back against stock before it counts.
+- **CPU** (AMD Ryzen 5000/7000/9000): a Curve Optimizer undervolt applied from Windows through the SMU (PawnIO; it
+  resets with the PC, so nothing is permanent). About 30-40 minutes: a sweep inside one running y-cruncher picks the value
+  by effective clock (separate benchmark launches differ too much to compare), each core is checked alone, then a
+  5-minute all-core soak; the result is benchmarked against your BIOS values in the same runs. The CPU's power table
+  (PPT/TDC limits and use) drives the PBO advice, which stays a BIOS setting for you to change. CPU power limits and
+  voltages are never raised.
+- **Profiles**: a tune saves its GPU offsets, CPU undervolt and fan curves into a profile ("Balanced (tuned)"), re-applied
+  whenever that profile is active and at startup (not after a crash). Each profile keeps a short record of what its tune
+  set and why. Fan curves are shaped from up to 24 h of temperature history, not just the stress tests.
 - **Crash watch**: while an overclock is applied, Glint subscribes to Windows' event log (driver resets, WHEA hardware
   errors, bluescreens, game crashes in the NVIDIA driver). A GPU crash backs the overclock off a step; repeated crashes
   put it back to stock. CPU errors name the core whose Curve Optimizer value needs loosening.
-- **Apply at startup** (optional) re-applies the saved result, except after a crash or a driver update.
 
 Overclocking runs hardware beyond its factory settings: crashes during tests are expected, and some manufacturers
 don't cover overclocking under warranty. The tuning code is ported from [Headroom](https://github.com/eviljarv89-ctrl/Headroom) (MIT).

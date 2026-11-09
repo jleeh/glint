@@ -458,7 +458,7 @@ public static class ConfigValidator
             {
                 ["enabled"] = F("boolean", "Show the Tuning page and allow tests. Off = Glint never touches clocks.", false, true),
                 ["allowWorkstation"] = F("boolean", "Allow tuning a workstation / data-centre GPU (RTX PRO, RTX A, Quadro). They're validated at stock clocks, so this is an explicit opt-in.", false, true),
-                ["applyAtStartup"] = F("boolean", "Re-apply the saved GPU result when Glint starts (skipped after a crash, a driver change or repeated crashes).", false, true),
+                ["applyAtStartup"] = F("boolean", "No longer used (kept for old configs): the active profile's overclock and undervolt always re-apply at startup, never right after a crash; repeated crashes revert them.", false, true),
                 ["emergencyCoreC"] = F("number", "Emergency stop for tests (GPU back to stock). Reaching the card's own thermal limit is not a failure: it throttles and the tuner looks for the best sustained performance. Never more than 3 °C past the card's slowdown point.", 90, 90, Glint.Tuning.TuningLimits.MinEmergencyC, Glint.Tuning.TuningLimits.MaxEmergencyCoreC),
                 ["emergencyMemC"] = F("number", "Emergency stop on memory-junction temperature.", 100, 100, Glint.Tuning.TuningLimits.MinEmergencyC + 10, Glint.Tuning.TuningLimits.MaxEmergencyMemC),
                 ["unlockPower"] = F("boolean", "Raise the GPU power limit to the card's own maximum (its firmware ceiling) during tests and while a result is applied; back to default at stock. No voltage control.", true, true),

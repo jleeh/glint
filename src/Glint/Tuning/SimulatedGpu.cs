@@ -15,6 +15,8 @@ public sealed record SimConfig
     public bool EccSupported { get; init; }
     public double AmbientC { get; init; } = 35;
     public double? SlowdownC { get; init; } = 88;
+    /// <summary>Power-limited card: compute stops scaling above this core offset and every memory offset costs compute.</summary>
+    public int? PowerCapCore { get; init; }
 }
 
 /// <summary>
@@ -78,7 +80,8 @@ public sealed class SimulatedGpu(SimConfig? config = null) : IGpuControl
         {
             double core = Config.AmbientC + 40 * Load + _off[ClockKind.Core] * 0.02;
             int mhz = 2400 + _off[ClockKind.Core] - (_lock is { } k && 2400 > k.Max ? 2400 - k.Max : 0);
-            return new GpuSample(core, null, 60 + 500 * Load, mhz, 14000 + _off[ClockKind.Memory], (int)(100 * Load), (int)(30 + 60 * Load), Load > 0.95 ? ["power cap"] : []);
+            double draw = 60 + 500 * Load; if (_power is double lim && draw > lim) draw = lim;   // the power limit caps the draw
+            return new GpuSample(core, null, draw, mhz, 14000 + _off[ClockKind.Memory], (int)(100 * Load), (int)(30 + 60 * Load), Load > 0.95 ? ["power cap"] : []);
         }
     }
 
@@ -125,7 +128,9 @@ public sealed class SimulatedStress(SimulatedGpu gpu) : IGpuStress
             long launches = Math.Max(1, (long)(seconds * 8));
             bool bad = gpu.Config.UnstableCore is { } u && off > u + (light ? 30 : 0);  // the light load survives slightly more
             long errors = bad ? launches / 2 + 1 : 0;
-            return new(errors == 0, launches, errors, 1e12 * (1 + off / 3000.0), null, bad ? $"{errors} of {launches} compute results differ from stock" : null, false);
+            double eff = gpu.Config.PowerCapCore is int cap ? Math.Min(off, cap) - gpu.GetOffset(ClockKind.Memory) / 100.0 : off;
+            double pf = gpu.PowerLimitNowW is double lim && lim < 560 ? Math.Pow(lim / 560, 0.4) : 1;   // less power: slower, but less than in proportion
+            return new(errors == 0, launches, errors, 1e12 * (1 + eff / 3000.0) * pf, null, bad ? $"{errors} of {launches} compute results differ from stock" : null, false);
         }
         finally { gpu.Load = 0; }
     }

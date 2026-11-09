@@ -11,7 +11,7 @@ public sealed record TuningGoal(string Kind, string? Text, string Target)
     public const int MaxText = 300, MaxContext = 1000;
 
     /// <summary>The Glint profile the AI works in for this goal. Re-tuning the same goal reuses it.</summary>
-    public string ProfileName => "AI · " + char.ToUpperInvariant(Kind[0]) + Kind[1..];
+    public string ProfileName => char.ToUpperInvariant(Kind[0]) + Kind[1..] + " (tuned)";
     public bool Gpu => Target is "gpu" or "all";
     public bool Cpu => Target is "cpu" or "all";
 

@@ -29,10 +29,10 @@ public sealed class TuningMonitor : Form
     {
         _svc = svc;
         Text = "Glint · Tuning monitor";
-        Size = new Size(520, 720);
-        MinimumSize = new Size(400, 460);
-        StartPosition = FormStartPosition.Manual;
         var wa = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1280, 800);
+        Size = WindowFit.Fit(560, 760, DeviceDpi, wa);
+        MinimumSize = WindowFit.Fit(400, 460, DeviceDpi, wa);
+        StartPosition = FormStartPosition.Manual;
         Location = new Point(Math.Max(wa.Left, wa.Right - Width - 24), Math.Max(wa.Top, wa.Bottom - Height - 24));
         BackColor = Color.FromArgb(12, 13, 18);
         Icon = TrayApp.AppIcon;
@@ -55,12 +55,11 @@ public sealed class TuningMonitor : Form
         catch (Exception e) { return new { type = "tuning", error = e.Message }; }
     }
 
-    /// <summary>The page's actions. "stop" ends the AI run and the running test; anything else is refused.</summary>
-    public static bool Act(string? op, TuningService tuning, AiTuner ai)
+    /// <summary>The page's actions. "stop" stops everything tuning is doing (AI run, GPU test, CPU search); anything else is refused.</summary>
+    public static bool Act(string? op, Func<object> stopAll)
     {
         if (op != "stop") return false;
-        ai.Stop();
-        tuning.Stop();
+        stopAll();
         return true;
     }
 
@@ -96,7 +95,7 @@ public sealed class TuningMonitor : Form
             case "ready": _ready = true; Push(Message(_svc.Tuning, _svc.Ai, _svc.Cpu)); _tick.Start(); break;
             case "top": TopMost = (bool?)m!["on"] == true; break;
             case "action":
-                try { Act((string?)m!["op"], _svc.Tuning, _svc.Ai); } catch { }
+                _ = Task.Run(() => { try { Act((string?)m!["op"], _svc.StopAll); } catch { } });
                 Push(Message(_svc.Tuning, _svc.Ai, _svc.Cpu));
                 break;
         }

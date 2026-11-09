@@ -18,6 +18,16 @@ static class SelfTestV02
         Run("update check", C, Updates);
         Run("OpenRGB bridge", C, OpenRgb);
         Run("config v0.2", C, Config);
+        Run("window size", C, WindowSize);
+    }
+
+    static void WindowSize(Action<string, bool, string> C)
+    {
+        var big = new System.Drawing.Rectangle(0, 0, 3840, 2100);
+        var a = Glint.UI.WindowFit.Fit(1560, 960, 144, big);      // 4K at 150 %
+        var b = Glint.UI.WindowFit.Fit(1560, 960, 96, new System.Drawing.Rectangle(0, 0, 1366, 728));   // small laptop
+        C("window size: default is in 96-dpi units, scaled by the monitor's DPI (1560 x 960 -> 2340 x 1440 at 150 %)", a.Width == 2340 && a.Height == 1440, $"{a}");
+        C("window size: never bigger than 94 % of the screen's working area", b.Width == 1284 && b.Height == 684, $"{b}");
     }
 
     static void Run(string what, Action<string, bool, string> C, Action<Action<string, bool, string>> f)
