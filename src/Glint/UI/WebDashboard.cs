@@ -26,10 +26,21 @@ public sealed class WebDashboard : Form
 
     [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
 
-    public WebDashboard(GlintService svc, Action? openMonitor = null)
+    string? _startPage;
+
+    /// <summary>Show a dashboard page (a clicked notification's subject); before the page has loaded, it opens there.</summary>
+    public void GoTo(string page)
+    {
+        if (_ready) Push(new { type = "goto", page });
+        else _startPage = page;
+    }
+
+    /// <param name="startPage">Open on this page instead of the Overview.</param>
+    public WebDashboard(GlintService svc, Action? openMonitor = null, string? startPage = null)
     {
         _svc = svc;
         _openMonitor = openMonitor;
+        _startPage = startPage;
         Text = "Glint";
         // sizes are in 96-dpi units: PerMonitorV2 makes Size physical pixels, so 1320 px was only ~880 wide on a 4K screen at 150 %
         var wa = Screen.FromPoint(Cursor.Position).WorkingArea;
@@ -178,6 +189,7 @@ public sealed class WebDashboard : Form
                 _ready = true;
                 Push(InitMessage());
                 Push(StateMessage());
+                if (_startPage is { } sp) { _startPage = null; Push(new { type = "goto", page = sp }); }
                 _state.Start();
                 RunSetupCheck(); // once per dashboard open, for the sidebar badge and the Overview banner
                 _ = RefreshUpdate(_svc.Updates.CheckIfStale(UpdateChecker.StaleOnOpen));
@@ -299,6 +311,13 @@ public sealed class WebDashboard : Form
             case "openConfig":
                 OpenFolder(GlintConfig.Dir);
                 break;
+            case "notifyTest":
+                {
+                    // through the same path as every real notification, so it shows exactly what Windows lets through
+                    var n = _svc.Notify.Post(NoticeText.TestNotice());
+                    Push(new { type = "toast", kind = n?.Shown == true ? "" : "error", text = n?.Shown == true ? "Test notification sent: look for it by the clock" : "Not sent: notifications are switched off" });
+                    break;
+                }
             case "openPlugins":
                 UserFs.CreateDirectory(Plugins.PluginHost.UserDir);
                 OpenFolder(Plugins.PluginHost.UserDir);

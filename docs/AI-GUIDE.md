@@ -213,6 +213,12 @@ The dashboard's **Tune with AI** button runs exactly this with Claude Code and a
   test pattern shows white on the first LED and red on the last); then `app.restart`.
 - Device not supported but OpenRGB knows it: `config.patch path=openRgb.enabled value=true` (with OpenRGB's SDK
   server running), then `app.restart`; its devices appear as `orgb-…` in `devices`.
+- `notifications.list`: the Windows notifications Glint raised since it started (a crash and what crash watch did, a
+  saved overclock that was not applied at startup and why, fans at fail-safe speed, a device that stopped, an update),
+  newest first, each with `shown` and, when a switch in `config.notifications` kept it back, `muted`. Read it when the
+  user asks "what was that notification?" or "why isn't my overclock applied?". `notifications.test` sends one;
+  `config.patch path=notifications.<kind> value=false` (kinds: crashes, tuning, cooling, devices, updates) or
+  `notifications.enabled` switches them off.
 - `log`: recent device and plugin messages (identification, errors, declined devices).
 - `status`: live temperatures, fan speeds, per-device lighting frame rates and Glint's own CPU/memory use.
 - `ha.status`: the Home Assistant connection.

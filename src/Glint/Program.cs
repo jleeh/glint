@@ -216,6 +216,16 @@ static class Program
         Pump(800);
         C("effect click reaches the service", svc.Config.Lighting.Effect.Type == EffectType.Fire, svc.Config.Lighting.Effect.Type.ToString() + " " + Eval("Array.from(document.querySelectorAll('.toast')).map(t => t.textContent).join(' | ') + ' errs: ' + JSON.stringify(window.__errs) + ' page: ' + JSON.stringify({t: S.target, fx: S.cfg.lighting.effect.type, en: S.cfg.lighting.enabled, card: !!document.querySelector('[data-fx=\"Fire\"]'), pg: S.page})"));
         C("plugin effects reach the dashboard", Eval("(S.init.plugins?.effects ?? []).length >= 3") == "true", Eval("JSON.stringify((S.init.plugins?.effects ?? []).map(e => e.name))"));
+        // notifications through the real page and host (no tray icon here, so nothing is shown): the Settings card and the host's "goto"
+        Eval("go('settings'); document.querySelector('#ntf-test').click(); 1"); Pump(500);
+        C("settings: \"Send a test\" posts a notice through the service's notifier and the page says so",
+            svc.Notify.Recent.LastOrDefault() is { Category: "test", Shown: true } && Eval("[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('Test notification sent'))") == "true",
+            $"{svc.Notify.Recent.Count} notices");
+        Eval("document.querySelector('#ntf-card [data-ntf=\"cooling\"]').click(); 1"); Pump(900);
+        C("settings: a notification kind's switch reaches the service", svc.Config.Notifications is { Enabled: true, Cooling: false, Devices: true }, System.Text.Json.JsonSerializer.Serialize(svc.Config.Notifications, GlintConfig.Json));
+        Eval("document.querySelector('#ntf-card [data-ntf=\"cooling\"]').click(); 1"); Pump(900);
+        d.GoTo("cooling"); Pump(400);
+        C("a clicked notification opens its page in the open dashboard (host goto)", svc.Config.Notifications.Cooling && Eval("S.page") == "\"cooling\"", Eval("S.page"));
         Eval("go('lighting'); document.querySelector('[data-pfx=\"Aurora\"]').click()");
         Pump(1200);
         C("plugin effect click reaches the service", svc.Config.Lighting.Effect.Type == EffectType.Plugin && svc.Config.Lighting.Effect.Plugin == "Aurora", $"{svc.Config.Lighting.Effect.Type} {svc.Config.Lighting.Effect.Plugin}");
@@ -496,6 +506,24 @@ static class Program
         var autoOn = Call("config.patch", new { path = "updates.autoInstall", value = true });
         C("config.patch updates.autoInstall", (bool?)autoOn?["result"]?["ok"] == true && svc.Config.Updates.AutoInstall, autoOn?.ToJsonString() ?? "");
         Call("config.patch", new { path = "updates.autoInstall", value = false });
+        // notifications: the test notice and the recent list over the control API; the switches gate what is shown
+        var nTest = Call("notifications.test")?["result"];
+        var nList = Call("notifications.list")?["result"];
+        C("notifications.test posts a notice and notifications.list returns it, newest first",
+            (bool?)nTest?["shown"] == true && (bool?)nList?["enabled"] == true && (string?)nList?["notifications"]?[0]?["title"] == "Glint notifications work" && (string?)nList["notifications"]![0]!["category"] == "test",
+            $"{nTest?.ToJsonString()} {nList?.ToJsonString()}");
+        var nOff = Call("config.patch", new { path = "notifications.enabled", value = false });
+        var nMuted = Call("notifications.test")?["result"];
+        C("notifications.enabled=false: the test notice is recorded as not shown, with the reason",
+            (bool?)nOff?["result"]?["ok"] == true && !svc.Config.Notifications.Enabled && (bool?)nMuted?["shown"] == false && (string?)nMuted?["why"] == "notifications are off"
+            && (bool?)Call("notifications.list")?["result"]?["enabled"] == false, nMuted?.ToJsonString() ?? "null");
+        Call("config.patch", new { path = "notifications.enabled", value = true });
+        var nKind = Call("config.patch", new { path = "notifications.crashes", value = false });
+        C("config.patch notifications.crashes", (bool?)nKind?["result"]?["ok"] == true && svc.Config.Notifications is { Enabled: true, Crashes: false, Cooling: true }, nKind?.ToJsonString() ?? "null");
+        Call("config.patch", new { path = "notifications.crashes", value = true });
+        C("notifications.list honours limit", Call("notifications.list", new { limit = 1 })?["result"]?["notifications"]?.AsArray().Count == 1);
+        C("MCP and help expose the notification tools", mcpTools?.Any(t => (string?)t!["name"] == "glint_notifications_list") == true && mcpTools.Any(t => (string?)t!["name"] == "glint_notifications_test")
+            && Call("help")?["result"]?.AsArray().Any(h => (string?)h!["method"] == "notifications.test") == true);
         // updates: status, and install only with confirm (this test build is a portable copy, so even confirmed it never downloads)
         var us = Call("update.status")?["result"];
         C("update.status reports version, install state and whether this copy can install", (string?)us?["current"] == UpdateChecker.CurrentVersion && (string?)us?["install"]?["state"] == "idle"
@@ -746,22 +774,27 @@ static class Program
             {
                 bool crashed = false;
                 try { crashed = Glint.Tuning.TuningService.LastShutdownWasCrash(); } catch { }
+                // what the user is told (one notification) when the saved tune was not simply applied
+                string? gpuNote = null, gpuError = null, cpuCrashNote = null, cpuError = null; bool cpuHeldBack = false;
                 // the GPU step can refuse (MSI Afterburner running, no GPU...): that must never skip the CPU undervolt below
-                try { var n = svc.Tuning.OnStartup(crashed); if (n != null) svc.Rig.Log.Add("tuning: " + n); }
-                catch (Exception e) { svc.Rig.Log.Add("tuning: GPU overclock not re-applied: " + e.Message); }
+                try { gpuNote = svc.Tuning.OnStartup(crashed); if (gpuNote != null) svc.Rig.Log.Add("tuning: " + gpuNote); }
+                catch (Exception e) { gpuError = e.Message; svc.Rig.Log.Add("tuning: GPU overclock not re-applied: " + e.Message); }
                 try
                 {
-                    if (svc.Tuning.OnCpuCrash(crashed) is { } cn) svc.Rig.Log.Add("cpu tuning: " + cn);
+                    cpuCrashNote = svc.Tuning.OnCpuCrash(crashed);
+                    if (cpuCrashNote != null) svc.Rig.Log.Add("cpu tuning: " + cpuCrashNote);
                     // the active profile's CPU undervolt: same rule as the GPU (always re-applied, never after a crash)
                     if (svc.Config.Tuning is { Enabled: true } && !svc.Tuning.StockMode && svc.Tuning.CpuFor(svc.Config.ActiveProfile) is { } co)
                     {
-                        if (crashed) svc.Rig.Log.Add("cpu tuning: undervolt not applied, the last shutdown was a crash");
-                        else svc.Rig.Log.Add("cpu tuning: " + (svc.Cpu.ApplyCo(co, "startup") ?? $"undervolt of {svc.Config.ActiveProfile} applied"));
+                        if (crashed) { cpuHeldBack = true; svc.Rig.Log.Add("cpu tuning: undervolt not applied, the last shutdown was a crash"); }
+                        else { cpuError = svc.Cpu.ApplyCo(co, "startup"); svc.Rig.Log.Add("cpu tuning: " + (cpuError ?? $"undervolt of {svc.Config.ActiveProfile} applied")); }
                     }
                 }
-                catch (Exception e) { svc.Rig.Log.Add("cpu tuning: " + e.Message); }
+                catch (Exception e) { cpuError = "CPU undervolt not applied: " + e.Message; svc.Rig.Log.Add("cpu tuning: " + e.Message); }
+                svc.Notify.Post(NoticeText.TuningStartup(crashed, gpuNote, gpuError, cpuCrashNote, cpuHeldBack, cpuError));
             });
-        Plugins.PluginHost.EffectsChanged += () => svc.Lighting.Apply(svc.Config);
+        Plugins.PluginHost.EffectsChanged += () => { svc.Lighting.Apply(svc.Config); svc.NotifyPluginApprovals(); };
+        svc.NotifyPluginApprovals();
         var tray = new UI.TrayApp(svc);
         var ui = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
         using var control = new ControlServer(svc, a => ui.Post(_ => a(), null));

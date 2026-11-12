@@ -25,6 +25,8 @@ public static class CrashWatchTests
 
     static string At(int min) => new DateTime(2026, 11, 8, 10, 0, 0, DateTimeKind.Utc).AddMinutes(min).ToString("yyyy-MM-ddTHH:mm:ss.0000000Z", System.Globalization.CultureInfo.InvariantCulture);
 
+    static string AtSec(double sec) => new DateTime(2026, 11, 8, 10, 0, 0, DateTimeKind.Utc).AddSeconds(sec).ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ", System.Globalization.CultureInfo.InvariantCulture);
+
     sealed class FakeGpu : IGpuControl
     {
         public List<string> Calls = [];
@@ -176,6 +178,59 @@ public static class CrashWatchTests
             rg.Applied = (100, 100, 0.5);
             rg.Tdr(30);
             C("after a revert the counter starts fresh (next crash backs off, not reverts)", rg.Reverts == 1 && rg.Saved.Count == 3, $"reverts={rg.Reverts} saved={rg.Saved.Count}");
+        }
+        // one driver hang logs several events within seconds (seen on a real card: nvlddmkm 153, 14, 153 in 2.3 s):
+        // that is one crash, so one back-off step and one strike, not MaxCrashes strikes and a revert to stock
+        using (var rg = new Rig())
+        {
+            rg.Cfg.MaxCrashes = 3;
+            var b1 = rg.Watch.Process(Ev("nvlddmkm", 153, null, "System", AtSec(0)));
+            var b2 = rg.Watch.Process(Ev("nvlddmkm", 14, null, "System", AtSec(0.5)));
+            var b3 = rg.Watch.Process(Ev("Display", 4101, null, "System", AtSec(2.3)));
+            C("a burst of driver-reset events is one crash: one back-off, no revert",
+                rg.Reverts == 0 && rg.Saved.Count == 1 && rg.Saved[0] == (135, 400) && rg.Applied == (135, 400, 0.5)
+                && b1 is { Counts: true, Step: "core" } && b2 is { Counts: false, Step: null } && b3 is { Counts: false, Step: null }
+                && b2.ActionText.StartsWith("Same incident") && rg.Watch.Records.Count == 3,
+                $"reverts={rg.Reverts} saved={string.Join(";", rg.Saved)} | {b2?.ActionText} | {b3?.ActionText}");
+            var late = rg.Watch.Process(Ev("nvlddmkm", 153, null, "System", AtSec(CrashDecision.IncidentSeconds - 1)));
+            var next = rg.Watch.Process(Ev("nvlddmkm", 153, null, "System", AtSec(CrashDecision.IncidentSeconds + 1)));
+            C("the incident window is measured from the crash that counted: an event after it is a new crash",
+                late is { Counts: false } && next is { Counts: true, Step: "mem" } && rg.Saved.Count == 2 && rg.Reverts == 0, $"{late?.ActionText} | {next?.ActionText}");
+        }
+        using (var rg = new Rig())
+        {
+            rg.Cfg.MaxCrashes = 3;
+            // every crash is told to the user: wired the way GlintService wires crash watch to the notifier
+            var told = new List<Notice>();
+            var notify = new Notifications(() => new NotificationOptions());
+            notify.Attach(told.Add);
+            rg.Watch.Acted += (rec, act) => notify.Post(NoticeText.Crash(rec, act));
+            rg.Watch.Process(Ev("nvlddmkm", 153, null, "System", AtSec(-7200))); rg.Watch.Process(Ev("nvlddmkm", 14, null, "System", AtSec(-7199.5))); rg.Watch.Process(Ev("nvlddmkm", 153, null, "System", AtSec(-7197.7)));
+            C("one driver reset logged as three events is ONE Windows notification, saying the overclock was lowered",
+                told.Count == 1 && told[0] is { Category: "crashes", Title: "GPU crash: overclock lowered", Shown: true } && told[0].Text.Contains("NVIDIA driver reset (nvlddmkm 153)") && told[0].Text.Contains("+150 → +135 MHz"),
+                $"{told.Count}: {string.Join(" | ", told.Select(n => n.Title + ": " + n.Text))}");
+            told.Clear();
+            using var fresh = new Rig(); fresh.Cfg.MaxCrashes = 3;
+            fresh.Watch.Acted += (rec, act) => notify.Post(NoticeText.Crash(rec, act));
+            CrashRecord? third = null;
+            for (int i = 0; i < 3; i++) { third = fresh.Tdr(i * 10); fresh.Watch.Process(Ev("nvlddmkm", 14, null, "System", AtSec(i * 600 + 1))); }
+            C("three separate incidents, each logged twice, revert on the third incident (not the third event)",
+                fresh.Reverts == 1 && fresh.Saved.Count == 2 && third is { Step: "revert" }, $"reverts={fresh.Reverts} saved={fresh.Saved.Count} third={third?.ActionText}");
+            C("three separate incidents are three notifications: lowered, lowered, then removed with the reason",
+                string.Join(" / ", told.Select(n => n.Title)) == "GPU crash: overclock lowered / GPU crash: overclock lowered / GPU crash: overclock removed" && told[^1].Text.Contains("3 GPU-suspect crashes in 7 days"),
+                string.Join(" / ", told.Select(n => n.Title)));
+        }
+        using (var rg = new Rig())
+        {
+            Func<double, CrashRecord?> soft = s => rg.Watch.Process(Ev("Application Error", 1000, [(null, "g.exe"), (null, "1"), (null, "nvwgf2umx.dll")], "Application", AtSec(s)));
+            var s1 = soft(0); var s2 = soft(1); int afterPair = rg.Saved.Count;
+            var s3 = soft(5 * 3600);
+            C("one game crash logged twice is still the 1st soft event; a later one acts",
+                s1 is { Counts: false } && s2 is { Counts: false } && afterPair == 0 && s3 is { Counts: true } && rg.Saved.Count == 1, $"{s2?.ActionText} | {s3?.ActionText}");
+            var tdrThenApp = rg.Watch.Process(Ev("nvlddmkm", 153, null, "System", AtSec(9 * 3600)));
+            var appAfter = soft(9 * 3600 + 3);
+            C("a game crash seconds after a counted driver reset is the same incident",
+                tdrThenApp is { Counts: true } && appAfter is { Counts: false } && appAfter.ActionText.StartsWith("Same incident") && rg.Saved.Count == 2 && rg.Reverts == 0, appAfter?.ActionText ?? "null");
         }
         using (var rg = new Rig())
         {

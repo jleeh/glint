@@ -13,6 +13,9 @@ public sealed class FanEngine
     readonly Dictionary<string, double> _held = new();      // hysteresis-held temperature per input
     readonly Dictionary<string, double> _duty = new();      // last output per fan
     public Dictionary<string, string> LastExplain { get; } = new();
+    /// <summary>(rule, sensor) for every input whose sensor was missing or implausible in the last <see cref="Compute"/>
+    /// (those rules ran at the fail-safe duty). Empty while all is well; read by the fan loop's alerts.</summary>
+    public List<(string Rule, string Sensor)> Lost { get; } = new();
 
     public static double Interpolate(IReadOnlyList<double[]> pts, double t)
     {
@@ -52,6 +55,7 @@ public sealed class FanEngine
     {
         var result = new Dictionary<string, int>();
         LastExplain.Clear();
+        Lost.Clear();
         var seen = new HashSet<string>();
         foreach (var (rule, ri) in cfg.Active.Select((r, i) => (r, i)))
         {
@@ -80,6 +84,7 @@ public sealed class FanEngine
                     if (double.IsNaN(raw) || raw < -20 || raw > 150)
                     {
                         _smoothed.Remove(key); _held.Remove(key); lost = true;
+                        Lost.Add((rule.Name, inp.Sensor));
                         parts.Add((cfg.FailsafeDuty, inp.Weight, $"{inp.Sensor}=MISSING→{cfg.FailsafeDuty}%"));
                         continue;
                     }

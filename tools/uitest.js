@@ -378,6 +378,33 @@ const fs = require('fs');
   await p.click('#orgb-enabled'); c = await cfg();
   check('settings: OpenRGB bridge off again', c.openRgb.enabled === false);
 
+  // --- settings: notifications card (config.notifications)
+  {
+    const kinds = () => p.$$eval('#ntf-card [data-ntf]', els => els.map(e => `${e.dataset.ntf}:${e.classList.contains('on') ? 1 : 0}${e.classList.contains('disabled') ? 'd' : ''}`).join(' '));
+    check('notifications: master switch on and one switch per kind, all on', await p.$eval('#ntf-enabled', e => e.classList.contains('on')) && (await kinds()) === 'crashes:1 tuning:1 cooling:1 devices:1 updates:1', await kinds());
+    await p.click('#ntf-card [data-ntf="crashes"]'); c = await cfg();
+    check('notifications: a kind\'s switch saves only that kind', c.notifications?.crashes === false && c.notifications.enabled === true && ['tuning', 'cooling', 'devices', 'updates'].every(k => c.notifications[k] === true) && (await kinds()).startsWith('crashes:0 '), JSON.stringify(c.notifications));
+    const tests = () => p.evaluate(() => window.__msgs.filter(m => m.type === 'notifyTest').length);
+    const t0 = await tests();
+    await p.click('#ntf-test'); await wait(150);
+    check('notifications: "Send a test" asks the host once and shows its answer', (await tests()) === t0 + 1 && (await p.$$eval('#toasts .toast', ts => ts.some(t => t.textContent.includes('Test notification sent')))));
+    await p.click('#ntf-enabled'); c = await cfg();
+    check('notifications: master switch off saves enabled:false, greys the kinds and the test button', c.notifications.enabled === false && (await kinds()) === 'crashes:0d tuning:1d cooling:1d devices:1d updates:1d' && await p.$eval('#ntf-test', e => e.disabled), `${JSON.stringify(c.notifications)} ${await kinds()}`);
+    await p.click('#ntf-card [data-ntf="cooling"]'); c = await cfg();
+    check('notifications: a kind can\'t be changed while the master switch is off', c.notifications.cooling === true && (await tests()) === t0 + 1, JSON.stringify(c.notifications));
+    await p.click('#ntf-enabled'); await p.click('#ntf-card [data-ntf="crashes"]'); c = await cfg();
+    check('notifications: master switch back on keeps each kind\'s choice; crashes back on', c.notifications.enabled === true && c.notifications.crashes === true && (await kinds()) === 'crashes:1 tuning:1 cooling:1 devices:1 updates:1', `${JSON.stringify(c.notifications)} ${await kinds()}`);
+    await p.evaluate(() => { S.cfg.tuning.enabled = false; renderPage('settings'); });
+    check('notifications: the two tuning kinds are listed only while tuning is on', (await kinds()) === 'cooling:1 devices:1 updates:1', await kinds());
+    await p.evaluate(() => { S.cfg.tuning.enabled = true; renderPage('settings'); });
+    // a clicked Windows notification opens the page it is about (host → page "goto"); a page that doesn't exist is ignored
+    await p.evaluate(() => window.__mockEmit({ type: 'goto', page: 'tuning' })); await wait(200);
+    const onTuning = await p.evaluate(() => S.page === 'tuning' && document.querySelector('#page-tuning').classList.contains('active'));
+    await p.evaluate(() => window.__mockEmit({ type: 'goto', page: '__proto__' })); await p.evaluate(() => window.__mockEmit({ type: 'goto', page: 'nope' })); await wait(150);
+    check('notifications: a goto from the host opens that page; an unknown page is ignored', onTuning && await p.evaluate(() => S.page === 'tuning'), await p.evaluate(() => S.page));
+    await nav('settings');
+  }
+
   // --- setup check page
   {
     const before = await p.evaluate(() => window.__msgs.filter(m => m.type === 'setupCheck').length);

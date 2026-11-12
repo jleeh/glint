@@ -212,6 +212,8 @@ bridge?.addEventListener('message', e => {
     const last = Math.max(0, Math.ceil(num(m.history?.total) / tnHist.size) - 1);
     if (tnHist.page > last) { tnHist.page = last; tnSave(); tnAskHistory(); }       // tests were deleted: stay on a page that exists
     if (S.page === 'tuning') liveHistory();
+  } else if (m.type === 'goto') {
+    if (own(PAGES, m.page)) go(m.page);   // a clicked Windows notification opens the page it is about
   } else if (m.type === 'toast') toast(m.text, m.kind);
 });
 
@@ -1656,6 +1658,11 @@ function renderSettings() {
         <div class="muted upd-progress" id="upd-progress" role="status" aria-live="polite"></div>
         <div class="row between" style="gap:12px"><div><div style="font-size:13px">Install updates automatically</div><div class="muted" style="font-size:12px">Only after 10 minutes without input, with no game in front and not on battery. Every setup is checked against its SHA-256 and GitHub build attestation first.</div></div><div class="toggle ${UPD().autoInstall ? 'on' : ''}" id="upd-auto" title="Install updates automatically"></div></div>
       </div>
+      <div class="card card-pad" id="ntf-card">
+        <div class="row between card-head"><div><div class="card-title">Notifications</div><div class="card-sub">Windows notifications for what is worth knowing while the dashboard is closed</div></div><div class="toggle ${NTF().enabled !== false ? 'on' : ''}" id="ntf-enabled" title="Notifications"></div></div>
+        <div id="ntf-list">${ntfKinds().map(([k, name, hint]) => `<div class="row between ntf-row"><div><div class="ntf-name">${name}</div><div class="muted ntf-hint">${hint}</div></div><div class="toggle" data-ntf="${k}" title="${name} notifications"></div></div>`).join('')}</div>
+        <div class="row ntf-foot"><div class="muted">Windows decides how they appear: Do not disturb holds them in the notification centre.</div><button class="btn small" id="ntf-test">Send a test</button></div>
+      </div>
       <div class="card card-pad ha-card" id="orgb-card">
         <div class="row between card-head"><div><div class="card-title">OpenRGB bridge</div><div class="card-sub">Drive devices Glint doesn't support yet through OpenRGB's SDK server</div></div><div class="toggle ${ORGB().enabled ? 'on' : ''}" id="orgb-enabled" title="OpenRGB bridge"></div></div>
         <div class="ha-status" id="orgb-status"><span class="pdot off"></span><span>–</span></div>
@@ -1676,7 +1683,35 @@ function renderSettings() {
   $('#s-open').onclick = () => send({ type: 'openConfig' });
   bindHa();
   bindUpdates();
+  bindNotifications();
   bindOpenRgb();
+}
+
+/* Notifications card: a master switch and one switch per kind of event (config.notifications) */
+function NTF() { return (S.cfg.notifications ??= { enabled: true, crashes: true, tuning: true, cooling: true, devices: true, updates: true }); }
+const NTF_KINDS = [
+  ['crashes', 'Crashes', 'A GPU driver reset, hardware error or bluescreen, and what Glint did about it', true],
+  ['tuning', 'Tuning', 'A tune that finished, or a saved overclock that was not applied and why', true],
+  ['cooling', 'Cooling', 'Fans at fail-safe speed, or a fan another program took over'],
+  ['devices', 'Devices and plugins', 'A device that stopped responding, or a plugin waiting for your approval'],
+  ['updates', 'Updates', 'A new release, and an install starting or failing'],
+];
+/* the two tuning kinds only mean something once tuning is switched on */
+function ntfKinds() { return NTF_KINDS.filter(k => !k[3] || S.cfg.tuning?.enabled === true); }
+function bindNotifications() {
+  const sync = () => {
+    const on = NTF().enabled !== false;
+    $('#ntf-enabled').classList.toggle('on', on);
+    $$('#ntf-card [data-ntf]').forEach(t => { t.classList.toggle('on', NTF()[t.dataset.ntf] !== false); t.classList.toggle('disabled', !on); });
+    $('#ntf-test').disabled = !on;
+  };
+  $('#ntf-enabled').onclick = () => { NTF().enabled = NTF().enabled === false; commit(); sync(); };
+  $$('#ntf-card [data-ntf]').forEach(t => t.onclick = () => {
+    if (NTF().enabled === false) return;
+    NTF()[t.dataset.ntf] = NTF()[t.dataset.ntf] === false; commit(); sync();
+  });
+  $('#ntf-test').onclick = () => send({ type: 'notifyTest' });
+  sync();
 }
 
 /* Update check + OpenRGB bridge cards */

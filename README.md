@@ -43,7 +43,9 @@
 - **Plays well with others.** Home Assistant (MQTT discovery), a HWMonitor-style sensor view, a game overlay, and an
   optional **OpenRGB bridge** for devices Glint doesn't support yet.
 - **Tells you what's wrong.** A **Setup check** page finds missing drivers, missing admin rights and other RGB apps
-  fighting over your hardware, and offers the fix.
+  fighting over your hardware, and offers the fix. With the dashboard closed, **Windows notifications** tell you
+  what matters: a crash and what Glint did about it, an overclock that was not applied and why, fans at fail-safe
+  speed, a device that stopped, an update. One switch per kind in Settings; click one to open the page it is about.
 
 ## Features
 
@@ -91,7 +93,8 @@ Tuning is **off until you turn it on** (Tuning page). Then:
   set and why. Fan curves are shaped from up to 24 h of temperature history, not just the stress tests.
 - **Crash watch**: while an overclock is applied, Glint subscribes to Windows' event log (driver resets, WHEA hardware
   errors, bluescreens, game crashes in the NVIDIA driver). A GPU crash backs the overclock off a step; repeated crashes
-  put it back to stock. CPU errors name the core whose Curve Optimizer value needs loosening.
+  put it back to stock. One driver reset logs several events within seconds: those count as one crash. CPU errors name
+  the core whose Curve Optimizer value needs loosening.
 
 Overclocking runs hardware beyond its factory settings: crashes during tests are expected, and some manufacturers
 don't cover overclocking under warranty. The tuning code is ported from [Headroom](https://github.com/eviljarv89-ctrl/Headroom) (MIT).
@@ -145,6 +148,25 @@ item is ok / warning / problem, says in plain words what it means, and has a fix
 It only runs when you open the page (or press **Re-check**); nothing polls in the background. The sidebar shows a red
 count when something needs fixing, and the Overview shows a one-line banner for the important ones. Scripts and AI
 agents get the same report from `Glint.exe ctl setup.check` / `glint_setup_check`.
+
+## 🔔 Notifications
+
+Glint lives in the tray, so it tells you with a Windows notification when something happens that you would otherwise
+only find by opening the dashboard. Click one to open the page it is about.
+
+| Kind | You are told when |
+|---|---|
+| **Crashes** (with tuning on) | crash watch sees a GPU driver reset, a hardware error or a bluescreen (what happened and what Glint did: overclock lowered, removed, or nothing changed), and when Windows starts after an unexpected shutdown |
+| **Tuning** (with tuning on) | a tune finishes (the profile and what it holds) or ends early; a saved overclock or undervolt was not applied at startup or on a profile switch, and why |
+| **Cooling** | a rule's sensor stops reporting and its fans go to the fail-safe speed; the fan loop fails; another program takes over a fan; the CPU temperature can't be read |
+| **Devices and plugins** | a lighting device stops responding; a plugin waits for your approval; the overlay hotkey belongs to another app; an edited `config.json` didn't load |
+| **Updates** | a new release is out; an install starts or fails |
+
+Each kind has a switch in **Settings → Notifications**, next to a master switch and a **Send a test** button
+(`notifications` in the config). Problems are told once, not repeated while they last, and one driver reset that
+Windows logs several times is one notification. Nothing runs to make this work: each part of Glint reports as it
+happens. Windows decides how notifications appear, so *Do not disturb* holds them in the notification centre.
+Scripts and AI agents read the recent ones with `Glint.exe ctl notifications.list` / `glint_notifications_list`.
 
 ## 🔄 Updates
 

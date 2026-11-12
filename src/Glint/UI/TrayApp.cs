@@ -36,7 +36,9 @@ public sealed class TrayApp : ApplicationContext
         // any hardware sensor from the Sensors page catalog can be an overlay item (clocks, loads, power, VRAM ...)
         _overlay.ExtraResolver = src => _svc.Rig.CatalogValue(src.StartsWith("lhm:") ? src[4..] : src);
         RegisterHotkey(_svc.Config.Overlay?.Hotkey);
-        _svc.Updater.Changed += OnUpdater;
+        // Windows notifications: this icon is the one place they are shown; a click opens the dashboard on the page they are about
+        _icon.BalloonTipClicked += (_, _) => ShowDashboard(_shownPage);
+        _svc.Notify.Attach(n => Ui(() => ShowNotice(n)));
         // the tuning monitor pops up when a GPU test or an AI run starts (a test inside an AI run doesn't re-open a window the user closed)
         _svc.Tuning.JobStarted += _ => { if (!_svc.Ai.Running) _sync.Post(_ => ShowMonitor(false), null); };
         _svc.Ai.Started += () => _sync.Post(_ => ShowMonitor(false), null);
@@ -48,16 +50,46 @@ public sealed class TrayApp : ApplicationContext
             check.Tick += (_, _) =>
             {
                 check.Dispose();
-                if (!_svc.Sensors.ContainsKey("cpu"))
-                    _icon.ShowBalloonTip(8000, "Glint", "CPU temperature unavailable — Glint needs admin + PawnIO (run install.ps1). CPU-driven curves are at fail-safe speed.", ToolTipIcon.Warning);
+                if (!_svc.Sensors.ContainsKey("cpu")) _svc.Notify.Post(NoticeText.NoCpuTemp());
             };
             check.Start();
         }
     }
 
-    /// <summary>Run on the UI thread (inline if already on it).</summary>
+    // ---- Windows notifications
+    /// <summary>A tray notification raised right on top of another can replace it before it has been seen, so notices
+    /// closer together than this wait their turn (a timer that exists only while something is waiting).</summary>
+    const int NoticeGapMs = 4500;
+    readonly Queue<Notice> _notices = new();
+    System.Windows.Forms.Timer? _noticeTimer;
+    long _noticeAt = long.MinValue;
+    string? _shownPage;
+
+    void ShowNotice(Notice n)
+    {
+        if (_notices.Count == 0 && Environment.TickCount64 - _noticeAt >= NoticeGapMs) { Balloon(n); return; }
+        if (_notices.Count >= 8) _notices.Dequeue();   // a flood keeps the newest; the rest stay in notifications.list
+        _notices.Enqueue(n);
+        if (_noticeTimer != null) return;
+        _noticeTimer = new System.Windows.Forms.Timer { Interval = (int)Math.Clamp(NoticeGapMs - (Environment.TickCount64 - _noticeAt), 50, NoticeGapMs) };
+        _noticeTimer.Tick += (_, _) =>
+        {
+            if (_notices.Count > 0) Balloon(_notices.Dequeue());
+            if (_notices.Count > 0) { _noticeTimer!.Interval = NoticeGapMs; return; }
+            _noticeTimer?.Dispose(); _noticeTimer = null;
+        };
+        _noticeTimer.Start();
+    }
+
+    void Balloon(Notice n)
+    {
+        _noticeAt = Environment.TickCount64;
+        _shownPage = n.Page;
+        try { _icon.ShowBalloonTip(10000, n.Title, n.Text, n.Level switch { "error" => ToolTipIcon.Error, "warning" => ToolTipIcon.Warning, _ => ToolTipIcon.Info }); } catch { }
+    }
+
     string _hotkeyWarned = "";
-    /// <summary>Register the overlay hotkey; if another app owns it, say so once (log + tray notification).</summary>
+    /// <summary>Register the overlay hotkey; if another app owns it, say so once (log + notification).</summary>
     void RegisterHotkey(string? hotkey)
     {
         _hotkey.Register(hotkey);
@@ -65,9 +97,10 @@ public sealed class TrayApp : ApplicationContext
         _svc.Rig.Log.Add("Overlay: " + _hotkey.Error + " (change it in the Game overlay page)");
         if (_hotkeyWarned == hotkey) return;
         _hotkeyWarned = hotkey ?? "";
-        _icon.ShowBalloonTip(8000, "Glint", $"The overlay hotkey {hotkey} is already used by another app. Pick a different one in the Game overlay page.", ToolTipIcon.Warning);
+        _svc.Notify.Post(NoticeText.HotkeyTaken(hotkey ?? ""));
     }
 
+    /// <summary>Run on the UI thread (inline if already on it).</summary>
     void Ui(Action a)
     {
         if (Thread.CurrentThread == _uiThread) a();
@@ -168,13 +201,6 @@ public sealed class TrayApp : ApplicationContext
         _svc.Updater.Start();
     }
 
-    /// <summary>Install progress / errors in the tray (the dashboard may be closed).</summary>
-    void OnUpdater(UpdateStatus s)
-    {
-        if (s.State == "failed" && s.Message != null) Ui(() => _icon.ShowBalloonTip(10000, "Glint update", s.Message, ToolTipIcon.Warning));
-        else if (s.State == "installing" && s.Message != null) Ui(() => _icon.ShowBalloonTip(5000, "Glint update", s.Message, ToolTipIcon.Info));
-    }
-
     public static EffectConfig Clone(EffectConfig e) =>
         System.Text.Json.JsonSerializer.Deserialize<EffectConfig>(System.Text.Json.JsonSerializer.Serialize(e, GlintConfig.Json), GlintConfig.Json)!;
 
@@ -192,10 +218,17 @@ public sealed class TrayApp : ApplicationContext
         _monitor.Show();
     }
 
-    void ShowDashboard()
+    /// <param name="page">Open on this dashboard page (a notification's subject); null = wherever it was.</param>
+    void ShowDashboard(string? page = null)
     {
-        if (_dash is { IsDisposed: false }) { _dash.Activate(); return; }
-        _dash = new WebDashboard(_svc, () => ShowMonitor(true));
+        if (_dash is { IsDisposed: false })
+        {
+            if (_dash.WindowState == FormWindowState.Minimized) _dash.WindowState = FormWindowState.Normal;
+            _dash.Activate();
+            if (page != null) _dash.GoTo(page);
+            return;
+        }
+        _dash = new WebDashboard(_svc, () => ShowMonitor(true), page);
         _dash.FormClosed += (_, _) => { _dash = null; GC.Collect(); };
         _dash.Show();
     }
@@ -209,6 +242,7 @@ public sealed class TrayApp : ApplicationContext
     protected override void ExitThreadCore()
     {
         _tick.Stop();
+        _noticeTimer?.Dispose(); _noticeTimer = null; _notices.Clear();
         _icon.Visible = false;
         _overlay.Dispose();
         _hotkey.Dispose();

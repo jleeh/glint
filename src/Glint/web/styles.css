@@ -474,6 +474,13 @@ input[type=range]:focus-visible { outline-offset: 4px; }
 .upd-progress { font-size: 12px; margin: -6px 0 12px; min-height: 0; overflow-wrap: anywhere; }
 .upd-progress:empty { display: none; }
 .upd-progress.bad { color: var(--bad); }
+/* Settings: notifications card (one row per kind of event, its switch on the right) */
+.ntf-row { gap: 14px; padding: 9px 0; border-top: 1px solid var(--line-2); flex-wrap: nowrap; }
+.ntf-row > div:first-child { min-width: 0; }
+.ntf-name { font-size: 13px; }
+.ntf-hint { font-size: 12px; }
+.ntf-foot { gap: 12px; padding-top: 12px; border-top: 1px solid var(--line-2); font-size: 12px; }
+.ntf-foot .muted { flex: 1; min-width: 0; }
 .ha-grid { display: grid; grid-template-columns: 2fr 90px 60px 1fr 1.3fr 1fr 1fr; gap: 12px 14px; align-items: end; }
 .ha-grid input[type=text], .ha-grid input[type=password], .ha-grid input[type=number] { width: 100%; }
 .ha-grid .toggle { margin: 6px 0; }

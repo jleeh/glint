@@ -36,6 +36,8 @@ public sealed class GlintConfig
     public OverlayConfig Overlay { get; set; } = new();
     /// <summary>Optional update check (one GitHub API call at startup and every 24 h) and optional automatic install.</summary>
     public UpdateOptions Updates { get; set; } = new();
+    /// <summary>Windows notifications: which kinds of event Glint tells the user about (all on by default).</summary>
+    public NotificationOptions Notifications { get; set; } = new();
     /// <summary>OpenRGB SDK bridge (off by default): drive devices an OpenRGB server on this PC knows.</summary>
     public OpenRgbConfig OpenRgb { get; set; } = new();
     /// <summary>Overclocking (GPU auto-OC, Curve Optimizer guide, crash watch). Everything is off until the user turns it on.</summary>
@@ -282,6 +284,33 @@ public sealed class UpdateOptions
     /// <summary>Install a newer, verified release by itself while the PC is idle (no game in front, not on battery,
     /// at most one attempt per version per day). Off by default; needs <see cref="Check"/>.</summary>
     public bool AutoInstall { get; set; }
+}
+
+/// <summary>Windows notifications from the tray icon. <see cref="Enabled"/> is the master switch; the rest are per kind of event.</summary>
+public sealed class NotificationOptions
+{
+    public bool Enabled { get; set; } = true;
+    /// <summary>Crash watch (driver resets, hardware errors, bluescreens) and a start after an unexpected shutdown.</summary>
+    public bool Crashes { get; set; } = true;
+    /// <summary>A tune that finished or ended early, and an overclock or undervolt that could not be applied.</summary>
+    public bool Tuning { get; set; } = true;
+    /// <summary>Fans at fail-safe speed (lost sensor, fan-loop error), a fan another program took over, no CPU temperature.</summary>
+    public bool Cooling { get; set; } = true;
+    /// <summary>A lighting device that stopped, a plugin waiting for approval, a taken overlay hotkey, a config file that did not load.</summary>
+    public bool Devices { get; set; } = true;
+    /// <summary>A new release, and the progress or failure of an install.</summary>
+    public bool Updates { get; set; } = true;
+
+    /// <summary>May a notice of this category be shown? Categories without a switch of their own only need the master switch.</summary>
+    public bool Allows(string category) => Enabled && category switch
+    {
+        Notifications.Crashes => Crashes,
+        Notifications.Tuning => Tuning,
+        Notifications.Cooling => Cooling,
+        Notifications.Devices => Devices,
+        Notifications.Updates => Updates,
+        _ => true,
+    };
 }
 
 public sealed class OpenRgbConfig

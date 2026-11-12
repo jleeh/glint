@@ -184,6 +184,7 @@ public static class ConfigValidator
         if (c.Sensors == null) E.Add("sensors options are missing (use { storage, memory, psu, controllers })");
         if (c.Updates == null) E.Add("updates is missing (use { check: true, autoInstall: false })");
         else if (c.Updates.AutoInstall && !c.Updates.Check) E.Add("updates.autoInstall needs updates.check (the check is what finds a new release); switch autoInstall off first or check on");
+        if (c.Notifications == null) E.Add("notifications is missing (use {} for the defaults: everything on)");
 
         // ---- OpenRGB bridge
         if (c.OpenRgb == null) E.Add("openRgb is missing (use {} for the defaults)");
@@ -453,6 +454,15 @@ public static class ConfigValidator
             {
                 ["check"] = F("boolean", "Ask GitHub for the latest release (one request to the releases/latest API at startup and every 24 h; no other network, no telemetry). Shown on the Setup check page, Settings and the tray menu.", true, false),
                 ["autoInstall"] = F("boolean", "Install a newer verified release by itself: only after 10 minutes without keyboard/mouse input, with no fullscreen game in front and not on battery; at most one attempt per version per day. Needs check. Off by default.", false, true),
+            }),
+            ["notifications"] = F("object", "Windows notifications from the tray icon, for things worth knowing with the dashboard closed. notifications.list shows the recent ones (and which switch kept one from showing); notifications.test sends one.", fields: new JsonObject
+            {
+                ["enabled"] = F("boolean", "Master switch. false = Glint never shows a notification.", true, false),
+                ["crashes"] = F("boolean", "Crash watch (GPU driver resets, hardware errors, bluescreens: what happened and what Glint did) and a start after an unexpected shutdown.", true, false),
+                ["tuning"] = F("boolean", "A tune that finished or ended early, and a saved overclock or undervolt that was not applied (and why).", true, false),
+                ["cooling"] = F("boolean", "Fans at fail-safe speed (a rule's sensor stopped reporting, or the fan loop failed), a fan another program took over, no CPU temperature.", true, false),
+                ["devices"] = F("boolean", "A lighting device that stopped responding, a plugin waiting for approval, an overlay hotkey another app owns, a config.json that did not load.", true, false),
+                ["updates"] = F("boolean", "A new release, and an install starting or failing.", true, false),
             }),
             ["tuning"] = F("object", "Overclocking, AI-driven: GPU core/memory offsets verified by Glint's own CUDA stress test with the power limit raised to the card's own maximum (never voltage), per-core Ryzen Curve Optimizer, and crash watch with automatic back-off. Everything is off by default; tuning.status shows the hardware, limits, results and crashes.", fields: new JsonObject
             {
