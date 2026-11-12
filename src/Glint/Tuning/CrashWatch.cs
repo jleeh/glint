@@ -10,18 +10,24 @@ namespace Glint.Tuning;
 public sealed record CrashRecord(long RecordId, string Channel, DateTime Time, string Kind, string Suspect, string Detail,
     string? Bugcheck, int? Core, int? AppliedCore, int? AppliedMem, string ActionText, bool Counts, string? Step);
 
-/// <summary>What to do about a crash. Kind: none | backoff | revert. Step: which clock a back-off lowered (core | mem).</summary>
-public sealed record CrashAction(string Kind, string Text, bool Counts, string? Step = null, int NewCore = 0, int NewMemNvml = 0);
+/// <summary>What to do about a crash. Kind: none | backoff | revert. Step: which clock a back-off lowered (core | mem).
+/// Quiet: recorded but not worth a notification (part of an incident already reported, or nothing was overclocked).</summary>
+public sealed record CrashAction(string Kind, string Text, bool Counts, string? Step = null, int NewCore = 0, int NewMemNvml = 0, bool Quiet = false);
 
 /// <summary>
 /// The decision rules, pure so they are tested without an event log or a GPU. GPU-suspect crash with an overclock applied:
 /// back off one step (core -15 MHz, then memory -250 Afterburner units, alternating, never below 0); MaxCrashes of them
-/// within CrashWindowDays puts the GPU back to stock. A soft app crash counts only as the 2nd within 24 h. CPU-suspect
+/// within CrashWindowDays puts the GPU back to stock. Events within IncidentSeconds of a crash that counted are that same
+/// crash (recorded, never counted). A soft app crash counts only as the 2nd within 24 h. CPU-suspect
 /// events never change anything (CPU settings live in the BIOS). Crashes at stock are recorded, never counted.
 /// </summary>
 public static class CrashDecision
 {
     public const int CoreStepMhz = 15, MemStepAfterburner = 250;
+    /// <summary>GPU events this close to a crash that already counted are the same incident: one driver hang logs
+    /// several nvlddmkm / Display events within seconds (Windows itself groups driver resets over 60 s, TdrLimitTime).
+    /// Without this a single reset used up every strike at once and put the card back to stock.</summary>
+    public const int IncidentSeconds = 60;
     public const string None = "none", Backoff = "backoff", Revert = "revert";
 
     public static bool IsStock((int Core, int MemNvml, double MemRatio)? a) => a is not { } x || (x.Core <= 0 && x.MemNvml <= 0);
@@ -31,10 +37,15 @@ public static class CrashDecision
         if (rec.Suspect == "cpu")
             return new(None, "CPU-suspect: nothing changed (CPU settings live in the BIOS)" + (rec.Core is { } c ? $", note core {c}" : ""), false);
         if (rec.Suspect != "gpu") return new(None, "Cause unknown: nothing changed", false);
-        if (IsStock(applied)) return new(None, "No GPU overclock was active: nothing changed", false);
+        if (IsStock(applied)) return new(None, "No GPU overclock was active: nothing changed", false, Quiet: true);
+        double Gap(CrashRecord h) => Math.Abs((rec.Time - h.Time).TotalSeconds);
+        // the earlier soft crash must be a different one: the same game crash can be logged more than once
         if (rec.Kind == CrashEvents.GpuAppCrash &&
-            !history.Any(h => h.Kind == CrashEvents.GpuAppCrash && h.AppliedCore != null && Math.Abs((rec.Time - h.Time).TotalHours) <= 24))
+            !history.Any(h => h.Kind == CrashEvents.GpuAppCrash && h.AppliedCore != null && Gap(h) is >= IncidentSeconds and <= 24 * 3600))
             return new(None, "Soft event (a game crashed in the driver): watching, no change yet", false);
+        // measured from the crash that counted, so a card that keeps crashing still loses a step every IncidentSeconds
+        if (history.LastOrDefault(h => h.Counts && Gap(h) < IncidentSeconds) is { } first)
+            return new(None, $"Same incident as the GPU crash {Gap(first):0} s earlier: already handled", false, Quiet: true);
 
         var a = applied!.Value;
         int days = Math.Max(1, cfg.CrashWindowDays), max = Math.Max(1, cfg.MaxCrashes);

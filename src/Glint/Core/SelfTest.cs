@@ -660,6 +660,10 @@ public static class SelfTest
         try { Glint.Tuning.GpuTuningTests.Run(C); Glint.Tuning.TuningTests.Run(C); Glint.Tuning.CrashWatchTests.Run(C); Glint.Tuning.CpuTuningTests.Run(C); Glint.Tuning.AiGoalTests.Run(C); }
         catch (Exception e) { C("tuning: suite ran", false, e.ToString()); }
 
+        // ---------------- Windows notifications (nothing is shown: no tray icon is attached)
+        try { NotificationTests.Run(C); }
+        catch (Exception e) { C("notify: suite ran", false, e.ToString()); }
+
         // ---------------- Home Assistant over MQTT (in-process fake broker on 127.0.0.1)
         try { HomeAssistantChecks(C); }
         catch (Exception e) { C("HA: checks ran", false, e.ToString()); }

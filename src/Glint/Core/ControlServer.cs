@@ -196,6 +196,8 @@ public sealed class ControlServer : IDisposable
         ("update.status", "Updates: this version, the latest release, whether it can be installed from here (canInstall / cannotInstall), autoInstall, and the install progress (install.state idle|downloading|verifying|installing|failed, install.message).", ""),
         ("update.check", "Ask GitHub for the latest release now (the background check runs every 6 h) and return update.status. Use when the user says Glint shows an old version as latest.", ""),
         ("update.install", "Install the newer release: downloads the setup from Glint's GitHub releases, checks it against SHA256SUMS.txt and GitHub's build attestation for the release workflow, then runs it silently (Glint closes and restarts). Only with the user's consent; requires confirm=true. Poll update.status for progress.", "{ confirm: true }"),
+        ("notifications.list", "Windows notifications Glint raised since it started, newest first: time, category (crashes | tuning | cooling | devices | updates), level, title, text, and shown (false + muted = the switch in config.notifications that kept it from showing). Use it to see what Glint told the user, e.g. about a crash or an overclock that was not applied.", "{ limit?: number }"),
+        ("notifications.test", "Show a test notification (through the same path as real ones). Returns shown=false and why when notifications are switched off.", ""),
         ("log", "Recent device / plugin log lines.", "{ lines?: number }"),
         ("app.restart", "Restart Glint (needed after adding or changing device plugins).", ""),
     };
@@ -557,6 +559,13 @@ public sealed class ControlServer : IDisposable
                     if (_svc.Updater.Busy) return new { ok = true, started = false, message = "An install is already running.", status = _svc.Updater.Status };
                     var st = _svc.Updater.Start();
                     return new { ok = true, started = true, message = "Started; poll update.status. Glint closes and restarts when the setup runs.", status = st };
+                }
+            case "notifications.list":
+                return new { enabled = _svc.Config.Notifications?.Enabled != false, notifications = _svc.Notify.Recent.Reverse().Take(Math.Clamp((int?)(double?)p["limit"] ?? Notifications.Keep, 1, Notifications.Keep)) };
+            case "notifications.test":
+                {
+                    var n = _svc.Notify.Post(NoticeText.TestNotice());
+                    return new { shown = n?.Shown == true, why = n?.Muted, notification = n };
                 }
             case "log": return _svc.Rig.Log.TakeLast((int?)p["lines"] ?? 100);
             case "app.restart": _ui(() => Program.Restart()); return new { restarting = true };

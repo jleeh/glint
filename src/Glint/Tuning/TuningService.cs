@@ -151,6 +151,10 @@ public sealed class TuningService : IDisposable
     public GpuSaved? ActiveSaved { get { lock (_gate) return State.Profiles.GetValueOrDefault(ActiveProfile()); } }
     /// <summary>Raised (on the job's caller thread) when a background job such as a GPU test starts; the tuning monitor window opens on it.</summary>
     public event Action<string>? JobStarted;
+    /// <summary>Raised on the job's own thread when a background job has ended (its name; <see cref="LastResult"/> is set).</summary>
+    public event Action<string>? JobEnded;
+    /// <summary>Raised when a GPU overclock has been measured against stock: the profile and the one-line outcome.</summary>
+    public event Action<string, string>? Verified;
 
     /// <param name="openGpu">null result = no NVIDIA GPU. Tests pass a <see cref="SimulatedGpu"/>.</param>
     /// <param name="memJunction">Memory-junction temperature from Glint's sensors (LibreHardwareMonitor), validated by the caller or here.</param>
@@ -371,6 +375,15 @@ public sealed class TuningService : IDisposable
     /// <summary>Weighted speed-up of <paramref name="t"/> over <paramref name="s"/>: 75% compute rate, 25% VRAM bandwidth (whichever exist).</summary>
     public bool HasGpuResult(string profile) { lock (_gate) return State.Profiles.TryGetValue(profile, out var s) && (s.Core > 0 || s.MemAb > 0); }
     public bool VerifiedSince(string profile, DateTime since) { lock (_gate) return State.GpuBench.TryGetValue(profile, out var b) && (b.Tuned ?? b.Stock)?.Time >= since; }
+    /// <summary>A profile's saved GPU overclock (null = stock) and its measured gain over stock in %, for the "tune finished" notification.</summary>
+    public ((int Core, int MemAb, int? PowerPct)? Gpu, double? GainPct) ResultOf(string profile)
+    {
+        lock (_gate)
+        {
+            if (!State.Profiles.TryGetValue(profile, out var s) || (s.Core == 0 && s.MemAb == 0 && s.PowerPct == null)) return (null, null);
+            return ((s.Core, s.MemAb, s.PowerPct), State.GpuBench.GetValueOrDefault(profile)?.Gain);
+        }
+    }
 
     public static double? Gain(GpuTestRecord t, GpuTestRecord s)
     {
@@ -453,6 +466,7 @@ public sealed class TuningService : IDisposable
                 if (profile == ActiveProfile()) ReapplyAfterJob(profile);
                 var msg = $"{profile}: core {core:+0;-0} / memory {memAb:+0;-0}{(powerPct is int pv ? $" at {pv}% power" : "")} is {gain * 100:0.0}% {(eff ? $"more efficient ({(speed ?? 0) * 100:+0.0;-0.0}% speed)" : "faster")} than stock, tested back to back{(core != c0 || memAb != m0 || powerPct != p0 ? $" (changed from {c0:+0;-0} / {m0:+0;-0}{(p0 is int pp1 ? $" at {pp1}%" : "")})" : "")}";
                 Say(msg);
+                try { Verified?.Invoke(profile, msg); } catch { }
                 return new { ok = true, profile, core, memAb, gainPct = Math.Round(gain * 100, 1), stock, tuned = t, note = msg };
             }
             Say($"core {core:+0;-0} / memory {memAb:+0;-0}: {(!t.Ok ? "failed: " + t.Why : !computeKept ? (eff ? "too much slower than stock" : "compute slower than stock") : $"{(g ?? 0) * 100:0.0}% vs stock, not enough")}; {(eff && t.Ok && !computeKept && powerPct is int pq && pq < 100 ? "raising the power limit" : "lowering")}");
@@ -462,6 +476,7 @@ public sealed class TuningService : IDisposable
         lock (_gate) { State.Profiles.Remove(profile); State.GpuBench[profile] = new GpuBenchPair { Stock = stock, Note = $"No overclock was faster than stock by {MinGain * 100:0.#}% or more when tested back to back, so this profile runs the GPU at stock." }; Save(); }
         if (profile == ActiveProfile()) ReapplyAfterJob(profile);
         Say($"{profile}: no overclock beat stock back to back: the GPU runs at stock in this profile");
+        try { Verified?.Invoke(profile, $"{profile}: no overclock beat stock when tested back to back, so the GPU runs at stock in this profile"); } catch { }
         return new { ok = true, profile, core = 0, memAb = 0, gainPct = (double?)null, stock, note = "no overclock beat stock: the profile's GPU overclock was removed" };
     }
 
@@ -912,7 +927,7 @@ public sealed class TuningService : IDisposable
             {
                 try { LastResult = work(); }
                 catch (Exception e) { LastResult = new { ok = false, error = e.Message }; Say("Failed: " + e.Message); }
-                finally { ReleaseStress(); Phase = "idle"; }
+                finally { ReleaseStress(); Phase = "idle"; try { JobEnded?.Invoke(name); } catch { } }
             }) { IsBackground = true, Name = "Glint tuning" };
             _job.Start();
         }

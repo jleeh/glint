@@ -38,6 +38,8 @@ public sealed class LightingEngine : IDisposable
     readonly Dictionary<ILightDevice, DeviceWriter> _writers = new();
     public double ActualFps { get; private set; }
     public string Status { get; private set; } = "";
+    /// <summary>A device's writer gave up after repeated failed writes (device name, last error). Raised on that device's thread.</summary>
+    public event Action<string, string>? DeviceStopped;
     public Rgb[] Preview => _frame;
     internal Led[] LedsForTest => _leds;
     public IReadOnlyList<(string zoneId, string devId, int start, int count, ZoneKind kind, int cols)> Zones => _zones;
@@ -77,7 +79,7 @@ public sealed class LightingEngine : IDisposable
                 zoneIdx++;
             }
             _devSlices.Add((dev, devStart, leds.Count - devStart));
-            _writers[dev] = new DeviceWriter(dev, e => Status = e);
+            _writers[dev] = new DeviceWriter(dev, e => Status = e, (name, error) => { try { DeviceStopped?.Invoke(name, error); } catch { } });
         }
         _leds = leds.ToArray();
         _frame = new Rgb[_leds.Length];
@@ -291,9 +293,12 @@ sealed class DeviceWriter : IDisposable
     public bool Paused { get; private set; }
     public long Sent;
 
-    public DeviceWriter(ILightDevice dev, Action<string> err)
+    readonly Action<string, string>? _stopped;
+
+    /// <param name="stopped">Called once (device name, last error) when the writer gives up for good.</param>
+    public DeviceWriter(ILightDevice dev, Action<string> err, Action<string, string>? stopped = null)
     {
-        Dev = dev; _err = err;
+        Dev = dev; _err = err; _stopped = stopped;
         _t = new Thread(Run) { IsBackground = true, Name = "Glint " + dev.Id, Priority = ThreadPriority.AboveNormal };
         _t.Start();
     }
@@ -330,7 +335,7 @@ sealed class DeviceWriter : IDisposable
             {
                 // Back off exponentially and give up after repeated failures: a device that's choking must not be hammered.
                 _failures++;
-                if (_failures >= 5) { _err($"{Dev.Name}: stopped after {_failures} failed writes ({e.Message}); restart Glint to retry"); Paused = true; return; }
+                if (_failures >= 5) { _err($"{Dev.Name}: stopped after {_failures} failed writes ({e.Message}); restart Glint to retry"); Paused = true; _stopped?.Invoke(Dev.Name, e.Message); return; }
                 _err($"{Dev.Name}: {e.Message} (retrying)");
                 Thread.Sleep(Math.Min(30_000, 500 * (1 << (_failures - 1))));
             }

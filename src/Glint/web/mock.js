@@ -491,6 +491,7 @@
       if (m.type === 'sensorsReset') mm.clear();
       if (m.type === 'config' && m.config.homeAssistant?.password != null) INIT.haHasPassword = m.config.homeAssistant.password !== '';
       if (m.type === 'config') window.__lastConfig = m.config;
+      if (m.type === 'notifyTest') { const on = (window.__lastConfig ?? INIT.config).notifications?.enabled !== false; setTimeout(() => emit({ type: 'toast', kind: on ? '' : 'error', text: on ? 'Test notification sent: look for it by the clock' : 'Not sent: notifications are switched off' }), 10); }
       (window.__msgs ??= []).push(m);
       if (m.type === 'ready' || m.type === 'setupCheck') setTimeout(() => emit({ type: 'setup', report: setupReport() }), m.type === 'ready' ? 40 : 120);
       if (m.type === 'checkUpdate') { window.__mockChecks = (window.__mockChecks ?? 0) + 1; setTimeout(() => { UPDATE.checkedAt = new Date().toISOString(); if (window.__mockNoUpdate) Object.assign(UPDATE, { latest: '0.2.0', available: false }); emit({ type: 'updateInfo', update: UPDATE }); }, 120); }

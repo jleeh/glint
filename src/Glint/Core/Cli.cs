@@ -195,6 +195,8 @@ public static class Cli
         T("update.status", Obj());
         T("update.check", Obj());
         T("update.install", Obj(("confirm", "boolean", "Must be true, and only after the user agreed: installs the newer verified release and restarts Glint", true)));
+        T("notifications.list", Obj(("limit", "number", "How many recent notifications (default and most: 50)", false)));
+        T("notifications.test", Obj());
         T("log", Obj(("lines", "number", "How many recent lines (default 100)", false)));
         T("app.restart", Obj());
         return d;
