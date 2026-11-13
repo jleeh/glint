@@ -70,7 +70,7 @@ jobs:
       # Build provenance (SLSA v1) for both downloads: lets anyone check a file came from this workflow at this tag
       # (gh attestation verify <file> --repo jleeh/glint), and Glint's updater requires it before running a setup.
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
             out/Glint-Setup-${{ env.VERSION }}.exe
